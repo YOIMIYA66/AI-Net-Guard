@@ -1,0 +1,55 @@
+# [DEPRECATED since v4/v5]
+# AI-Net-Guard v5/v5.1 uses a mainland-China IPv4 allowlist (cn-ipv4.txt,
+# auto-generated from v2rayN geoip by 11-geo-cn.ps1) + DefaultOutboundAction=Block,
+# so ALL non-CN destinations are blocked automatically without maintaining domain
+# lists. 07-mode.ps1 no longer reads this file. Kept only as reference test targets.
+
+# --- OpenAI ---
+openai.com
+chatgpt.com
+chat.openai.com
+api.openai.com
+auth.openai.com
+platform.openai.com
+sora.com
+cdn.oaistatic.com
+ab.chatgpt.com
+files.oaiusercontent.com
+
+# --- Anthropic ---
+anthropic.com
+claude.ai
+claude.com
+api.anthropic.com
+console.anthropic.com
+
+# --- Google Gemini / AI ---
+gemini.google.com
+aistudio.google.com
+generativelanguage.googleapis.com
+makersuite.google.com
+deepmind.google
+notebooklm.google.com
+
+# --- xAI ---
+x.ai
+api.x.ai
+grok.com
+
+# --- other foreign AI services / coding assistants ---
+perplexity.ai
+poe.com
+you.com
+character.ai
+midjourney.com
+huggingface.co
+replicate.com
+together.ai
+groq.com
+mistral.ai
+cohere.com
+openrouter.ai
+copilot.microsoft.com
+api.githubcopilot.com
+api2.cursor.sh
+cursor.com

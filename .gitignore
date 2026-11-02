@@ -1,0 +1,20 @@
+# Runtime backups, firewall .wfw exports, DNS baselines, and migration markers
+backup/
+*.wfw
+*.flag
+*.meta
+*.sig
+
+# Verification, regression, pktmon, and WFP audit logs / captures
+logs/
+audit-*/
+wfp-*/
+dns-*/
+*.etl
+*.log
+
+# OS / editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
