@@ -969,8 +969,8 @@ namespace AiNetGuard.Gui
             if (!EnsureAdminOrPromptElevate()) return;
 
             ExpandConsole();
-            SetBusy(true, "正在运行 23 项全链路内核回归体检（包含 10 秒网卡抓包防泄漏验证，约需 25 秒）...");
-            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] 启动 23 项全链路防泄漏回归体检 ==========");
+            SetBusy(true, "正在运行 24 项全链路内核回归体检（包含 10 秒网卡抓包防泄漏验证，约需 25 秒）...");
+            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] 启动 24 项全链路防泄漏回归体检 ==========");
 
             try
             {
@@ -993,7 +993,7 @@ namespace AiNetGuard.Gui
                     FooterHintText.Foreground = (Brush)FindResource("SuccessTextBrush");
                     await ShowNativeAlertAsync(
                         "健康体检全部通过",
-                        "23 项全链路内核防泄漏体检全部通过 (FAIL=0)！\n\nWindows 内核防火墙、WFP 过滤层、DNS 防泄漏与防篡改规则均处于健康状态。",
+                        "24 项全链路内核防泄漏体检全部通过 (FAIL=0)！\n\nWindows 内核防火墙、WFP 过滤层、DNS 防泄漏与防篡改规则均处于健康状态。",
                         okText: "完成",
                         isSuccess: true,
                         subtitle: "零泄漏健康验证");
@@ -1004,7 +1004,7 @@ namespace AiNetGuard.Gui
                     FooterHintText.Foreground = (Brush)FindResource("DangerBrush");
                     await ShowNativeAlertAsync(
                         "健康体检报告",
-                        $"23 项全链路体检检测到未通过项 (exit={code})。\n\n请在下方实时控制台中查看具体的未通过项目与诊断建议。",
+                        $"24 项全链路体检检测到未通过项 (exit={code})。\n\n请在下方实时控制台中查看具体的未通过项目与诊断建议。",
                         okText: "查看日志",
                         isSuccess: false,
                         subtitle: "健康体检报告");
@@ -1014,6 +1014,62 @@ namespace AiNetGuard.Gui
             {
                 AppendLog("[异常] " + ex.Message);
                 await ShowNativeAlertAsync("体检执行异常", ex.Message, okText: "关闭", isSuccess: false, subtitle: "执行异常");
+            }
+            finally
+            {
+                SetBusy(false);
+            }
+        }
+
+        private async void LeakCheckBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isBusy) return;
+
+            ExpandConsole();
+            SetBusy(true, "正在执行极速防泄漏与连通性检测（约需 3~5 秒）...");
+            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] 启动 5 秒极速防泄漏与连通性自测 ==========");
+
+            try
+            {
+                await Task.Run(() => PayloadAndRunnerService.ExtractEmbeddedPayload(DefaultInstallRoot, null));
+                string leakScript = Path.Combine(DefaultInstallRoot, "scripts", "verify-leak-test.ps1");
+                if (!File.Exists(leakScript))
+                {
+                    leakScript = Path.Combine(DefaultInstallRoot, "verify-leak-test.ps1");
+                }
+                var args = new List<string>();
+
+                int code = await PayloadAndRunnerService.RunPowerShellScriptAsync(leakScript, args, AppendLog);
+                RefreshDashboard(reloadPolicy: false);
+
+                if (code == 0)
+                {
+                    FooterHintText.Text = "极速自测通过：物理网卡海外阻断有效，代理正常";
+                    FooterHintText.Foreground = (Brush)FindResource("SuccessTextBrush");
+                    await ShowNativeAlertAsync(
+                        "极速自测通过",
+                        "5 秒极速健康检测全部通过：\n\n• 未检测到越权出站放行规则\n• 活跃 TUN 虚拟网卡正常在线\n• 底层物理网卡 Socket 强绑定直接出站已被内核拦截 (Fail-Closed)\n• 国内外与 AI 核心服务通道通信正常",
+                        okText: "好",
+                        isSuccess: true,
+                        subtitle: "极速自检通过");
+                }
+                else
+                {
+                    FooterHintText.Text = $"极速自测发现异常 (exit={code})，请查看控制台";
+                    FooterHintText.Foreground = (Brush)FindResource("DangerBrush");
+                    await ShowNativeAlertAsync(
+                        "极速自测警告",
+                        $"极速自测发现潜在异常或连接受阻 (exit={code})。\n\n请在下方实时控制台中查看检测细节并确认代理软件状态。",
+                        okText: "查看日志",
+                        isSuccess: false,
+                        subtitle: "极速自测告警");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"[ERROR] 极速自测执行异常: {ex.Message}");
+                FooterHintText.Text = "极速自测失败";
+                FooterHintText.Foreground = (Brush)FindResource("DangerBrush");
             }
             finally
             {

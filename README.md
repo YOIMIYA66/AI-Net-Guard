@@ -42,7 +42,7 @@
 
 ### 📊 传统 TUN 代理 vs. AI-Net-Guard 护航方案对比
 
-| 核心维度 | 传统 TUN 裸奔代理环境 ❌ | AI-Net-Guard v5.6 护航环境 🛡️ | 底层技术实现原理 |
+| 核心维度 | 传统 TUN 裸奔代理环境 ❌ | AI-Net-Guard v5.7 护航环境 🛡️ | 底层技术实现原理 |
 | :--- | :--- | :--- | :--- |
 | **代理崩溃 / TUN 断开** | 瞬间降级物理网卡直连，**真实 IP 暴露，API 访问漏球** | **0 ms 硬件级内核硬阻断**，仅保留国内与局域网直通 | Windows 内核 WFP ALE 丢弃一切非白名单物理出站 |
 | **DNS 泄漏与抢答** | 物理网卡与 TUN 并发广播明文 DNS，运营商完全可见 | **物理明文 DNS 绝对归零**，锁定 `223.5.5.5` + 禁用 SMHNR | 禁用并行 DNS、禁用 LLMNR/NetBIOS、DoH 加密解析 |
@@ -236,7 +236,7 @@ flowchart TD
    - 点击 **「🚀 一键部署 / 应用当前配置」**，程序将在 1~2 秒内自动捕获网络基线、安全部署规则引擎至 `C:\AI-Net-Guard`、注入高韧性 ACL 并激活系统事件监控。
 5. **GUI 便捷维运按钮**：
    - **🛟 应急脱困 (Emergency Rescue)**：突发断网或配置异常时，一键瞬间清除防火墙出站阻断、重置网卡 DNS 为 DHCP、清空回环代理并冲洗 Winsock，5 秒内恢复上网。
-   - **一键健康体检**：自动执行 23 项端到端内核与网络全回归测试（包含 10 秒实机 `pktmon` DNS 抓包）。
+   - **一键健康体检**：自动执行 24 项端到端内核与网络全回归测试（包含 10 秒实机 `pktmon` DNS 抓包）。
    - **立即同步**：在客户端切换代理节点后，一键实时探测并放行新落地节点 IP 与端口。
    - **一键关闭系统代理**：清理注册表中残留的 `127.0.0.1` 代理，实现“仅开关 TUN 即可控制全局流量”的纯粹体验。
    - **一键完整卸载**：完整还原 Windows 原始防火墙、DNS、IPv6、前缀表、时间服务与计划任务。
@@ -281,7 +281,7 @@ flowchart TD
    .\08-commit.ps1
    ```
 
-6. **Step 4 — 锁定生产目录 ACL 权限并执行 23 项全回归测试**：
+6. **Step 4 — 锁定生产目录 ACL 权限并执行 24 项全回归测试**：
    ```powershell
    .\13-harden-acl.ps1
    ```
@@ -332,9 +332,9 @@ flowchart TD
 - **Win11 24H2 Xray TUN 核心修复与环境加固**：
   - 针对 Windows 11 24H2 内核变更导致 Xray Wintun 报错 `Error 5: Access is denied` 的深坑，深度集成了内核驱动级的接口 DNS 初始化修复，保证 Xray 原生 TUN 稳定拉起。
   - 内置一键关闭 Windows 11 后台高频遥测服务（`DiagTrack`）脚本，彻底消除微软遥测直连海外 IP 触发防火墙拦截产生的 `connectex 10013` 权限报错。
-- **权限防篡改加固与 23 项端到端全回归测试套件**：
+- **权限防篡改加固与 24 项端到端全回归测试套件**：
   - 生产目录 `C:\AI-Net-Guard` 权限锁定为 `owner=Administrators`、`Administrators/SYSTEM=Full`、`Users=Read+Execute`，杜绝未提权进程篡改白名单或劫持任务。
-  - 完整回归测试套件 [`12-regression.ps1`](./12-regression.ps1) 覆盖 23 项系统不变量测试，包含实机 10 秒 `pktmon` 端口 53 抓包校验（`phys_attempts=0, escaped=0`）、WFP 状态审计、直连 Socket 漏球探测等。
+  - 完整回归测试套件 [`12-regression.ps1`](./12-regression.ps1) 覆盖 24 项系统不变量测试，包含实机 10 秒 `pktmon` 端口 53 抓包校验（`phys_attempts=0, escaped=0`）、WFP 状态审计、直连 Socket 漏球探测等。
 
 ---
 
@@ -354,7 +354,7 @@ cd C:\AI-Net-Guard
 # 2. 管理员终端维护命令 (PowerShell 以管理员身份运行)
 # ==============================================================================
 .\07-mode.ps1                        # 立即执行一次健康检查与自愈同步 (耗时 < 100ms)
-.\12-regression.ps1                  # 运行完整的 23 项自动化回归测试套件 (包含实机抓包)
+.\12-regression.ps1                  # 运行完整的 24 项自动化回归测试套件 (包含实机抓包)
 .\13-harden-acl.ps1 -SyncWorkspace   # 从 Git 仓库同步最新核心脚本至生产目录并重新加固 ACL
 .\09-rollback.ps1                    # 完整卸载防护，还原 Windows 原始出厂网络与防火墙基线
 ```
@@ -388,7 +388,7 @@ cd C:\AI-Net-Guard
 | [`09-rollback.ps1`](./09-rollback.ps1) | 完整复原卸载：还原 Windows 原始出厂防火墙规则集、恢复被隔离的规则、还原 DNS/IPv6/前缀表/NTP，注销全部计划任务 |
 | [`10-sync-node-rule.ps1`](./10-sync-node-rule.ps1) | 手动 / 预检（`-WhatIfOnly`）多内核节点与端口防火墙规则同步工具 |
 | [`11-geo-cn.ps1`](./11-geo-cn.ps1) | 零内存分配 Protobuf 流式解析器：解析 `geoip.dat`，完成 CIDR 归一化聚合为包含 6,516 行的 [`cn-ipv4.txt`](./cn-ipv4.txt) |
-| [`12-regression.ps1`](./12-regression.ps1) | **23 项自动化回归测试套件**：覆盖静态规则、ACL 权限、0 MB 内存特征、TUN 启闭熔断、WFP 注入、10 秒真实 `pktmon` DNS 抓包 |
+| [`12-regression.ps1`](./12-regression.ps1) | **24 项自动化回归测试套件**：覆盖静态规则、ACL 权限、0 MB 内存特征、TUN 启闭熔断、WFP 注入、10 秒真实 `pktmon` DNS 抓包 |
 | [`13-harden-acl.ps1`](./13-harden-acl.ps1) | 生产目录 ACL 权限防篡改锁定（支持 `-Undo` 权限还原与 `-SyncWorkspace` 源码目录热同步） |
 | [`14-apply-policy.ps1`](./14-apply-policy.ps1) | **声明式策略编排器**：读取 `backup\guard-policy.json` 实现 15 项特性的增量幂等应用 |
 | [`Emergency-Rescue.bat`](./Emergency-Rescue.bat) | 纯原生、无依赖、自带提权的离线一键网络应急脱困批处理脚本 |

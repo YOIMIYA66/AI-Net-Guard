@@ -42,7 +42,7 @@ When pairing AI coding assistants and CLI agents (`Claude Code`, `Cursor`, `Code
 
 ### 📊 Standard TUN Proxy vs. AI-Net-Guard Posture Comparison
 
-| Core Dimension | Traditional TUN Environment ❌ | AI-Net-Guard v5.6 Guarded 🛡️ | Underlying Mechanism |
+| Core Dimension | Traditional TUN Environment ❌ | AI-Net-Guard v5.7 Guarded 🛡️ | Underlying Mechanism |
 | :--- | :--- | :--- | :--- |
 | **Proxy Crash / TUN Drop** | Instant downgrade to physical ISP connection; **Real IP & API requests leak** | **0 ms hardware-level kernel fail-closed drop**; domestic and LAN remain intact | Windows Kernel WFP ALE drops all non-whitelisted physical outbound flows |
 | **DNS Leak & Race** | Physical NIC and TUN concurrently broadcast plaintext DNS; ISP sees everything | **Zero plaintext DNS leakage**; locked to `223.5.5.5` + SMHNR disabled | Parallel DNS disabled, LLMNR/NetBIOS off, encrypted DoH in TUN |
@@ -236,7 +236,7 @@ Zero installation, zero runtime dependencies, single-click executable:
    - Click **「🚀 一键部署 / 应用当前配置」** (Deploy Settings) to capture baselines, deploy the kernel engine to `C:\AI-Net-Guard`, lock down ACLs, and register system event monitors within seconds.
 5. **Key GUI Utility Buttons**:
    - **🛟 应急脱困 (Emergency Rescue)**: Instantly unlocks all firewall outbound blocks, resets NIC DNS to DHCP, clears stale loopback proxies, and flushes Winsock within 5 seconds.
-   - **一键健康体检 (Health Check)**: Runs the full 23-check regression suite (including live 10-second `pktmon` DNS capture).
+   - **一键健康体检 (Health Check)**: Runs the full 24-check regression suite (including live 10-second `pktmon` DNS capture).
    - **立即同步 (Sync Nodes)**: Dynamically extracts and authorizes new proxy node IPs/ports when switching servers in `v2rayN`.
    - **一键关闭系统代理 (Clear System Proxy)**: Clears `HKCU` WinINET loopback proxies so toggling TUN alone controls all traffic.
    - **一键完整卸载 (Full Uninstall)**: Reversibly restores default Windows firewall, DNS, IPv6, prefix policy, NTP, and ACLs.
@@ -281,7 +281,7 @@ Provides an integrated 45-minute automatic rollback safety net:
    .\08-commit.ps1
    ```
 
-6. **Step 4 — Lock Directory ACLs & Run 23-Check Automated Regression Suite**:
+6. **Step 4 — Lock Directory ACLs & Run 24-Check Automated Regression Suite**:
    ```powershell
    .\13-harden-acl.ps1
    ```
@@ -345,7 +345,7 @@ cd C:\AI-Net-Guard
 # 2. Elevated Administration (PowerShell Run as Administrator)
 # ==============================================================================
 .\07-mode.ps1                        # Run immediate health check and auto-sync (< 100ms)
-.\12-regression.ps1                  # Run complete 23-check automated regression suite
+.\12-regression.ps1                  # Run complete 24-check automated regression suite
 .\13-harden-acl.ps1 -SyncWorkspace   # Pull updates from git clone directory & re-lock ACLs
 .\09-rollback.ps1                    # Cleanly uninstall & restore factory Windows baseline
 ```
@@ -379,7 +379,7 @@ To whitelist specific developer tools or custom daemons from anti-drift quaranti
 | [`09-rollback.ps1`](./09-rollback.ps1) | Complete baseline restore: recovers firewall, isolated rules, DNS, IPv6, prefix policy, NTP, and cleans tasks |
 | [`10-sync-node-rule.ps1`](./10-sync-node-rule.ps1) | Manual / preview (`-WhatIfOnly`) multi-core node and port firewall synchronizer |
 | [`11-geo-cn.ps1`](./11-geo-cn.ps1) | Zero-allocation protobuf parser: normalizes and aggregates GeoIP into [`cn-ipv4.txt`](./cn-ipv4.txt) (6,516 prefixes) |
-| [`12-regression.ps1`](./12-regression.ps1) | **23-Check Automated Regression Suite**: static state, ACL lock, 0 MB memory, fail-closed tests, 10s `pktmon` capture |
+| [`12-regression.ps1`](./12-regression.ps1) | **24-Check Automated Regression Suite**: static state, ACL lock, 0 MB memory, fail-closed tests, 10s `pktmon` capture |
 | [`13-harden-acl.ps1`](./13-harden-acl.ps1) | Locks `C:\AI-Net-Guard` DACL to Administrators write-only (`-Undo` and `-SyncWorkspace` supported) |
 | [`14-apply-policy.ps1`](./14-apply-policy.ps1) | Declarative policy orchestrator: applies 15 feature switches idempotently from `backup\guard-policy.json` |
 | [`Emergency-Rescue.bat`](./Emergency-Rescue.bat) | Zero-dependency, pure-batch offline emergency rescue utility with automatic self-elevation |

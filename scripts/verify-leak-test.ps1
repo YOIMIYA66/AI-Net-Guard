@@ -1,4 +1,4 @@
-# AI-Net-Guard Leak & Connectivity Verification Test
+# AI-Net-Guard Leak & Connectivity Verification Test (v5.7)
 $ErrorActionPreference = 'Continue'
 Write-Host '===============================================================================' -ForegroundColor Cyan
 Write-Host '               AI-Net-Guard Post-Optimization Leak & Health Test               ' -ForegroundColor Cyan
@@ -21,27 +21,33 @@ if ($activeTuns.Count -gt 0) {
     Write-Host '[WARN] No active TUN adapter detected' -ForegroundColor Yellow
 }
 
-# 3. Direct Physical Wi-Fi Leak Probe (Target: Foreign Non-CN IP 13.107.246.51:443)
-$wlanIp = (Get-NetIPAddress -InterfaceAlias 'WLAN' -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
-if ($wlanIp) {
-    $targetForeignIp = '13.107.246.51' # Foreign Microsoft Anycast IP (outside CN, not NCSI)
-    $localEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($wlanIp), 0)
-    $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
-    $sock.Bind($localEp)
-    try {
-        $async = $sock.BeginConnect($targetForeignIp, 443, $null, $null)
-        if ($async.AsyncWaitHandle.WaitOne(2000, $false)) {
-            $sock.EndConnect($async)
-            Write-Host ('[LEAK DETECTED!] Direct physical WLAN connection to ' + $targetForeignIp + ':443 SUCCEEDED!') -ForegroundColor Red
-            Write-Host '                 The firewall default outbound block is not enforcing on WLAN!' -ForegroundColor Red
-        } else {
-            Write-Host ('[PASS] Physical WLAN connection to ' + $targetForeignIp + ':443 was BLOCKED / TIMED OUT.') -ForegroundColor Green
+# 3. Direct Physical NIC Leak Probe (Target: Foreign Non-CN IP 13.107.246.51:443)
+$physNics = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch '(?i)wintun|singbox|xray|tap|loopback|virtual|hyper-v|vethernet' })
+if ($physNics.Count -gt 0) {
+    foreach ($pNic in $physNics) {
+        $pIp = (Get-NetIPAddress -InterfaceIndex $pNic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
+        if (-not $pIp) { continue }
+        $targetForeignIp = '13.107.246.51' # Foreign Microsoft Anycast IP (outside CN, not NCSI)
+        $localEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($pIp), 0)
+        $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+        try {
+            $sock.Bind($localEp)
+            $async = $sock.BeginConnect($targetForeignIp, 443, $null, $null)
+            if ($async.AsyncWaitHandle.WaitOne(2000, $false)) {
+                $sock.EndConnect($async)
+                Write-Host ('[LEAK DETECTED!] Direct physical connection via ' + $pNic.Name + ' (' + $pIp + ') to ' + $targetForeignIp + ':443 SUCCEEDED!') -ForegroundColor Red
+                Write-Host '                 The firewall default outbound block is not enforcing!' -ForegroundColor Red
+            } else {
+                Write-Host ('[PASS] Physical ' + $pNic.Name + ' (' + $pIp + ') connection to ' + $targetForeignIp + ':443 was BLOCKED / TIMED OUT.') -ForegroundColor Green
+            }
+        } catch {
+            Write-Host ('[PASS] Physical ' + $pNic.Name + ' (' + $pIp + ') connection to ' + $targetForeignIp + ':443 BLOCKED: ' + $_.Exception.Message) -ForegroundColor Green
+        } finally {
+            $sock.Close()
         }
-    } catch {
-        Write-Host ('[PASS] Physical WLAN connection to ' + $targetForeignIp + ':443 BLOCKED: ' + $_.Exception.Message) -ForegroundColor Green
-    } finally {
-        $sock.Close()
     }
+} else {
+    Write-Host '[INFO] No active physical adapter detected for raw socket bind test' -ForegroundColor Yellow
 }
 
 # 4. Proxy / TUN Connectivity Tests

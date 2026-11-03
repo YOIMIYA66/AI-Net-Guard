@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.6 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
+    AI-Net-Guard v5.7.0 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
 
 .DESCRIPTION
     Verifies the v5.4 static guard end-to-end. Read-only, except for a temporary
@@ -248,7 +248,7 @@ function Get-ConfiguredNodeInfo {
     }
 }
 
-W ('=== AI-Net-Guard v5.6 regression ' + (Get-Date -Format 'o') + ' ===')
+W ('=== AI-Net-Guard v5.7.0 regression ' + (Get-Date -Format 'o') + ' ===')
 function Get-ActiveIpPhysicalNics {
     @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
         $_.OperationalStatus -eq 'Up' -and
@@ -523,6 +523,31 @@ if ($tunUp) {
             throw ('egress=' + $ip + ' expected=' + ($nodeInfo.Ips -join ','))
         }
         $ip
+    }
+
+    Check 'physical adapter socket direct egress blocked to foreign IP while TUN up' {
+        $physNic = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch '(?i)wintun|singbox|xray|tap|loopback|virtual' } | Select-Object -First 1
+        if (-not $physNic) { return 'skipped (no active physical adapter)' }
+        $physIp = (Get-NetIPAddress -InterfaceIndex $physNic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
+        if (-not $physIp) { return 'skipped (no physical IPv4)' }
+        $targetForeignIp = '13.107.246.51'
+        $localEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($physIp), 0)
+        $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+        try {
+            $sock.Bind($localEp)
+            $async = $sock.BeginConnect($targetForeignIp, 443, $null, $null)
+            if ($async.AsyncWaitHandle.WaitOne(2000, $false)) {
+                $sock.EndConnect($async)
+                throw ('direct physical outbound leak detected: ' + $physIp + ' connected to ' + $targetForeignIp + ':443')
+            }
+            'kernel blocked/timed out direct foreign egress on physical adapter'
+        }
+        catch {
+            'blocked by kernel WFP (' + $_.Exception.Message + ')'
+        }
+        finally {
+            $sock.Close()
+        }
     }
 }
 else {

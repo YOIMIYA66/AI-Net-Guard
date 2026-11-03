@@ -198,6 +198,18 @@ try {
             [System.IO.Compression.CompressionLevel]::Optimal
         )
     }
+    $scriptsDir = Join-Path $RepoRoot 'scripts'
+    if (Test-Path -LiteralPath $scriptsDir) {
+        $subScriptFiles = @(Get-ChildItem -Path $scriptsDir -File)
+        foreach ($sf in $subScriptFiles) {
+            [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $zip,
+                $sf.FullName,
+                ('scripts/' + $sf.Name),
+                [System.IO.Compression.CompressionLevel]::Optimal
+            )
+        }
+    }
 }
 finally {
     $zip.Dispose()
