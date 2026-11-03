@@ -1,8 +1,8 @@
-# AI-Net-Guard (v5.5.1)
+# AI-Net-Guard (v5.5.2)
 
 **Windows 11 & 10 Native GUI Configurator, Standalone Single-File `.exe`, Kernel WFP Static Guard & DNS Leak Shield for AI Coding Tools & TUN Proxies**
 
-> **Standalone Single-File Executable (`~260 KB`, 0 Runtime Install) · Full Support for Xray / sing-box Single-Core & Dual-Core TUN · 4 Categories & 15 Feature Toggles · 0 MB Background Idle RAM · 0 ms TUN Switch Latency · Default-Deny Outbound + Mainland-China Direct Allowlist · Multi-Core Auto-Sync (`Xray` / `sing-box` / `Hysteria2` / `Mihomo`) · Reversible One-Click Rollback**
+> **Standalone Single-File Executable (`~260 KB`, 0 Runtime Install) · Dual-Core TUN Direct Egress Alignment (0 Double-Hop Relay) · Full Support for Xray / sing-box Single-Core & Dual-Core TUN · Windows 11 Telemetry Hardening · 4 Categories & 15 Feature Toggles · 0 MB Background Idle RAM · 0 ms TUN Switch Latency · Default-Deny Outbound + Mainland-China Direct Allowlist · Multi-Core Auto-Sync (`Xray` / `sing-box` / `Hysteria2` / `Mihomo`) · Reversible One-Click Rollback**
 
 ---
 
@@ -217,6 +217,8 @@ To exempt specific third-party firewall rule names from automatic anti-drift qua
 | [`12-regression.ps1`](./12-regression.ps1) | **23-check automated regression suite** (static state, ACL lock, 0-MB footprint, TUN on/off datapath, WFP, 10s `pktmon` DNS capture, corrupt GeoIP drill) |
 | [`13-harden-acl.ps1`](./13-harden-acl.ps1) | Locks `C:\AI-Net-Guard` owner & DACL against non-admin tampering, runs elevated migration + regression (`-Undo` and `-SyncWorkspace` supported) |
 | [`14-apply-policy.ps1`](./14-apply-policy.ps1) | **Idempotent policy orchestrator**: executes clean deploy or incremental 15-toggle reconfiguration from `backup\guard-policy.json` |
+| [`scripts/align-xray-egress.bat`](./scripts/align-xray-egress.bat) | Self-elevating alignment utility to inject `/32` physical host route and eliminate dual-core double-hop relay |
+| [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | Disables Windows 11 background telemetry services (`DiagTrack`, `AllowTelemetry = 0`) to prevent `connectex 10013` permission errors |
 | [`gui/`](./gui) | Standalone Windows-native C# WPF GUI desktop configurator project (`net48`, embeds `payload.zip` + UAC manifest) |
 | [`watchdog.ps1`](./watchdog.ps1) | Optional CLR `NetworkChange` event-driven resident daemon (disabled by default in favor of 0-MB `AI-Guard-Mode-Event`) |
 
