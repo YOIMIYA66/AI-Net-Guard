@@ -244,6 +244,8 @@ Get-ChildItem -Path $DistDir -Filter '*.sha256' -ErrorAction SilentlyContinue | 
 Copy-Item -LiteralPath $builtExe -Destination $distExe -Force
 $distRescue = Join-Path $DistDir 'Emergency-Rescue.bat'
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'Emergency-Rescue.bat') -Destination $distRescue -Force
+$distZip = Join-Path $DistDir 'AI-Net-Guard-portable.zip'
+Copy-Item -LiteralPath $payloadZip -Destination $distZip -Force
 
 $sha = [System.Security.Cryptography.SHA256]::Create()
 try {

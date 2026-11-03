@@ -1,0 +1,25 @@
+name: "💡 功能建议 (Feature Request)"
+description: "建议新增防护策略、新代理内核支持或体验优化"
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎提出任何有助于提升 Windows 网络防泄漏安全与开发者体验的宝贵建议！
+  - type: textarea
+    id: problem
+    attributes:
+      label: 解决的痛点或背景 (Problem or Motivation)
+      description: "当前有什么使用不便或痛点促使您提出该建议？"
+      placeholder: "例如在某种特定开发或代理环境下..."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的实现方案 (Proposed Solution)
+      description: "您希望 AI-Net-Guard 如何实现该功能？"
+      placeholder: "建议加入一个开关、或者支持某个新的客户端格式..."
+    validations:
+      required: true

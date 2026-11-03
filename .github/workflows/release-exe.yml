@@ -35,14 +35,18 @@ jobs:
             dist/AI-Net-Guard.exe
             dist/AI-Net-Guard.exe.sha256
             dist/Emergency-Rescue.bat
+            dist/AI-Net-Guard-portable.zip
 
       - name: Release Assets
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          name: AI-Net-Guard ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
             dist/AI-Net-Guard.exe
             dist/AI-Net-Guard.exe.sha256
             dist/Emergency-Rescue.bat
+            dist/AI-Net-Guard-portable.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

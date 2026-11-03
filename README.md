@@ -8,6 +8,7 @@
   </p>
   <p align="center">
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard/releases/latest"><img src="https://img.shields.io/github/v/release/YOIMIYA66/AI-Net-Guard?color=3b82f6&logo=github&label=Release" alt="Release"></a>
+    <a href="https://github.com/YOIMIYA66/AI-Net-Guard/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/YOIMIYA66/AI-Net-Guard/ci.yml?branch=main&label=CI%20Build&logo=githubactions&logoColor=white" alt="CI Build"></a>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981?style=flat" alt="License"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Windows-10%20%7C%2011%2024H2-0078d4?logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Resident%20RAM-0%20MB%20(Zero--Daemon)-059669?logo=speedtest&logoColor=white" alt="RAM"></a>
@@ -224,7 +225,7 @@ flowchart TD
 
 无需安装任何运行时，免配环境变量，双击即用：
 
-1. **下载程序**：前往 [Releases 页面](https://github.com/YOIMIYA66/AI-Net-Guard/releases/latest) 下载 `AI-Net-Guard.exe` 与 `Emergency-Rescue.bat`。
+1. **下载程序**：前往 [Releases 页面](https://github.com/YOIMIYA66/AI-Net-Guard/releases/latest) 下载 `AI-Net-Guard.exe`（桌面端）或 `AI-Net-Guard-portable.zip`（全套脚本便携包）以及 `Emergency-Rescue.bat`。
 2. **启动配置中心**：双击运行 `AI-Net-Guard.exe`（触发一次 UAC 管理员授权）。
 3. **环境全自动探测**：GUI 会自动识别系统的 `v2rayN` 安装路径、正在运行的代理内核（`Xray` / `sing-box` / `Mihomo`）以及当前活跃的 TUN 虚拟网卡。
 4. **一键部署 / 应用配置**：

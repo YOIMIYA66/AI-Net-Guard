@@ -1,0 +1,56 @@
+name: "🐛 Bug 报告 (Bug Report)"
+description: "提交一个网络阻断、DNS 泄漏、TUN 网卡识别或规则冲突问题"
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢提交 Bug 报告！在提交前，建议先运行 `.\07-mode.ps1 -Status` 查看当前防护健康度。若发生意外网络锁死，可直接双击运行 `Emergency-Rescue.bat` 一秒脱困。
+  - type: input
+    id: os_version
+    attributes:
+      label: 操作系统版本 (OS Version)
+      description: "例如: Windows 11 24H2 (OS Build 26100.x) / Windows 10 22H2"
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: true
+  - type: dropdown
+    id: proxy_client
+    attributes:
+      label: 搭配使用的代理客户端与内核 (Proxy Setup)
+      options:
+        - "v2rayN (sing-box + Xray 双核心)"
+        - "v2rayN (sing-box 单核心 TUN)"
+        - "v2rayN (Xray 单核心 TUN)"
+        - "Clash Verge Rev / Mihomo TUN"
+        - "sing-box 纯原生独立核心"
+        - "其他 (请在详细描述中说明)"
+    validations:
+      required: true
+  - type: input
+    id: tun_adapter
+    attributes:
+      label: TUN 虚拟网卡名称 (TUN Adapter Name)
+      description: "例如: singbox_tun, xray_tun, mihomo_tun"
+      placeholder: "singbox_tun"
+    validations:
+      required: false
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题现象与详细描述 (Problem Description)
+      description: "发生了什么异常？例如：关代理后国内无法访问、换节点后新端口未放行等"
+      placeholder: "请详细描述您遇到的问题现象..."
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 诊断输出或体检日志 (Diagnostics / Status Logs)
+      description: "请附上 .\07-mode.ps1 -Status 或 verify-leak-test.ps1 的终端输出"
+      render: shell
+      placeholder: |
+        .\07-mode.ps1 -Status 输出内容...
+    validations:
+      required: false
