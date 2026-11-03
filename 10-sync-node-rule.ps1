@@ -259,6 +259,23 @@ elseif ($udpRule) {
     Write-Host '[+] AI-Guard-Allow-Node-UDP removed (node uses TCP)' -ForegroundColor Green
 }
 
+# Ensure /32 physical host route for proxy node IPs so Xray connects directly on physical NIC (avoids TUN double-hop relay)
+try {
+    $physRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback' -and $_.NextHop -ne '0.0.0.0' } |
+        Select-Object -First 1
+    if ($physRoute -and $physRoute.NextHop) {
+        foreach ($nodeIp in $ips) {
+            if ($nodeIp -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') {
+                $curHostRoute = Get-NetRoute -DestinationPrefix ($nodeIp + '/32') -ErrorAction SilentlyContinue
+                if (-not $curHostRoute) {
+                    New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -ErrorAction SilentlyContinue | Out-Null
+                }
+            }
+        }
+    }
+} catch { }
+
 $dohRule = Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-DoH-Ali' -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($dohRule) {
     Set-NetFirewallRule -InputObject $dohRule -RemoteAddress @('223.5.5.5', '223.6.6.6') -RemotePort @('443') -Enabled True -ErrorAction SilentlyContinue

@@ -693,6 +693,17 @@ else {
             }
         }
         Write-Ok 'DisableLlmnrNetbios = OFF (restored default multicast & NetBIOS)'
+        try {
+            Stop-Service -Name 'DiagTrack' -Force -ErrorAction SilentlyContinue
+            Set-Service -Name 'DiagTrack' -StartupType Disabled -ErrorAction SilentlyContinue
+            Stop-Service -Name 'dmwappushservice' -Force -ErrorAction SilentlyContinue
+            Set-Service -Name 'dmwappushservice' -StartupType Disabled -ErrorAction SilentlyContinue
+            $dcKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
+            if (-not (Test-Path -LiteralPath $dcKey)) { New-Item -Path $dcKey -Force | Out-Null }
+            Set-ItemProperty -LiteralPath $dcKey -Name 'AllowTelemetry' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+            Set-ItemProperty -LiteralPath $dcKey -Name 'MaxTelemetryAllowed' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+            Write-Ok 'WindowsTelemetry = OFF (DiagTrack disabled, AllowTelemetry=0)'
+        } catch { }
     }
 
     # 3. IPv6 & Dual-Stack Precedence toggles
