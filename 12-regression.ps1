@@ -564,7 +564,9 @@ if (Test-Path -LiteralPath $wfpFile) {
         }
         else {
             Check ('alternate core (' + $nodeInfo.CoreType + ') TUN firewall rule active') {
-                $okAlt = ($ipMap.TunNames -contains $TunName -and $script:regStates['AI-Guard-Allow-TUN']) -or $script:regStates['AI-Guard-Allow-TUN-Alt']
+                $hasTunUp = ($ipMap.TunNames.Count -gt 0)
+                $tunRuleActive = ($script:regStates.ContainsKey('AI-Guard-Allow-TUN') -and $script:regStates['AI-Guard-Allow-TUN']) -or ($script:regStates.ContainsKey('AI-Guard-Allow-TUN-Alt') -and $script:regStates['AI-Guard-Allow-TUN-Alt'])
+                $okAlt = $hasTunUp -and $tunRuleActive
                 if (-not $okAlt) { throw 'missing active TUN rule for alternate core' }
                 ('active for ' + ($ipMap.TunNames -join ','))
             }
@@ -609,18 +611,39 @@ if ($tunUp -and $ipMap.TunIps.Count -gt 0 -and $ipMap.PhysIps.Count -gt 0) {
             # Pure ASCII unicode escapes for Chinese Windows pktmon drop labels (ShanChu / DiuQi)
             $dropRegex = '(?i)(Drop|\u5220\u9664|\u4E22\u5F03)'
 
-            $tunPkts = @($lines | Where-Object { $_ -match $tunRegex -and $_ -match '(\.53\b|:53\b)' })
-            $physPkts = @($lines | Where-Object { $_ -match $physRegex -and $_ -match '(\.53\b|:53\b)' })
-            $physDropped = @($physPkts | Where-Object { $_ -match $dropRegex })
-            $physSent = @($physPkts | Where-Object { $_ -notmatch $dropRegex })
+            $tunCount = 0
+            $physAttempts = 0
+            $physDropped = 0
+            $physSent = 0
+            $curDrop = $false
+            foreach ($line in $lines) {
+                if ($line -match '\[Microsoft-Windows-PktMon\].*?\bPktGroupId\b') {
+                    $curDrop = ($line -match $dropRegex)
+                }
+                elseif ($line -match '^\s*(ip|ipv6):\s+(\S+)\s+>\s+(\S+):') {
+                    $src = $matches[2]
+                    $dst = $matches[3]
+                    $isDns = ($src -match '(\.53\b|:53\b)') -or ($dst -match '(\.53\b|:53\b)')
+                    if ($isDns) {
+                        if (($src -match $tunRegex) -or ($dst -match $tunRegex)) { $tunCount++ }
+                        if (($src -match $physRegex) -or ($dst -match $physRegex)) {
+                            $physAttempts++
+                            if ($curDrop) { $physDropped++ } else { $physSent++ }
+                        }
+                    }
+                }
+            }
+
+
+
 
             Check 'port-53 traffic routed into TUN' {
-                if ($tunPkts.Count -le 0) { throw '0 packets seen on TUN IP' }
-                ('tun_pkts=' + $tunPkts.Count)
+                if ($tunCount -le 0) { throw '0 packets seen on TUN IP' }
+                ('tun_pkts=' + $tunCount)
             }
             Check 'no port-53 plaintext packets escaped physical NIC' {
-                if ($physSent.Count -gt 0) { throw ('escaped=' + $physSent.Count + ' of ' + $physPkts.Count) }
-                ('phys_attempts=' + $physPkts.Count + ', dropped=' + $physDropped.Count + ', escaped=0')
+                if ($physSent -gt 0) { throw ('escaped=' + $physSent + ' of ' + $physAttempts) }
+                ('phys_attempts=' + $physAttempts + ', dropped=' + $physDropped + ', escaped=0')
             }
         }
     }

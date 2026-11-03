@@ -456,16 +456,17 @@ else {
 # ------------------------------------------------------------------ AI-Guard rules
 Write-Step 'installing AI-Guard v5.1 rules'
 
-@(Get-NetFirewallRule -DisplayName 'AI-Guard-*' -ErrorAction SilentlyContinue) +
-@(Get-NetFirewallRule -Name 'AI-Guard-*' -ErrorAction SilentlyContinue) |
-    Select-Object -Unique |
-    Remove-NetFirewallRule -ErrorAction SilentlyContinue
+Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'AI-Guard-*' -or $_.DisplayName -like 'AI-Guard-*' } | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+
+
+
 
 function New-AiRule {
     param([hashtable]$Params)
     if (-not $Params.ContainsKey('Name')) {
         $Params['Name'] = $Params['DisplayName']
     }
+    Remove-NetFirewallRule -Name $Params['Name'] -ErrorAction SilentlyContinue
     New-NetFirewallRule @Params -Profile Any -Enabled True | Out-Null
     Write-Host ('    ' + $Params.DisplayName)
 }
