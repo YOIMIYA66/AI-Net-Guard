@@ -1384,6 +1384,16 @@ function Ensure-Guard {
     foreach ($activeTun in (Get-ActiveTunNamesFast)) {
         if ($mainTunAliases -contains $activeTun) { continue }
         try {
+            if (-not $mainTunRule) {
+                New-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -DisplayName 'AI-Guard-Allow-TUN' `
+                    -Direction Outbound -Action Allow -InterfaceAlias $activeTun -Profile Any -Enabled True `
+                    -Description ('Allow outbound traffic routed into TUN (' + $activeTun + ').') | Out-Null
+                $mainTunRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
+                $mainTunAliases = @($activeTun)
+                $script:repairedItems += ('TUN(' + $activeTun + ')')
+                Say ('    created AI-Guard-Allow-TUN for ' + $activeTun)
+                continue
+            }
             $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
             if ($altRule) {
                 $curAliases = @(($altRule | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias)
@@ -1473,6 +1483,26 @@ function Ensure-Guard {
     # 5. required companion rules (check existence AND Active=TRUE; auto-enable if disabled)
     foreach ($n in $requiredRules) {
         if (-not $ruleStates.ContainsKey($n)) {
+            if ($n -eq 'AI-Guard-Allow-DoH-Ali') {
+                try {
+                    New-NetFirewallRule -Name 'AI-Guard-Allow-DoH-Ali' -DisplayName 'AI-Guard-Allow-DoH-Ali' `
+                        -Direction Outbound -Action Allow -Protocol TCP -RemoteAddress @('223.5.5.5', '223.6.6.6') -RemotePort @('443') -Profile Any -Enabled True `
+                        -Description 'Domestic AliDNS DoH (all proxy cores & system).' | Out-Null
+                    $script:repairedItems += 'DoH-Ali-created'
+                    Say '    repaired: created missing AI-Guard-Allow-DoH-Ali'
+                    continue
+                } catch { }
+            }
+            if ($n -eq 'AI-Guard-Allow-DHCP') {
+                try {
+                    New-NetFirewallRule -Name 'AI-Guard-Allow-DHCP' -DisplayName 'AI-Guard-Allow-DHCP' `
+                        -Direction Outbound -Action Allow -Protocol UDP -LocalPort @('68') -RemotePort @('67') -RemoteAddress @('LocalSubnet', '255.255.255.255') -Profile Any -Enabled True `
+                        -Description 'DHCP client lease renewal (all adapters).' | Out-Null
+                    $script:repairedItems += 'DHCP-created'
+                    Say '    repaired: created missing AI-Guard-Allow-DHCP'
+                    continue
+                } catch { }
+            }
             $script:missingRules += $n
             Say ('    WARNING: missing rule ' + $n + ' (run 02-killswitch.ps1 -Force to recreate)')
         }

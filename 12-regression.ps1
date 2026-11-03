@@ -315,9 +315,11 @@ Check 'required companion rules present AND Active=TRUE' {
     }
     $script:regStates = $states
     $script:regRogues = $rogues
-    $need = @('AI-Guard-Allow-TUN', 'AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-DoH-Ali', 'AI-Guard-Allow-DHCP')
+    $need = @('AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-DoH-Ali', 'AI-Guard-Allow-DHCP')
     if ($guardPolicy.AllowLan) { $need += 'AI-Guard-Allow-LAN' }
     $bad = @()
+    $tunRuleOk = ($states.ContainsKey('AI-Guard-Allow-TUN') -and $states['AI-Guard-Allow-TUN']) -or ($states.ContainsKey('AI-Guard-Allow-TUN-Alt') -and $states['AI-Guard-Allow-TUN-Alt'])
+    if (-not $tunRuleOk) { $bad += 'AI-Guard-Allow-TUN=missing' }
     foreach ($n in $need) {
         if (-not $states.ContainsKey($n)) { $bad += ($n + '=missing') }
         elseif (-not $states[$n]) { $bad += ($n + '=disabled') }
@@ -556,7 +558,7 @@ if (Test-Path -LiteralPath $wfpFile) {
     $pCnt = ([regex]::Matches($wf, 'permit Xray')).Count
     $bCnt = ([regex]::Matches($wf, 'block DNS')).Count
     if ($tunUp) {
-        if ($nodeInfo.CoreType -eq 'xray') {
+        if ($nodeInfo.CoreType -eq 'xray' -and ($ipMap.TunNames -contains 'xray_tun')) {
             Check 'permit Xray present while TUN up' { if ($pCnt -le 0) { throw 'count=0' }; ('count=' + $pCnt) }
             Check 'block DNS present while TUN up' { if ($bCnt -le 0) { throw 'count=0' }; ('count=' + $bCnt) }
         }
