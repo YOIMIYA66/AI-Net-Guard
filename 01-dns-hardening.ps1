@@ -235,9 +235,9 @@ Write-Step ('setting physical adapter IPv4 DNS -> ' + $DnsServer)
 
 $physical = @(Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
     Where-Object {
-        $_.InterfaceDescription -notmatch 'Wintun' -and
+        $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|Virtual|Miniport|Kernel' -and
         $_.Name -ne $TunName -and
-        $_.Name -notmatch 'Loopback' -and
+        $_.Name -notmatch '(?i)Loopback|\*' -and
         $_.Status -ne 'Not Present'
     })
 

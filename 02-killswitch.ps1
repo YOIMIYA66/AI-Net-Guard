@@ -471,7 +471,10 @@ function New-AiRule {
 }
 
 # 1. everything routed into TUN interfaces is allowed (support all cores: xray_tun, singbox_tun, mihomo_tun, Meta)
-$allTunAliases = @($TunName, 'xray_tun', 'singbox_tun', 'mihomo_tun', 'Meta', 'Mihomo', 'wintun') | Select-Object -Unique
+$existingAdapterNames = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Not Present' } | Select-Object -ExpandProperty Name)
+$tunCandidates = @($TunName, 'xray_tun', 'singbox_tun', 'mihomo_tun', 'Meta', 'Mihomo', 'wintun') | Select-Object -Unique
+$allTunAliases = @($tunCandidates | Where-Object { $existingAdapterNames -contains $_ })
+if ($allTunAliases.Count -eq 0) { $allTunAliases = if ($TunName) { @($TunName) } else { @('singbox_tun') } }
 New-AiRule @{
     DisplayName    = 'AI-Guard-Allow-TUN'
     Direction      = 'Outbound'
