@@ -7,6 +7,9 @@
     <i>为 AI 编程智能体 (Claude Code · Cursor · Codex · Open-Interpreter) 与 TUN 代理模式量身打造的零驻留系统级安全护航底座</i>
   </p>
   <p align="center">
+    <a href="./README.md"><b>简体中文</b></a> | <a href="./README_EN.md"><b>English</b></a>
+  </p>
+  <p align="center">
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard/releases/latest"><img src="https://img.shields.io/github/v/release/YOIMIYA66/AI-Net-Guard?color=3b82f6&logo=github&label=Release" alt="Release"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/YOIMIYA66/AI-Net-Guard/ci.yml?branch=main&label=CI%20Build&logo=githubactions&logoColor=white" alt="CI Build"></a>
     <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981?style=flat" alt="License"></a>
