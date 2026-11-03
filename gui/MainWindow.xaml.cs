@@ -848,7 +848,7 @@ namespace AiNetGuard.Gui
 
             ExpandConsole();
             SetBusy(true, "正在释放引擎组件并应用所选策略，请稍候...");
-            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] 开始应用 AI-Net-Guard v5.5 防护配置 ==========");
+            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] 开始应用 AI-Net-Guard v5.5.1 防护配置 ==========");
 
             try
             {

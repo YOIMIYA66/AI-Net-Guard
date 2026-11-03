@@ -1,8 +1,8 @@
-# AI-Net-Guard (v5.5)
+# AI-Net-Guard (v5.5.1)
 
 **Windows 11 & 10 Native GUI Configurator, Standalone Single-File `.exe`, Kernel WFP Static Guard & DNS Leak Shield for AI Coding Tools & TUN Proxies**
 
-> **Standalone Single-File Executable (`~235 KB`, 0 Runtime Install) · 4 Categories & 15 Feature Toggles · 0 MB Background Idle RAM · 0 ms TUN Switch Latency · Default-Deny Outbound + Mainland-China Direct Allowlist · Multi-Core Auto-Sync (`Xray` / `sing-box` / `Hysteria2` / `Mihomo`) · Reversible One-Click Rollback**
+> **Standalone Single-File Executable (`~260 KB`, 0 Runtime Install) · Full Support for Xray / sing-box Single-Core & Dual-Core TUN · 4 Categories & 15 Feature Toggles · 0 MB Background Idle RAM · 0 ms TUN Switch Latency · Default-Deny Outbound + Mainland-China Direct Allowlist · Multi-Core Auto-Sync (`Xray` / `sing-box` / `Hysteria2` / `Mihomo`) · Reversible One-Click Rollback**
 
 ---
 
@@ -79,6 +79,11 @@ When using AI coding assistants and CLI agents (`Claude Code`, `Codex`, `Cursor`
 - **Hands-Free Multi-Core Node Auto-Sync (`Xray` + `sing-box` / `Hysteria2` + `Mihomo`)**:
   - Automatically detects `v2rayN` installation paths (or `$env:V2RAYN_ROOT` / `-V2rayNRoot`) and parses both **Xray** (`outbounds[].protocol`, `vnext`, `servers`, `peers`) and **sing-box** (`outbounds[].type`, `server`, `server_port`, and Hysteria2 port-hopping ranges `"20000:30000"` -> `"20000-30000"`).
   - Dynamically binds `-Program` to the active core executable (`xray.exe` / `sing-box.exe` / `mihomo.exe`), authorizes alternate TUN adapters (`AI-Guard-Allow-TUN-Alt`), and resolves domain-based nodes over encrypted `https://223.5.5.5/resolve` (`Proxy=$null`) first.
+  - **Full Support for Single-Core & Dual-Core TUN Architectures**:
+    - **Xray Single-Core Native TUN** (`xray_tun`): Directly integrates with Xray's built-in WFP filter engine (`permit Xray` / `block DNS`), with auto-healing fallback if Wintun fails SetDNS.
+    - **sing-box Single-Core Native TUN** (`singbox_tun`): Full compatibility with sing-box L3 packet capturing, direct whitelist routing, and user-space DNS hijacking (`hijack-dns` on port 53).
+    - **sing-box + Xray Dual-Core TUN (v2rayN Default Architecture)**: Simultaneously authorizes `sing-box.exe` (capturing traffic on `singbox_tun`) and `xray.exe` (handling outbound VLESS / REALITY backend traffic to remote proxy nodes on `127.0.0.1:10808`), establishing seamless multi-core companion firewall rules (`AI-Guard-Allow-Core-SingBox-*` + `AI-Guard-Allow-Node-*`).
+    - **Mihomo / Clash TUN** (`mihomo_tun` / `Meta`): Dynamic interface alias detection and companion rule authorization.
 - **Complete DNS & IPv6 Leak Shield**:
   - Disables physical NIC IPv6 bindings (`ms_tcpip6`) including hot-plugged USB/tethering NICs, elevates IPv4 prefix precedence (`::ffff:0:0/96 = 50 > ::/0 = 40` + `DisabledComponents |= 0x20` to eliminate Python/CLI AAAA stalls), disables **LLMNR**, **NetBIOS**, and **Windows Smart Multi-Homed Name Resolution (`SMHNR`, `DisableSmartNameResolution = 1`)**, and ensures domestic-capable NTP (`ntp.aliyun.com`) to prevent VLESS+REALITY clock-skew deadlocks after sleep.
 - **Zero-Cost Anti-Drift & Dead Loopback Proxy Auto-Heal**:
