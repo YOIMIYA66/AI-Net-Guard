@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.4 - step 4: commit (cancel auto-rollback & install monitor tasks).
+    AI-Net-Guard v5.6 - step 4: commit (cancel auto-rollback & install monitor tasks).
 
 .DESCRIPTION
     Run this only after 03-verify.ps1 passed. Before removing the auto-rollback

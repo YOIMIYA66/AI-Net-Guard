@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.4 - maintenance: re-sync node allow rule after switching proxy node or core.
+    AI-Net-Guard v5.6 - maintenance: re-sync node allow rule after switching proxy node or core.
 
 .DESCRIPTION
     Note: In v5.4, 07-mode.ps1 automatically syncs AI-Guard-Allow-Node-TCP/UDP

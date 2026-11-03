@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.4 · 纯内核静态防线 + 零常驻 + 多内核免维护防漂移）
+# AI-Net-Guard 实现方案与持续审查文档（v5.6 · 纯内核静态防线 + 零常驻 + 多内核免维护防漂移）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
-> 节点同步：**v5.4 默认开启多内核自动同步**（支持 IP / 域名节点、VLESS / Trojan / VMess / Hysteria2 端口跳跃等）
-> 版本状态：**v5.4 正式版**（`23/23` 全量回归 `PASS`，`0` 常驻进程，安装目录 ACL 已加固）
+> 节点同步：**v5.6 默认开启多内核自动同步**（支持 IP / 域名节点、VLESS / Trojan / VMess / Hysteria2 端口跳跃等）
+> 版本状态：**v5.6 正式版**（`23/23` 全量回归 `PASS`，`0` 常驻进程，安装目录 ACL 已加固）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -42,18 +42,58 @@
 
 ---
 
-## 2. 目标与架构原理（v5.4）
+## 2. 目标与架构原理（v5.6）
 
-```
-应用 → socket（getaddrinfo 因 ::ffff:0:0/96 优先级 50>40 直接优先拿 IPv4 A 记录；SMHNR=off 不往物理口并行广播 DNS）
-        │
-        ├─ TUN 开启 / 切换节点 / 睡眠唤醒时：0/0 路由把流量导入 TUN（xray_tun / singbox_tun）→ 内核分流
-        │   （注：事件触发后台任务 → 洗净污染 DNS 缓存 + 自动识别 Xray/sing-box 同步节点 IP:端口与程序路径 → +800ms 二次确认 → 退出）
-        │
-        └─ TUN 关闭时：无 TUN 路由 → 直接命中内核 Windows 防火墙（静态，0 脚本参与）
-              ├─ 国内目标 / 223.5.5.5 / 国内 NTP → 命中 AI-Guard-Allow-CN 放行
-              ├─ 局域网 / DHCP / NCSI(80)       → 命中窄作用域伴生规则放行
-              └─ 全部境外目标（含所有境外 AI）   → 命中默认出站 Block 丢弃（第三方新装软件越权 Allow 已自动隔离）
+```mermaid
+flowchart TD
+    subgraph AppLayer["用户与应用层 (Applications)"]
+        Apps["AI 编程工具 / 浏览器 / 终端 CLI<br/>(Claude Code, Codex, Cursor, Python, Git)"]
+        DNSGetAddr["系统寻址 getaddrinfo<br/>IPv4 优先级 50 > 40<br/>SMHNR=OFF (禁用物理网卡并行 DNS 试探)"]
+        Apps --> DNSGetAddr
+    end
+
+    DNSGetAddr --> Decision{"当前 TUN 虚拟网卡状态"}
+
+    subgraph TunOnPath["状态 A：代理开启 (TUN Mode ON)"]
+        direction TB
+        TunRoute["0.0.0.0/0 默认路由导入虚拟网卡<br/>(xray_tun / singbox_tun)"]
+        CoreSniff["代理内核 L3 捕获 & 53 端口劫持<br/>(Xray / sing-box / Mihomo)"]
+        DnsSplit{"DNS 分流解析"}
+        DomesticDns["国内域名 (geosite:cn)<br/>直连阿里 DoH 223.5.5.5"]
+        ForeignDns["国外 / AI 域名<br/>加密走节点代理至 Cloudflare DoH"]
+        NodeEgress["授权内核出站 -> 落地节点<br/>命中 AI-Guard-Allow-Node-*<br/>(例如 203.0.113.10:443)"]
+
+        TunRoute --> CoreSniff
+        CoreSniff --> DnsSplit
+        DnsSplit -->|国内流量| DomesticDns
+        DnsSplit -->|海外 / AI 流量| ForeignDns
+        ForeignDns --> NodeEgress
+        DomesticDns --> DirectEgress["物理网卡直接出站<br/>(命中 AI-Guard-Allow-CN)"]
+    end
+
+    subgraph TunOffPath["状态 B：代理断开 / 内核崩溃 (TUN Mode OFF - 0 ms 熔断)"]
+        direction TB
+        NoTunRoute["无虚拟网卡路由 -> 流量落入物理网卡 (WLAN)"]
+        KernelWFP["Windows 内核防火墙 (tcpip.sys / WFP ALE)<br/>默认出站策略: BLOCK (丢弃)"]
+        
+        CnCheck{"目标 IP 匹配规则"}
+        AllowCN["大陆 IPv4 (6,516 前缀归一聚合)<br/>+ 223.5.5.5 / 国内 NTP<br/>命中 AI-Guard-Allow-CN"]
+        AllowLAN["局域网子网 / DHCP / NCSI 80<br/>命中 Companion Rules"]
+        BlockForeign["所有海外公网 IP & 境外 AI 接口<br/>(OpenAI, Claude, Google, 海外 CDN)"]
+        
+        NoTunRoute --> KernelWFP
+        KernelWFP --> CnCheck
+        CnCheck -->|国内 IP / 阿里 DNS| AllowCN
+        CnCheck -->|局域网设备| AllowLAN
+        CnCheck -->|境外 IP / AI API| BlockForeign
+        
+        AllowCN --> PassOut["放行出站 (O(1) 硬件级线速转发)"]
+        AllowLAN --> PassOut
+        BlockForeign --> DropOut["内核硬阻断 (0 ms 丢弃 / 零泄漏)"]
+    end
+
+    Decision -->|TUN 在线| TunRoute
+    Decision -->|TUN 离线| NoTunRoute
 ```
 
 > **为什么不在物理网卡 `WLAN` 上开启 Windows 11 原生系统级 DoH？**
@@ -119,6 +159,10 @@
 | R22 | 安装目录继承 `Authenticated Users:(M)`，且部分文件所有者为普通用户（所有者隐含 `WRITE_DAC`，可自行改回权限）；SYSTEM 任务执行其中脚本并读取 `cn-ipv4.txt` 构建白名单 | **v5.4**：新增 [`13-harden-acl.ps1`](./13-harden-acl.ps1)（用 SID 调用 `icacls`，兼容中文系统组名）；`07-mode.ps1 -Status` 新增 `install ACL` 行，回归套件新增「安装目录已锁定」断言（使用 .NET ACL API，不依赖可能无法自动加载的 `Get-Acl`） |
 | R23 | `Show-Status` 用 `@(...)` 包裹 `return ,$array` 型函数，结果 `Count` 恒为 1：**TUN 关闭时仍显示 `Up`**，内核停止时仍判定为运行中，导致「死代理」红色告警永远不会出现 | **v5.4**：改为直接赋值（已用模拟 TUN 关闭验证：`Count 1 -> 0`）；新函数统一不带逗号返回 |
 | R24 | O2 首次提权运行捕获：PowerShell 注册表提供程序中对已存在的键执行 `New-Item -Path $polKey -Force` 会**重建该键并清空同键下的既有值**，导致写入 `DisableSmartNameResolution=1` 时把同键的 `EnableMulticast=0`（禁 LLMNR）抹除 | **v5.4**：[`07-mode.ps1`](./07-mode.ps1) 与 [`01-dns-hardening.ps1`](./01-dns-hardening.ps1) 中所有注册表建键统一加 `if (-not (Test-Path -LiteralPath ...))` 保护，并在 `Set-SmhnrHardening` / `Ensure-Guard` 中同时守护自愈 `EnableMulticast=0` 与 `DisableSmartNameResolution=1` |
+| R25 | Windows 11 24H2 下 Wintun 未分配单播 IPv6 地址时，调用底层 `SetInterfaceDnsSettings` 触发系统 Win32 错误码 `5` (`Access is denied`) 导致 Xray 原生单核心 TUN 崩溃回滚 | **v5.6**：在 Xray 源码引入无侵入精准前置守卫：以协议族是否拥有合法单播 IP 作为下发 DNS 的绝对凭据，完美兼容纯 IPv4/IPv6、双栈与空 DNS 清空语义；输出产物已在生产环境稳定运行 |
+| R26 | 原防漂移逻辑盲目信任以 `AI-Guard-*` 开头的规则名，导致第三方或历史运维脚本注入的无约束全放行规则（如 `netsh ... interfacetype=any`）绕过隔离，架空默认 Block 策略 | **v5.6**：[`07-mode.ps1`](./07-mode.ps1) 强化防冒名与 Blanket Allow 识别：凡是出站 Allow 规则缺少 `RA4/RA6`（远程 IP）、`IF`（网卡接口）与 `App`（进程）三重限定的，一律判定为高危违规并自动隔离入 `backup\auto-disabled-outbound-allow.json` |
+| R27 | `Get-NetFirewallInterfaceFilter.InterfaceAlias` 从系统读回网卡 GUID 列表，与传入的别名 `$activeTun = 'xray_tun'` 发生比对歧义，导致每次网络事件唤醒均判定未授权而重复写入 `AI-Guard-Allow-TUN-Alt` 并堆积过期 GUID 和 `'0'` | **v5.6**：新增 [`Test-FirewallRuleHasTun`](./07-mode.ps1) 辅助函数，实现别名与适配器底层 GUID 双向解析比对，彻底消除冗余写入、日志刷屏与 `'0'` 占位符残留 |
+| R28 | `07-mode.ps1 -Status` 因前置管理员提权断言，导致非管理员终端（普通 CMD、PowerShell、VSCode/Cursor 内置终端）无法直接执行轻量级状态查看 | **v5.6**：优化提权分支：非管理员请求 `-Status` 时进入 `$script:ReadOnlyStatusMode` 快检通道，免提权展示当前 15 项防护状态看板 |
 
 ---
 
@@ -199,3 +243,20 @@ v5.5 在底层 WFP 静态防护与零驻留自愈内核之上，引入了**纯 W
    - 顶部提供 `v2rayN` 路径自动探测与配置校验徽章；
    - 自动检测并提供 **「一键关闭系统代理」**（`HKCU` WinINET `ProxyEnable=0` + `InternetSetOption` 实时刷新），实现仅通过 `v2rayN` 的「启用 Tun」单开关控制全局分流；
    - 底部集成 **「一键部署」**、**「一键 23 项健康体检」**、**「一键完整卸载回滚」** 及可折叠的实时流式输出控制台。
+
+---
+
+## 9. v5.6 升级：Win11 24H2 原生 Xray TUN 适配、防冒名全放行隔离与智能网卡治理
+
+v5.6 针对近期在 Windows 11 24H2 实测与代码深度审查中捕获的关键痛点进行了架构级升级：
+
+1. **Win11 24H2 下 Xray 原生 TUN `SetDNS: Access is denied` 根因定位与修复**：
+   - **根因剖析**：Windows 11 24H2 对未配置单播 IPv6 地址的 Wintun 虚拟接口调用 `SetInterfaceDnsSettings` 时严格校验并返回错误码 `5`。原版 Xray 依赖 `ERROR_NOT_FOUND` 作为跳过条件，但 Win11 24H2 下该 API 穿透返回 `nil`，导致强行设置空 IPv6 DNS 触发致命崩溃。
+   - **工程修复**：引入以单播 IP 存在性为守卫的最小补丁，杜绝假成功，确保纯 IPv4、纯 IPv6 及双栈环境均能稳定运行原生单核心 TUN。
+2. **防冒名伪装与高危无约束出站 Allow 规则反穿透 (R26)**：
+   - 重构了 `Get-FirewallRuleAnalysis` 引擎，引入严密特征识别：任何缺少远端目标 IP (`RA4/RA6`)、作用网卡 (`IF`) 与进程签名 (`App`) 的全放行出站规则，即使名字前缀带有 `AI-Guard-*`，也会被视作伪装/非法规则并自动移入隔离区，彻底杜绝运维误操作或恶意进程架空默认阻断策略。
+3. **异构 TUN 规则动态挂载 GUID / 别名智能映射 (R27)**：
+   - 引入 [`Test-FirewallRuleHasTun`](./07-mode.ps1) 机制，双向识别网卡友好别名与底层 InterfaceGuid，杜绝因比对失败导致的每次网络事件重复刷新，清除历史残留的 `'0'` 占位符与废弃 Wintun GUID。
+4. **免提权只读状态看板与生态协同 (R28)**：
+   - `07-mode.ps1 -Status` 支持非提权普通终端即开即查，日常在 VSCode/Cursor 终端中无需 UAC 弹窗即可实时核验 15 项防护状态。
+   - 提供了专用的连通性与防泄漏自动化探测脚本，一键验证物理网卡直连阻断与 TUN 代理链路健康。

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.4 - step 0b: audit Xray's WFP filters and prove/disprove
+    AI-Net-Guard v5.6 - step 0b: audit Xray's WFP filters and prove/disprove
     whether xray.exe is exempt from Windows Firewall blocks (run as Administrator).
 
 .DESCRIPTION

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.5 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
+    AI-Net-Guard v5.6 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
 
 .DESCRIPTION
     The guard itself is 100% STATIC in Windows kernel WFP (BFE / tcpip.sys):
@@ -134,10 +134,15 @@ if (-not $V2rayNRoot) {
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 $p = New-Object Security.Principal.WindowsPrincipal($id)
 if (-not $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host 'ERROR: run this script in an elevated PowerShell (Run as Administrator).' -ForegroundColor Red
-    Write-Host '       Win+X -> Terminal (Admin), then:' -ForegroundColor Yellow
-    Write-Host ('       cd "' + $Root + '" ; .\07-mode.ps1 -Status') -ForegroundColor Yellow
-    exit 1
+    if ($Status) {
+        $script:ReadOnlyStatusMode = $true
+    }
+    else {
+        Write-Host 'ERROR: run this script in an elevated PowerShell (Run as Administrator).' -ForegroundColor Red
+        Write-Host '       Win+X -> Terminal (Admin), then:' -ForegroundColor Yellow
+        Write-Host ('       cd "' + $Root + '" ; .\07-mode.ps1 -Status') -ForegroundColor Yellow
+        exit 1
+    }
 }
 
 function Say($msg) { if (-not $Quiet) { Write-Host $msg } }
@@ -197,6 +202,26 @@ function Get-ActiveTunNamesFast {
 
 function Test-TunUp {
     return ((Get-ActiveTunNamesFast).Count -gt 0)
+}
+
+function Test-FirewallRuleHasTun($ruleObject, [string]$tunName) {
+    if (-not $ruleObject -or -not $tunName) { return $false }
+    try {
+        $filt = $ruleObject | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue
+        if (-not $filt) { return $false }
+        $aliases = @($filt.InterfaceAlias | Where-Object { $_ -and $_ -ne '0' -and $_ -ne 'Any' })
+        if ($aliases -contains $tunName) { return $true }
+
+        $ad = Get-NetAdapter -Name $tunName -ErrorAction SilentlyContinue
+        if ($ad -and $ad.InterfaceGuid) {
+            $guidClean = $ad.InterfaceGuid.Trim('{', '}').ToLowerInvariant()
+            foreach ($a in $aliases) {
+                if ($a.Trim('{', '}').ToLowerInvariant() -eq $guidClean) { return $true }
+            }
+        }
+    }
+    catch { }
+    return $false
 }
 
 function Get-ActivePhysicalNicsFast {
@@ -359,7 +384,13 @@ function Get-FirewallRuleAnalysis {
             }
 
             $isAiGuard = ($pr.Name -like 'AI-Guard-*') -or ($dn -and ($dn -like 'AI-Guard-*'))
-            if ($isAiGuard) {
+            $isDangerousBlanket = ($active -and ($v -match '(^|\|)Dir=Out(\||$)') -and ($v -match '(^|\|)Action=Allow(\||$)') -and
+                                   ($v -notmatch '(^|\|)RA[46]=') -and ($v -notmatch '(^|\|)IF=') -and ($v -notmatch '(^|\|)App='))
+            $ruleIdent = if ($dn) { $dn } else { $pr.Name }
+            $isAuthorizedAiGuard = $isAiGuard -and (-not $isDangerousBlanket) -and
+                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*)$')
+
+            if ($isAuthorizedAiGuard) {
                 if (-not $rawByRule.ContainsKey($pr.Name) -or $active) { $rawByRule[$pr.Name] = $v }
                 if ($dn -and (-not $rawByRule.ContainsKey($dn) -or $active)) { $rawByRule[$dn] = $v }
             }
@@ -927,7 +958,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>AI-Net-Guard v5.4 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
+    <Description>AI-Net-Guard v5.6 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
@@ -1030,7 +1061,7 @@ function Show-Status {
     else { 'stopped' }
 
     Write-Host ''
-    Write-Host '=== AI-Net-Guard v5.5 Status (read-only) ===' -ForegroundColor Cyan
+    Write-Host '=== AI-Net-Guard v5.6 Status (read-only) ===' -ForegroundColor Cyan
     Write-Host ('TUN : ' + $tunLabel + '   core : ' + $coreLabel)
     if (Test-Path -LiteralPath $policyFile) {
         Write-Host ('  policy preset     : ' + $guardPolicy.Preset + ' (guard-policy.json active)') -ForegroundColor Cyan
@@ -1167,7 +1198,7 @@ function Show-Status {
 }
 
 function Invoke-UpgradeV54 {
-    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.4 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
+    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.6 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
 
     # 1. Backfill new rollback fields into existing DNS baseline JSON without altering original values
     $bf = Join-Path $Root 'backup\baseline.json'
@@ -1400,35 +1431,33 @@ function Ensure-Guard {
 
     # 3d. multi-core dynamic TUN interface rule (e.g. singbox_tun / mihomo_tun / xray_tun)
     $mainTunRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
-    $mainTunAliases = if ($mainTunRule) { @(($mainTunRule | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias) } else { @() }
+    $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
 
     foreach ($activeTun in (Get-ActiveTunNamesFast)) {
-        if ($mainTunAliases -contains $activeTun) { continue }
+        if (Test-FirewallRuleHasTun $mainTunRule $activeTun) { continue }
+        if (Test-FirewallRuleHasTun $altRule $activeTun) { continue }
         try {
             if (-not $mainTunRule) {
                 New-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -DisplayName 'AI-Guard-Allow-TUN' `
                     -Direction Outbound -Action Allow -InterfaceAlias $activeTun -Profile Any -Enabled True `
                     -Description ('Allow outbound traffic routed into TUN (' + $activeTun + ').') | Out-Null
                 $mainTunRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
-                $mainTunAliases = @($activeTun)
                 $script:repairedItems += ('TUN(' + $activeTun + ')')
                 Say ('    created AI-Guard-Allow-TUN for ' + $activeTun)
                 continue
             }
-            $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
             if ($altRule) {
-                $curAliases = @(($altRule | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias)
-                if ($altRule.Enabled -ne 'True' -or ($curAliases -notcontains $activeTun)) {
-                    $mergedAliases = @($curAliases + @($activeTun) | Where-Object { $_ -and $_ -ne 'Any' } | Select-Object -Unique)
-                    Set-NetFirewallRule -InputObject $altRule -InterfaceAlias $mergedAliases -Enabled True -ErrorAction Stop
-                    $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
-                    Say ('    authorized alternate TUN interface: ' + $activeTun)
-                }
+                $curAliases = @(($altRule | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                $mergedAliases = @($curAliases + @($activeTun) | Select-Object -Unique)
+                Set-NetFirewallRule -InputObject $altRule -InterfaceAlias $mergedAliases -Enabled True -ErrorAction Stop
+                $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
+                Say ('    authorized alternate TUN interface: ' + $activeTun)
             }
             else {
                 New-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -DisplayName 'AI-Guard-Allow-TUN-Alt' `
                     -Direction Outbound -Action Allow -InterfaceAlias $activeTun -Profile Any -Enabled True `
                     -Description ('Allow outbound traffic routed into alternate TUN (' + $activeTun + ').') | Out-Null
+                $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
                 $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
                 Say ('    created AI-Guard-Allow-TUN-Alt for ' + $activeTun)
             }
@@ -1705,23 +1734,22 @@ else {
 
         if ($tunFlipped) {
             $mainTunRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
-            $mainTunAliasesLate = if ($mainTunRuleLate) { @(($mainTunRuleLate | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias) } else { @() }
+            $altRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
             foreach ($activeTun in (Get-ActiveTunNamesFast)) {
-                if ($mainTunAliasesLate -contains $activeTun) { continue }
+                if (Test-FirewallRuleHasTun $mainTunRuleLate $activeTun) { continue }
+                if (Test-FirewallRuleHasTun $altRuleLate $activeTun) { continue }
                 try {
-                    $altRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
                     if ($altRuleLate) {
-                        $curAliasesLate = @(($altRuleLate | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias)
-                        if ($altRuleLate.Enabled -ne 'True' -or ($curAliasesLate -notcontains $activeTun)) {
-                            $mergedAliasesLate = @($curAliasesLate + @($activeTun) | Where-Object { $_ -and $_ -ne 'Any' } | Select-Object -Unique)
-                            Set-NetFirewallRule -InputObject $altRuleLate -InterfaceAlias $mergedAliasesLate -Enabled True -ErrorAction Stop
-                            $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
-                        }
+                        $curAliasesLate = @(($altRuleLate | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                        $mergedAliasesLate = @($curAliasesLate + @($activeTun) | Select-Object -Unique)
+                        Set-NetFirewallRule -InputObject $altRuleLate -InterfaceAlias $mergedAliasesLate -Enabled True -ErrorAction Stop
+                        $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
                     }
                     else {
                         New-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -DisplayName 'AI-Guard-Allow-TUN-Alt' `
                             -Direction Outbound -Action Allow -InterfaceAlias $activeTun -Profile Any -Enabled True `
                             -Description ('Allow outbound traffic routed into alternate TUN (' + $activeTun + ').') | Out-Null
+                        $altRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
                         $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
                     }
                 }

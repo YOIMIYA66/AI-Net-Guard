@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -9,7 +9,7 @@ namespace AiNetGuard.Gui
     public partial class App : Application
     {
         private const string AppMutexName = "Local\\AI_Net_Guard_SingleInstance_App_Mutex";
-        private const string WindowTitle = "AI-Net-Guard v5.5 — Windows 内核级防泄漏与智能分流配置中心";
+        private const string WindowTitle = "AI-Net-Guard v5.6.0 — Windows 内核级防泄漏与智能分流配置中心";
         private const int SW_SHOW = 5;
         private const int SW_RESTORE = 9;
 

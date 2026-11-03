@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.5 - build standalone zero-dependency Windows native GUI executable (dist\AI-Net-Guard.exe).
+    AI-Net-Guard v5.6 - build standalone zero-dependency Windows native GUI executable (dist\AI-Net-Guard.exe).
 
 .DESCRIPTION
     1. Verifies pure-ASCII encoding & PowerShell AST syntax across all *.ps1 scripts.
