@@ -261,6 +261,20 @@ elseif ($udpRule) {
 
 # Ensure /32 physical host route for proxy node IPs so Xray connects directly on physical NIC (avoids TUN double-hop relay)
 try {
+    # Clean up stale node /32 host routes if node IP changed
+    $nodeMetaOld = Join-Path $Root 'backup\node-sync.meta'
+    if (Test-Path -LiteralPath $nodeMetaOld) {
+        $oldMetaContent = Get-Content -LiteralPath $nodeMetaOld -Raw -ErrorAction SilentlyContinue
+        if ($oldMetaContent -match '\|([\d\.,]+)\|') {
+            $prevIps = $Matches[1].Split(',')
+            foreach ($pIp in $prevIps) {
+                if ($pIp -match '^\d{1,3}(\.\d{1,3}){3}$' -and ($ips -notcontains $pIp)) {
+                    Remove-NetRoute -DestinationPrefix ($pIp + '/32') -Confirm:$false -ErrorAction SilentlyContinue
+                    Write-Host ('[-] removed stale node host route: ' + $pIp + '/32') -ForegroundColor Yellow
+                }
+            }
+        }
+    }
     $physRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
         Where-Object { $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback' -and $_.NextHop -ne '0.0.0.0' } |
         Select-Object -First 1
@@ -270,6 +284,12 @@ try {
                 $curHostRoute = Get-NetRoute -DestinationPrefix ($nodeIp + '/32') -ErrorAction SilentlyContinue
                 if (-not $curHostRoute) {
                     New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -ErrorAction SilentlyContinue | Out-Null
+                    Write-Host ('[+] proxy node physical /32 host route added: ' + $nodeIp + '/32 -> ' + $physRoute.NextHop + ' on ' + $physRoute.InterfaceAlias) -ForegroundColor Green
+                }
+                elseif ($curHostRoute.NextHop -ne $physRoute.NextHop -or $curHostRoute.InterfaceAlias -ne $physRoute.InterfaceAlias -or $curHostRoute.RouteMetric -ne 1) {
+                    Remove-NetRoute -DestinationPrefix ($nodeIp + '/32') -Confirm:$false -ErrorAction SilentlyContinue
+                    New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -ErrorAction SilentlyContinue | Out-Null
+                    Write-Host ('[+] proxy node physical /32 host route updated: ' + $nodeIp + '/32 -> ' + $physRoute.NextHop + ' on ' + $physRoute.InterfaceAlias) -ForegroundColor Green
                 }
             }
         }

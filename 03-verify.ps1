@@ -391,6 +391,23 @@ if ($tunUp) {
         'node connections=' + $hits + ', all owned by proxy core'
     } 'node connections owned by proxy core'
 
+    Check 'proxy core physical egress alignment (no TUN double-hop relay)' {
+        $node = Get-NodeInfo
+        $xrayCons = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | Where-Object {
+            ($node.Ips -contains [string]$_.RemoteAddress -or [string]$_.RemoteAddress -eq $node.Address) -and
+            $(try { (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName -eq 'xray' } catch { $false })
+        })
+        if ($xrayCons.Count -eq 0) { 'no established xray node connections at test time' }
+        else {
+            $tunIps = @('172.18.0.1', '198.18.0.1', '10.0.0.1')
+            $relayed = @($xrayCons | Where-Object { $_.LocalAddress -in $tunIps })
+            if ($relayed.Count -gt 0) {
+                throw ('double-hop relay detected: xray.exe socket bound to TUN (' + (($relayed.LocalAddress | Select-Object -Unique) -join ',') + ') instead of physical NIC')
+            }
+            'xray physical socket aligned: ' + (($xrayCons.LocalAddress | Select-Object -Unique) -join ',')
+        }
+    } 'physical socket alignment'
+
     Check 'domestic site reachable (direct TUN datapath)' {
         $r = Invoke-DirectHttp -Url 'https://www.baidu.com' -TimeoutSec 15
         if ($r.StatusCode -eq 200) { 'baidu 200' } else { throw ('status ' + $r.StatusCode) }

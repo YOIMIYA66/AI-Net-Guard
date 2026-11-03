@@ -695,6 +695,27 @@ function Sync-NodeRuleFast {
                 }
             }
 
+            # Ensure /32 physical host route for proxy node IPs so Xray connects directly on physical NIC (avoids TUN double-hop relay)
+            try {
+                $physRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                    Where-Object { $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback' -and $_.NextHop -ne '0.0.0.0' } |
+                    Select-Object -First 1
+                if ($physRoute -and $physRoute.NextHop) {
+                    foreach ($nodeIp in $ips) {
+                        if ($nodeIp -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') {
+                            $curHostRoute = Get-NetRoute -DestinationPrefix ($nodeIp + '/32') -ErrorAction SilentlyContinue
+                            if (-not $curHostRoute) {
+                                New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -ErrorAction SilentlyContinue | Out-Null
+                            }
+                            elseif ($curHostRoute.NextHop -ne $physRoute.NextHop -or $curHostRoute.InterfaceAlias -ne $physRoute.InterfaceAlias -or $curHostRoute.RouteMetric -ne 1) {
+                                Remove-NetRoute -DestinationPrefix ($nodeIp + '/32') -Confirm:$false -ErrorAction SilentlyContinue
+                                New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -ErrorAction SilentlyContinue | Out-Null
+                            }
+                        }
+                    }
+                }
+            } catch { }
+
             $coreLabel = Split-Path -Leaf $coreExe
             $summary = ($ips -join ',') + ':' + ($tcpPorts -join ',') + $(if ($udp) { '/udp:' + ($udpPorts -join ',') } else { '' }) + ' [' + $coreLabel + ']'
             $script:repairedItems += ('node-synced(' + $summary + ')')

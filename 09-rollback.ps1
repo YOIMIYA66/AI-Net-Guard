@@ -297,6 +297,23 @@ try { Clear-DnsClientCache -ErrorAction SilentlyContinue } catch { }
 ipconfig /flushdns | Out-Null
 Log 'flushed Windows DNS client cache'
 
+# ------------------------------------------------------------------ 8.5. Remove proxy node /32 host routes
+try {
+    $nodeMeta = Join-Path $BackupDir 'node-sync.meta'
+    if (Test-Path -LiteralPath $nodeMeta) {
+        $metaContent = Get-Content -LiteralPath $nodeMeta -Raw -ErrorAction SilentlyContinue
+        if ($metaContent -match '\|([\d\.,]+)\|') {
+            $nodeIps = $Matches[1].Split(',')
+            foreach ($nip in $nodeIps) {
+                if ($nip -match '^\d{1,3}(\.\d{1,3}){3}$') {
+                    Remove-NetRoute -DestinationPrefix ($nip + '/32') -Confirm:$false -ErrorAction SilentlyContinue
+                    Log ('removed node host route: ' + $nip + '/32')
+                }
+            }
+        }
+    }
+} catch { }
+
 # ------------------------------------------------------------------ 9. Archive baseline & state files
 $bf = Join-Path $BackupDir 'baseline.json'
 if (Test-Path -LiteralPath $bf) {
