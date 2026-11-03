@@ -16,7 +16,7 @@
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Windows-10%20%7C%2011%2024H2-0078d4?logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Resident%20RAM-0%20MB%20(Zero--Daemon)-059669?logo=speedtest&logoColor=white" alt="RAM"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard/releases"><img src="https://img.shields.io/badge/Standalone%20GUI-~267%20KB-8b5cf6?logo=dotnet&logoColor=white" alt="GUI"></a>
-    <a href="./12-regression.ps1"><img src="https://img.shields.io/badge/Regression-23%2F23%20Passed-22c55e" alt="Tests"></a>
+    <a href="./scripts/12-regression.ps1"><img src="https://img.shields.io/badge/Regression-23%2F23%20Passed-22c55e" alt="Tests"></a>
   </p>
 </p>
 
@@ -261,29 +261,29 @@ flowchart TD
 
 2. **启动代理软件**：开启 `v2rayN` 并勾选开启 TUN 模式，随后执行只读巡检审计：
    ```powershell
-   .\00-audit.ps1
-   .\04-wfp-audit.ps1
+   .\scripts\00-audit.ps1
+   .\scripts\04-wfp-audit.ps1
    ```
 
 3. **Step 1 — 核心基线与 DNS/IPv6/SMHNR 加固**（自动备份原始基线至 `backup\baseline.json`）：
    ```powershell
-   .\01-dns-hardening.ps1
+   .\scripts\01-dns-hardening.ps1
    ```
 
 4. **Step 2 — 安装内核防火墙规则并挂载 45 分钟自动回滚安全网**：
    ```powershell
-   .\02-killswitch.ps1 -RollbackMinutes 45
+   .\scripts\02-killswitch.ps1 -RollbackMinutes 45
    ```
 
 5. **Step 3 — 验证出站通道并正式固化**（验证通过后注销回滚定时器并注册零常驻事件任务）：
    ```powershell
-   .\03-verify.ps1 -WfpCheck
-   .\08-commit.ps1
+   .\scripts\03-verify.ps1 -WfpCheck
+   .\scripts\08-commit.ps1
    ```
 
 6. **Step 4 — 锁定生产目录 ACL 权限并执行 24 项全回归测试**：
    ```powershell
-   .\13-harden-acl.ps1
+   .\scripts\13-harden-acl.ps1
    ```
 
 </details>
@@ -334,7 +334,7 @@ flowchart TD
   - 内置一键关闭 Windows 11 后台高频遥测服务（`DiagTrack`）脚本，彻底消除微软遥测直连海外 IP 触发防火墙拦截产生的 `connectex 10013` 权限报错。
 - **权限防篡改加固与 24 项端到端全回归测试套件**：
   - 生产目录 `C:\AI-Net-Guard` 权限锁定为 `owner=Administrators`、`Administrators/SYSTEM=Full`、`Users=Read+Execute`，杜绝未提权进程篡改白名单或劫持任务。
-  - 完整回归测试套件 [`12-regression.ps1`](./12-regression.ps1) 覆盖 24 项系统不变量测试，包含实机 10 秒 `pktmon` 端口 53 抓包校验（`phys_attempts=0, escaped=0`）、WFP 状态审计、直连 Socket 漏球探测等。
+  - 完整回归测试套件 [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) 覆盖 24 项系统不变量测试，包含实机 10 秒 `pktmon` 端口 53 抓包校验（`phys_attempts=0, escaped=0`）、WFP 状态审计、直连 Socket 漏球探测等。
 
 ---
 
@@ -347,16 +347,16 @@ flowchart TD
 # 1. 普通用户 / IDE 终端日常只读检查 (免 UAC 管理员提权)
 # ==============================================================================
 cd C:\AI-Net-Guard
-.\07-mode.ps1 -Status                # 秒级输出防御健康状态、活跃 TUN 适配器、DNS 护盾与 ACL 权限
-.\10-sync-node-rule.ps1 -WhatIfOnly  # 预检预览 v2rayN 当前配置中的节点 IP、端口与核心路径
+.\scripts\07-mode.ps1 -Status                # 秒级输出防御健康状态、活跃 TUN 适配器、DNS 护盾与 ACL 权限
+.\scripts\10-sync-node-rule.ps1 -WhatIfOnly  # 预检预览 v2rayN 当前配置中的节点 IP、端口与核心路径
 
 # ==============================================================================
 # 2. 管理员终端维护命令 (PowerShell 以管理员身份运行)
 # ==============================================================================
-.\07-mode.ps1                        # 立即执行一次健康检查与自愈同步 (耗时 < 100ms)
-.\12-regression.ps1                  # 运行完整的 24 项自动化回归测试套件 (包含实机抓包)
-.\13-harden-acl.ps1 -SyncWorkspace   # 从 Git 仓库同步最新核心脚本至生产目录并重新加固 ACL
-.\09-rollback.ps1                    # 完整卸载防护，还原 Windows 原始出厂网络与防火墙基线
+.\scripts\07-mode.ps1                        # 立即执行一次健康检查与自愈同步 (耗时 < 100ms)
+.\scripts\12-regression.ps1                  # 运行完整的 24 项自动化回归测试套件 (包含实机抓包)
+.\scripts\13-harden-acl.ps1 -SyncWorkspace   # 从 Git 仓库同步最新核心脚本至生产目录并重新加固 ACL
+.\scripts\09-rollback.ps1                    # 完整卸载防护，还原 Windows 原始出厂网络与防火墙基线
 ```
 
 ### 💡 针对特定第三方软件放行出站规则
@@ -376,21 +376,21 @@ cd C:\AI-Net-Guard
 
 | 脚本文件 | 功能定位与技术细节说明 |
 | :--- | :--- |
-| [`00-audit.ps1`](./00-audit.ps1) | 系统只读状态快照（网卡列表、静态路由、DNS 设置、IPv6 前缀策略、NTP、防火墙配置文件与客户端配置） |
-| [`01-dns-hardening.ps1`](./01-dns-hardening.ps1) | 设置物理网卡静态 `223.5.5.5`、切断物理 IPv6 绑定、提升 IPv4 前缀优先级、关闭 LLMNR/NetBIOS/SMHNR、设置国内高可用 NTP |
-| [`02-killswitch.ps1`](./02-killswitch.ps1) | 导出 `.wfw` 原始备份与活跃规则，部署 `AI-Guard-*` 静态规则集，开启 `DefaultOutboundAction=Block`，挂载 45 分钟自动回滚安全网 |
-| [`03-verify.ps1`](./03-verify.ps1) | 出站通道与数据路径多维验证（`Proxy=$null` 内核直接探测、`-WfpCheck` WFP 过滤树检查、交互式断网测试） |
-| [`04-wfp-audit.ps1`](./04-wfp-audit.ps1) | 导出系统底层 WFP Filters，审计 Xray 的动态 `permit Xray` / `block DNS` 过滤器，支持 `pktmon` 抓包排查 |
-| [`05-xray-direct-test.ps1`](./05-xray-direct-test.ps1) | 深度验证 Xray 在 `geosite:cn -> direct` 分流规则下的 `ALE_AUTH_CONNECT` 内核放行行为 |
-| [`06-boot-guard.ps1`](./06-boot-guard.ps1) | 跨重启安全网（在重启演练前 `-Arm` 预警，验证自启恢复正常后 `-Remove` 移除） |
-| [`07-mode.ps1`](./07-mode.ps1) | **核心调度中枢**：零常驻事件处理、多内核节点热同步、防冒名穿透规则隔离、SMHNR/LLMNR 自愈、死系统代理清理、免提权 `-Status` 查询 |
-| [`08-commit.ps1`](./08-commit.ps1) | 固化保护配置：校验所有不变量、注销 45 分钟回滚定时器、正式向系统注册 `AI-Guard-Mode-Event` 与 `Fallback` 计划任务 |
-| [`09-rollback.ps1`](./09-rollback.ps1) | 完整复原卸载：还原 Windows 原始出厂防火墙规则集、恢复被隔离的规则、还原 DNS/IPv6/前缀表/NTP，注销全部计划任务 |
-| [`10-sync-node-rule.ps1`](./10-sync-node-rule.ps1) | 手动 / 预检（`-WhatIfOnly`）多内核节点与端口防火墙规则同步工具 |
-| [`11-geo-cn.ps1`](./11-geo-cn.ps1) | 零内存分配 Protobuf 流式解析器：解析 `geoip.dat`，完成 CIDR 归一化聚合为包含 6,516 行的 [`cn-ipv4.txt`](./cn-ipv4.txt) |
-| [`12-regression.ps1`](./12-regression.ps1) | **24 项自动化回归测试套件**：覆盖静态规则、ACL 权限、0 MB 内存特征、TUN 启闭熔断、WFP 注入、10 秒真实 `pktmon` DNS 抓包 |
-| [`13-harden-acl.ps1`](./13-harden-acl.ps1) | 生产目录 ACL 权限防篡改锁定（支持 `-Undo` 权限还原与 `-SyncWorkspace` 源码目录热同步） |
-| [`14-apply-policy.ps1`](./14-apply-policy.ps1) | **声明式策略编排器**：读取 `backup\guard-policy.json` 实现 15 项特性的增量幂等应用 |
+| [`scripts/00-audit.ps1`](./scripts/00-audit.ps1) | 系统只读状态快照（网卡列表、静态路由、DNS 设置、IPv6 前缀策略、NTP、防火墙配置文件与客户端配置） |
+| [`scripts/01-dns-hardening.ps1`](./scripts/01-dns-hardening.ps1) | 设置物理网卡静态 `223.5.5.5`、切断物理 IPv6 绑定、提升 IPv4 前缀优先级、关闭 LLMNR/NetBIOS/SMHNR、设置国内高可用 NTP |
+| [`scripts/02-killswitch.ps1`](./scripts/02-killswitch.ps1) | 导出 `.wfw` 原始备份与活跃规则，部署 `AI-Guard-*` 静态规则集，开启 `DefaultOutboundAction=Block`，挂载 45 分钟自动回滚安全网 |
+| [`scripts/03-verify.ps1`](./scripts/03-verify.ps1) | 出站通道与数据路径多维验证（`Proxy=$null` 内核直接探测、`-WfpCheck` WFP 过滤树检查、交互式断网测试） |
+| [`scripts/04-wfp-audit.ps1`](./scripts/04-wfp-audit.ps1) | 导出系统底层 WFP Filters，审计 Xray 的动态 `permit Xray` / `block DNS` 过滤器，支持 `pktmon` 抓包排查 |
+| [`scripts/05-xray-direct-test.ps1`](./scripts/05-xray-direct-test.ps1) | 深度验证 Xray 在 `geosite:cn -> direct` 分流规则下的 `ALE_AUTH_CONNECT` 内核放行行为 |
+| [`scripts/06-boot-guard.ps1`](./scripts/06-boot-guard.ps1) | 跨重启安全网（在重启演练前 `-Arm` 预警，验证自启恢复正常后 `-Remove` 移除） |
+| [`scripts/07-mode.ps1`](./scripts/07-mode.ps1) | **核心调度中枢**：零常驻事件处理、多内核节点热同步、防冒名穿透规则隔离、SMHNR/LLMNR 自愈、死系统代理清理、免提权 `-Status` 查询 |
+| [`scripts/08-commit.ps1`](./scripts/08-commit.ps1) | 固化保护配置：校验所有不变量、注销 45 分钟回滚定时器、正式向系统注册 `AI-Guard-Mode-Event` 与 `Fallback` 计划任务 |
+| [`scripts/09-rollback.ps1`](./scripts/09-rollback.ps1) | 完整复原卸载：还原 Windows 原始出厂防火墙规则集、恢复被隔离的规则、还原 DNS/IPv6/前缀表/NTP，注销全部计划任务 |
+| [`scripts/10-sync-node-rule.ps1`](./scripts/10-sync-node-rule.ps1) | 手动 / 预检（`-WhatIfOnly`）多内核节点与端口防火墙规则同步工具 |
+| [`scripts/11-geo-cn.ps1`](./scripts/11-geo-cn.ps1) | 零内存分配 Protobuf 流式解析器：解析 `geoip.dat`，完成 CIDR 归一化聚合为包含 6,516 行的 [`cn-ipv4.txt`](./cn-ipv4.txt) |
+| [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) | **24 项自动化回归测试套件**：覆盖静态规则、ACL 权限、0 MB 内存特征、TUN 启闭熔断、WFP 注入、10 秒真实 `pktmon` DNS 抓包 |
+| [`scripts/13-harden-acl.ps1`](./scripts/13-harden-acl.ps1) | 生产目录 ACL 权限防篡改锁定（支持 `-Undo` 权限还原与 `-SyncWorkspace` 源码目录热同步） |
+| [`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) | **声明式策略编排器**：读取 `backup\guard-policy.json` 实现 15 项特性的增量幂等应用 |
 | [`Emergency-Rescue.bat`](./Emergency-Rescue.bat) | 纯原生、无依赖、自带提权的离线一键网络应急脱困批处理脚本 |
 | [`scripts/align-xray-egress.bat`](./scripts/align-xray-egress.bat) | 自动注入物理网卡高优先级 `/32` 主机路由，消除双核架构下的二跳中继开销 |
 | [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | 一键关闭 Windows 11 遥测服务与遥测组策略，杜绝海外遥测 IP 拦截产生的 `connectex 10013` 报错 |

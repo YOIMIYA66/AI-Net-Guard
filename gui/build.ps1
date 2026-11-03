@@ -36,12 +36,18 @@ function Write-BuildStep([string]$msg) { Write-Host ('[BUILD] ' + $msg) -Foregro
 
 # ------------------------------------------------------------------ 1. Script hygiene & AST syntax check
 Write-BuildStep 'verifying pure-ASCII encoding and AST syntax across PowerShell scripts'
-$rootScripts = @(Get-ChildItem -Path $RepoRoot -Filter '*.ps1' -File | Sort-Object Name)
-if ($rootScripts.Count -lt 16) {
-    throw ('Expected at least 16 root PowerShell scripts, found ' + $rootScripts.Count)
+$scriptsDir = Join-Path $RepoRoot 'scripts'
+$allScripts = @()
+if (Test-Path -LiteralPath $scriptsDir) {
+    $allScripts += @(Get-ChildItem -Path $scriptsDir -Filter '*.ps1' -File)
+}
+$allScripts += @(Get-ChildItem -Path $RepoRoot -Filter '*.ps1' -File)
+$allScripts = @($allScripts | Sort-Object FullName -Unique)
+if ($allScripts.Count -lt 16) {
+    throw ('Expected at least 16 PowerShell scripts, found ' + $allScripts.Count)
 }
 
-foreach ($sf in ($rootScripts + @(Get-Item -LiteralPath $PSCommandPath))) {
+foreach ($sf in ($allScripts + @(Get-Item -LiteralPath $PSCommandPath))) {
     $rawBytes = [System.IO.File]::ReadAllBytes($sf.FullName)
     $badBytes = @($rawBytes | Where-Object { $_ -gt 127 })
     if ($badBytes.Count -gt 0) {
@@ -53,7 +59,7 @@ foreach ($sf in ($rootScripts + @(Get-Item -LiteralPath $PSCommandPath))) {
         throw ('Syntax error in ' + $sf.Name + ': ' + $errs[0].Message)
     }
 }
-Write-Host ('        checked ' + ($rootScripts.Count + 1) + ' scripts: 100% pure ASCII, 0 parse errors') -ForegroundColor Green
+Write-Host ('        checked ' + ($allScripts.Count + 1) + ' scripts: 100% pure ASCII, 0 parse errors') -ForegroundColor Green
 
 # ------------------------------------------------------------------ 2. Generate vector multi-size app.ico
 Write-BuildStep 'generating vector shield icon (gui\obj\app.ico)'
@@ -178,17 +184,16 @@ if (Test-Path -LiteralPath $payloadZip) {
 }
 
 $payloadFiles = @()
-$payloadFiles += $rootScripts
-foreach ($extraName in @('cn-ipv4.txt', 'ai-domains.txt', 'LICENSE', 'README.md', 'CURRENT-IMPLEMENTATION.md', 'Emergency-Rescue.bat')) {
+foreach ($extraName in @('cn-ipv4.txt', 'ai-domains.txt', 'LICENSE', 'README.md', 'README_EN.md', 'CURRENT-IMPLEMENTATION.md', 'Emergency-Rescue.bat')) {
     $ep = Join-Path $RepoRoot $extraName
-    if (-not (Test-Path -LiteralPath $ep)) {
-        throw ('Missing required payload file: ' + $ep)
+    if (Test-Path -LiteralPath $ep) {
+        $payloadFiles += (Get-Item -LiteralPath $ep)
     }
-    $payloadFiles += (Get-Item -LiteralPath $ep)
 }
 
 $zipFs = New-Object System.IO.FileStream($payloadZip, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
 $zip = New-Object System.IO.Compression.ZipArchive($zipFs, [System.IO.Compression.ZipArchiveMode]::Create, $false)
+$packedCount = 0
 try {
     foreach ($pf in $payloadFiles) {
         [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
@@ -197,6 +202,7 @@ try {
             $pf.Name,
             [System.IO.Compression.CompressionLevel]::Optimal
         )
+        $packedCount++
     }
     $scriptsDir = Join-Path $RepoRoot 'scripts'
     if (Test-Path -LiteralPath $scriptsDir) {
@@ -208,6 +214,16 @@ try {
                 ('scripts/' + $sf.Name),
                 [System.IO.Compression.CompressionLevel]::Optimal
             )
+            $packedCount++
+            if ($sf.Name -eq '07-mode.ps1') {
+                [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                    $zip,
+                    $sf.FullName,
+                    '07-mode.ps1',
+                    [System.IO.Compression.CompressionLevel]::Optimal
+                )
+                $packedCount++
+            }
         }
     }
 }
@@ -216,7 +232,7 @@ finally {
     $zipFs.Dispose()
 }
 $zipSizeKb = [math]::Round(((Get-Item -LiteralPath $payloadZip).Length / 1KB), 1)
-Write-Host ('        packed ' + $payloadFiles.Count + ' files -> payload.zip (' + $zipSizeKb + ' KB)') -ForegroundColor Green
+Write-Host ('        packed ' + $packedCount + ' files -> payload.zip (' + $zipSizeKb + ' KB)') -ForegroundColor Green
 
 # ------------------------------------------------------------------ 4. Compile Release single-file AI-Net-Guard.exe
 Write-BuildStep 'compiling Windows-native WPF executable (net48, Release)'

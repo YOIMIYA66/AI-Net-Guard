@@ -824,7 +824,14 @@ namespace AiNetGuard.Gui
             }));
         }
 
-        private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
+                private static string GetScriptPath(string scriptName)
+        {
+            string sub = Path.Combine(DefaultInstallRoot, "scripts", scriptName);
+            if (File.Exists(sub)) return sub;
+            return Path.Combine(DefaultInstallRoot, scriptName);
+        }
+
+private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
         {
             if (_isBusy) return;
             if (!EnsureAdminOrPromptElevate()) return;
@@ -859,7 +866,7 @@ namespace AiNetGuard.Gui
                     _draftPolicy.SaveToFile(Path.Combine(DefaultInstallRoot, @"backup\guard-policy.json"));
                 });
 
-                string applyScript = Path.Combine(DefaultInstallRoot, "14-apply-policy.ps1");
+                string applyScript = GetScriptPath("14-apply-policy.ps1");
                 var args = new List<string> { "-Root", DefaultInstallRoot };
                 if (!string.IsNullOrWhiteSpace(v2Root))
                 {
@@ -916,7 +923,7 @@ namespace AiNetGuard.Gui
             {
                 string v2Root = (V2rayNPathBox.Text ?? "").Trim();
                 await Task.Run(() => PayloadAndRunnerService.ExtractEmbeddedPayload(DefaultInstallRoot, null));
-                string applyScript = Path.Combine(DefaultInstallRoot, "14-apply-policy.ps1");
+                string applyScript = GetScriptPath("14-apply-policy.ps1");
                 var args = new List<string> { "-Root", DefaultInstallRoot, "-SyncNodeOnly" };
                 if (!string.IsNullOrWhiteSpace(v2Root))
                 {
@@ -948,7 +955,7 @@ namespace AiNetGuard.Gui
             try
             {
                 await Task.Run(() => PayloadAndRunnerService.ExtractEmbeddedPayload(DefaultInstallRoot, null));
-                string applyScript = Path.Combine(DefaultInstallRoot, "14-apply-policy.ps1");
+                string applyScript = GetScriptPath("14-apply-policy.ps1");
                 var args = new List<string> { "-Root", DefaultInstallRoot, "-ClearSystemProxy" };
                 await PayloadAndRunnerService.RunPowerShellScriptAsync(applyScript, args, AppendLog);
                 RefreshDashboard(reloadPolicy: false);
@@ -976,7 +983,7 @@ namespace AiNetGuard.Gui
             {
                 string v2Root = (V2rayNPathBox.Text ?? "").Trim();
                 await Task.Run(() => PayloadAndRunnerService.ExtractEmbeddedPayload(DefaultInstallRoot, null));
-                string regScript = Path.Combine(DefaultInstallRoot, "12-regression.ps1");
+                string regScript = GetScriptPath("12-regression.ps1");
                 var args = new List<string> { "-Root", DefaultInstallRoot };
                 if (!string.IsNullOrWhiteSpace(v2Root))
                 {
@@ -1032,11 +1039,7 @@ namespace AiNetGuard.Gui
             try
             {
                 await Task.Run(() => PayloadAndRunnerService.ExtractEmbeddedPayload(DefaultInstallRoot, null));
-                string leakScript = Path.Combine(DefaultInstallRoot, "scripts", "verify-leak-test.ps1");
-                if (!File.Exists(leakScript))
-                {
-                    leakScript = Path.Combine(DefaultInstallRoot, "verify-leak-test.ps1");
-                }
+                string leakScript = GetScriptPath("verify-leak-test.ps1");
                 var args = new List<string>();
 
                 int code = await PayloadAndRunnerService.RunPowerShellScriptAsync(leakScript, args, AppendLog);
@@ -1116,7 +1119,7 @@ namespace AiNetGuard.Gui
             try
             {
                 await Task.Run(() => PayloadAndRunnerService.ExtractEmbeddedPayload(DefaultInstallRoot, null));
-                string rbScript = Path.Combine(DefaultInstallRoot, "09-rollback.ps1");
+                string rbScript = GetScriptPath("09-rollback.ps1");
                 int code = await PayloadAndRunnerService.RunPowerShellScriptAsync(
                     rbScript,
                     new[] { "-Root", DefaultInstallRoot },

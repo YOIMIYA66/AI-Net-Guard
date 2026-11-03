@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.0 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
+    AI-Net-Guard v5.7.1 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
 
 .DESCRIPTION
     Verifies the v5.4 static guard end-to-end. Read-only, except for a temporary
@@ -248,7 +248,7 @@ function Get-ConfiguredNodeInfo {
     }
 }
 
-W ('=== AI-Net-Guard v5.7.0 regression ' + (Get-Date -Format 'o') + ' ===')
+W ('=== AI-Net-Guard v5.7.1 regression ' + (Get-Date -Format 'o') + ' ===')
 function Get-ActiveIpPhysicalNics {
     @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
         $_.OperationalStatus -eq 'Up' -and
@@ -739,7 +739,7 @@ New-Item -ItemType Directory -Path (Split-Path $badGeo) -Force | Out-Null
 Remove-Item -LiteralPath $tmpOut -Force -ErrorAction SilentlyContinue
 $code = 0
 try {
-    & (Join-Path $Root '11-geo-cn.ps1') -Root $Root -GeoFile $badGeo -OutFile $tmpOut -Force -Quiet 2>$null | Out-Null
+    & (if (Test-Path (Join-Path (Join-Path $Root 'scripts') '11-geo-cn.ps1')) { Join-Path (Join-Path $Root 'scripts') '11-geo-cn.ps1' } else { Join-Path $Root '11-geo-cn.ps1' }) -Root $Root -GeoFile $badGeo -OutFile $tmpOut -Force -Quiet 2>$null | Out-Null
     $code = $LASTEXITCODE
 }
 catch { $code = 99 }

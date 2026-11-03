@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.0 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.7.1 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 15
@@ -45,6 +45,12 @@ $principal = New-Object Security.Principal.WindowsPrincipal($id)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host 'ERROR: run 14-apply-policy.ps1 in an elevated session (Administrator).' -ForegroundColor Red
     exit 1
+}
+
+function Get-PolicyScriptPath([string]$name) {
+    $sp = Join-Path (Join-Path $Root 'scripts') $name
+    if (Test-Path -LiteralPath $sp) { return $sp }
+    return (Join-Path $Root $name)
 }
 
 function Write-Step([string]$msg) { Write-Host ('[+] ' + $msg) -ForegroundColor Cyan }
@@ -266,7 +272,7 @@ if (-not $psExe -or -not (Test-Path -LiteralPath $psExe)) {
 
 if ($SyncNodeOnly) {
     Write-Step 'forcing immediate proxy node & port sync'
-    & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root '10-sync-node-rule.ps1') -Root $Root -V2rayNRoot $V2rayNRoot
+    & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '10-sync-node-rule.ps1') -Root $Root -V2rayNRoot $V2rayNRoot
     exit $LASTEXITCODE
 }
 
@@ -352,7 +358,7 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.7.0 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.7.1 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
 
 if ($isFreshInstall) {
@@ -386,7 +392,7 @@ if ($isFreshInstall) {
     # Step 1: Capture pristine DNS baseline & apply selected DNS/IPv6/NTP switches
     if (-not $hasDnsBaseline) {
         Write-Step 'step 1/4: capturing DNS/IPv6/NTP baseline and applying DNS policy'
-        $dnsArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root '01-dns-hardening.ps1'),
+        $dnsArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Get-PolicyScriptPath '01-dns-hardening.ps1'),
             '-Root', $Root, '-TunName', $TunName, '-DnsServer', $targetDns, '-Force')
         if (-not $policy.DisablePhysicalIpv6) { $dnsArgs += '-SkipIpv6Disable' }
         if (-not $policy.PreferIpv4Prefix)    { $dnsArgs += '-SkipIpv4Prefer' }
@@ -420,7 +426,7 @@ if ($isFreshInstall) {
     # Step 2: Capture pristine Firewall baseline & install AI-Guard rules (with 30-min rollback safety net)
     if (-not $hasFwBaseline) {
         Write-Step 'step 2/4: capturing Firewall baseline and installing kernel WFP guard rules'
-        $ksArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root '02-killswitch.ps1'),
+        $ksArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Get-PolicyScriptPath '02-killswitch.ps1'),
             '-Root', $Root, '-V2rayNRoot', $V2rayNRoot, '-TunName', $TunName, '-DnsServer', $targetDns,
             '-RollbackMinutes', '30', '-SkipDnsCheck', '-AllowRemainingRules', '-Force')
         if (-not $policy.AllowCnDirect)        { $ksArgs += '-StrictKillSwitchOnly' }
@@ -470,7 +476,7 @@ else {
             Where-Object { ($knownTuns -contains $_.Name) -or $_.InterfaceDescription -match '(?i)Wintun|sing-tun|Mihomo' } |
             Select-Object -First 1
         if ($tunAdapter) { $TunName = $tunAdapter.Name }
-        $ksArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root '02-killswitch.ps1'),
+        $ksArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Get-PolicyScriptPath '02-killswitch.ps1'),
             '-Root', $Root, '-V2rayNRoot', $V2rayNRoot, '-TunName', $TunName, '-DnsServer', $targetDns,
             '-SkipRollbackTask', '-SkipDnsCheck', '-AllowRemainingRules', '-Force')
         if (-not $policy.AllowCnDirect)        { $ksArgs += '-StrictKillSwitchOnly' }
@@ -795,7 +801,7 @@ else {
 
 # ------------------------------------------------------------------ Common Finalization (Mode Pass, Tasks, ACL, DNS Flush)
 Write-Step 'synchronizing proxy node & multi-core companion firewall rules'
-$syncNodeScript = Join-Path $Root '10-sync-node-rule.ps1'
+$syncNodeScript = Get-PolicyScriptPath '10-sync-node-rule.ps1'
 if (Test-Path -LiteralPath $syncNodeScript) {
     try {
         & $psExe -NoProfile -ExecutionPolicy Bypass -File $syncNodeScript -Root $Root -V2rayNRoot $V2rayNRoot
@@ -807,10 +813,10 @@ if (Test-Path -LiteralPath $syncNodeScript) {
 }
 
 Write-Step 'synchronizing background monitor tasks & active guard state'
-& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root '07-mode.ps1') -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns -Quiet
+& $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns -Quiet
 
 if ($policy.ZeroResidentMonitor) {
-    $taskArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root '07-mode.ps1'),
+    $taskArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Get-PolicyScriptPath '07-mode.ps1'),
         '-InstallTasks', '-Root', $Root, '-V2rayNRoot', $V2rayNRoot, '-DnsServer', $targetDns, '-Quiet')
     if (-not $policy.AutoNodeSync)         { $taskArgs += '-DisableAutoNodeSync' }
     if (-not $policy.QuarantineRogueAllow) { $taskArgs += '-SkipQuarantineAllowRules' }
@@ -819,14 +825,14 @@ if ($policy.ZeroResidentMonitor) {
     Write-Ok 'ZeroResidentMonitor = ON (AI-Guard-Mode-Event + Fallback tasks registered, 0 MB idle RAM)'
 }
 else {
-    & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root '07-mode.ps1') -RemoveTasks -Root $Root -Quiet
+    & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -RemoveTasks -Root $Root -Quiet
     Write-Ok 'ZeroResidentMonitor = OFF (background tasks unregistered)'
 }
 
 try { Clear-DnsClientCache -ErrorAction SilentlyContinue } catch { }
 ipconfig.exe /flushdns | Out-Null
 
-$aclScript = Join-Path $Root '13-harden-acl.ps1'
+$aclScript = Get-PolicyScriptPath '13-harden-acl.ps1'
 if (Test-Path -LiteralPath $aclScript) {
     if ($policy.HardenInstallAcl) {
         & $psExe -NoProfile -ExecutionPolicy Bypass -File $aclScript -Root $Root -SkipVerification -SkipRegression | Out-Null
@@ -838,7 +844,7 @@ if (Test-Path -LiteralPath $aclScript) {
     }
 }
 
-& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root '07-mode.ps1') -Status -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns
+& $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Status -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns
 Write-Host ''
-Write-Host '[SUCCESS] AI-Net-Guard v5.7.0 configuration applied successfully.' -ForegroundColor Green
+Write-Host '[SUCCESS] AI-Net-Guard v5.7.1 configuration applied successfully.' -ForegroundColor Green
 exit 0

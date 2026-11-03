@@ -27,7 +27,9 @@ if exist "xray.exe.orig" (
 
 echo [3/3] Restoring firewall rules...
 netsh advfirewall firewall delete rule name="AI-Guard-Allow-TUN-Xray" >nul 2>&1
-if exist "C:\AI-Net-Guard\07-mode.ps1" (
+if exist "C:\AI-Net-Guard\scripts\07-mode.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "C:\AI-Net-Guard\scripts\07-mode.ps1" -Root "C:\AI-Net-Guard" -V2rayNRoot "D:\v2rayN-windows-64-desktop\v2rayN-windows-64" -Quiet
+) else if exist "C:\AI-Net-Guard\07-mode.ps1" (
     powershell -NoProfile -ExecutionPolicy Bypass -File "C:\AI-Net-Guard\07-mode.ps1" -Root "C:\AI-Net-Guard" -V2rayNRoot "D:\v2rayN-windows-64-desktop\v2rayN-windows-64" -Quiet
 )
 

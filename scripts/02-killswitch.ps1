@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.0 - step 2: static default-deny firewall + CN & TUN allowlist.
+    AI-Net-Guard v5.7.1 - step 2: static default-deny firewall + CN & TUN allowlist.
 
 .DESCRIPTION
     Configures Windows Defender Firewall for the v5.1 zero-switch static guard:
@@ -334,7 +334,7 @@ Write-Host ('    allowed node ports/tcp: ' + ($allPorts -join ', ') + $(if ($Nod
 $cnPrefixes = @()
 if (-not $StrictKillSwitchOnly) {
     $cnList = Join-Path $Root 'cn-ipv4.txt'
-    $geoScript = Join-Path $Root '11-geo-cn.ps1'
+    $geoScript = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '11-geo-cn.ps1')) { Join-Path (Join-Path $Root 'scripts') '11-geo-cn.ps1' } else { Join-Path $Root '11-geo-cn.ps1' }
     if ((-not (Test-Path -LiteralPath $cnList)) -and (Test-Path -LiteralPath $geoScript)) {
         Write-Step 'generating cn-ipv4.txt from v2rayN geoip'
         & $geoScript -Root $Root -V2rayNRoot $V2rayNRoot -OutFile $cnList
@@ -354,7 +354,7 @@ if (-not $StrictKillSwitchOnly) {
 if (-not $SkipRollbackTask) {
     Write-Step ('registering auto-rollback task (fires in ' + $RollbackMinutes + ' min)')
 
-    $rollback = Join-Path $Root '09-rollback.ps1'
+    $rollback = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '09-rollback.ps1')) { Join-Path (Join-Path $Root 'scripts') '09-rollback.ps1' } else { Join-Path $Root '09-rollback.ps1' }
     if (-not (Test-Path -LiteralPath $rollback)) { throw ('missing rollback script: ' + $rollback) }
 
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' + $rollback + '" -Auto -Root "' + $Root + '"')

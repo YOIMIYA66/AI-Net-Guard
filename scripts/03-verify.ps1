@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.0 - step 3: comprehensive verification (run as Administrator).
+    AI-Net-Guard v5.7.1 - step 3: comprehensive verification (run as Administrator).
 
 .DESCRIPTION
     Verifies both static configuration invariants and live network behaviour for
-    AI-Net-Guard v5.7.0 (works in both TUN-ON and TUN-OFF states, multi-core aware,
+    AI-Net-Guard v5.7.1 (works in both TUN-ON and TUN-OFF states, multi-core aware,
     bypasses HKCU HTTP proxy to test the real kernel WFP/TUN datapath, and
     auto-cleans temporary WFP XML dumps unless -KeepCaptures is passed).
 
@@ -193,7 +193,7 @@ function Get-FirewallRuleStates {
 
 Assert-Admin
 Write-Host ''
-Write-Host 'AI-Net-Guard v5.7.0 verification' -ForegroundColor Cyan
+Write-Host 'AI-Net-Guard v5.7.1 verification' -ForegroundColor Cyan
 Write-Host ''
 
 $ruleStates = Get-FirewallRuleStates

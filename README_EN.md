@@ -16,7 +16,7 @@
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Windows-10%20%7C%2011%2024H2-0078d4?logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Resident%20RAM-0%20MB%20(Zero--Daemon)-059669?logo=speedtest&logoColor=white" alt="RAM"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard/releases"><img src="https://img.shields.io/badge/Standalone%20GUI-~267%20KB-8b5cf6?logo=dotnet&logoColor=white" alt="GUI"></a>
-    <a href="./12-regression.ps1"><img src="https://img.shields.io/badge/Regression-23%2F23%20Passed-22c55e" alt="Tests"></a>
+    <a href="./scripts/12-regression.ps1"><img src="https://img.shields.io/badge/Regression-23%2F23%20Passed-22c55e" alt="Tests"></a>
   </p>
 </p>
 
@@ -261,29 +261,29 @@ Provides an integrated 45-minute automatic rollback safety net:
 
 2. **Start Proxy**: Launch `v2rayN` with TUN enabled, then execute pre-flight audits:
    ```powershell
-   .\00-audit.ps1
-   .\04-wfp-audit.ps1
+   .\scripts\00-audit.ps1
+   .\scripts\04-wfp-audit.ps1
    ```
 
 3. **Step 1 — Baseline Capture & DNS/IPv6/SMHNR Hardening**:
    ```powershell
-   .\01-dns-hardening.ps1
+   .\scripts\01-dns-hardening.ps1
    ```
 
 4. **Step 2 — Install Static Firewall & Arm 45-Minute Rollback Timer**:
    ```powershell
-   .\02-killswitch.ps1 -RollbackMinutes 45
+   .\scripts\02-killswitch.ps1 -RollbackMinutes 45
    ```
 
 5. **Step 3 — Verify Datapath & Commit Protection** (cancels rollback timer & registers event tasks):
    ```powershell
-   .\03-verify.ps1 -WfpCheck
-   .\08-commit.ps1
+   .\scripts\03-verify.ps1 -WfpCheck
+   .\scripts\08-commit.ps1
    ```
 
 6. **Step 4 — Lock Directory ACLs & Run 24-Check Automated Regression Suite**:
    ```powershell
-   .\13-harden-acl.ps1
+   .\scripts\13-harden-acl.ps1
    ```
 
 </details>
@@ -338,16 +338,16 @@ All 15 policies can be toggled visually in the GUI or orchestrated programmatica
 # 1. Non-Elevated Terminal Dashboard (Runs without UAC prompt)
 # ==============================================================================
 cd C:\AI-Net-Guard
-.\07-mode.ps1 -Status                # Instant read-only status: TUN adapter, core, DNS shield, ACL
-.\10-sync-node-rule.ps1 -WhatIfOnly  # Preview parsed node IP/ports from v2rayN config.json
+.\scripts\07-mode.ps1 -Status                # Instant read-only status: TUN adapter, core, DNS shield, ACL
+.\scripts\10-sync-node-rule.ps1 -WhatIfOnly  # Preview parsed node IP/ports from v2rayN config.json
 
 # ==============================================================================
 # 2. Elevated Administration (PowerShell Run as Administrator)
 # ==============================================================================
-.\07-mode.ps1                        # Run immediate health check and auto-sync (< 100ms)
-.\12-regression.ps1                  # Run complete 24-check automated regression suite
-.\13-harden-acl.ps1 -SyncWorkspace   # Pull updates from git clone directory & re-lock ACLs
-.\09-rollback.ps1                    # Cleanly uninstall & restore factory Windows baseline
+.\scripts\07-mode.ps1                        # Run immediate health check and auto-sync (< 100ms)
+.\scripts\12-regression.ps1                  # Run complete 24-check automated regression suite
+.\scripts\13-harden-acl.ps1 -SyncWorkspace   # Pull updates from git clone directory & re-lock ACLs
+.\scripts\09-rollback.ps1                    # Cleanly uninstall & restore factory Windows baseline
 ```
 
 ### 💡 Authorizing Specific Third-Party Outbound Rules
@@ -367,21 +367,21 @@ To whitelist specific developer tools or custom daemons from anti-drift quaranti
 
 | Script / Component | Role & Technical Description |
 | :--- | :--- |
-| [`00-audit.ps1`](./00-audit.ps1) | Read-only audit of NICs, routes, DNS, IPv6 prefix table, NTP, firewall profiles, and client configurations |
-| [`01-dns-hardening.ps1`](./01-dns-hardening.ps1) | Sets static `223.5.5.5` DNS, unbinds physical IPv6, elevates IPv4 prefix precedence, disables LLMNR/NetBIOS/SMHNR |
-| [`02-killswitch.ps1`](./02-killswitch.ps1) | Backs up `.wfw`, installs `AI-Guard-*` static ruleset, sets `DefaultOutboundAction=Block`, arms 45-min rollback safety net |
-| [`03-verify.ps1`](./03-verify.ps1) | Datapath verification: direct kernel probes (`Proxy=$null`), `-WfpCheck` filter inspection, interactive disconnect tests |
-| [`04-wfp-audit.ps1`](./04-wfp-audit.ps1) | Exports WFP filter tree to audit Xray's `permit Xray` / `block DNS` dynamic filters + `pktmon` capture support |
-| [`05-xray-direct-test.ps1`](./05-xray-direct-test.ps1) | Observational proof of Xray's `ALE_AUTH_CONNECT` kernel permit under `geosite:cn -> direct` rules |
-| [`06-boot-guard.ps1`](./06-boot-guard.ps1) | Cross-reboot safety net (armed before reboot tests, removed after verifying persistence) |
-| [`07-mode.ps1`](./07-mode.ps1) | **Core Controller**: Zero-resident event tasks, node sync, rogue allow quarantine, SMHNR heal, `-Status` dashboard |
-| [`08-commit.ps1`](./08-commit.ps1) | Verifies invariants, cancels 45-minute rollback timer, and registers zero-resident event tasks |
-| [`09-rollback.ps1`](./09-rollback.ps1) | Complete baseline restore: recovers firewall, isolated rules, DNS, IPv6, prefix policy, NTP, and cleans tasks |
-| [`10-sync-node-rule.ps1`](./10-sync-node-rule.ps1) | Manual / preview (`-WhatIfOnly`) multi-core node and port firewall synchronizer |
-| [`11-geo-cn.ps1`](./11-geo-cn.ps1) | Zero-allocation protobuf parser: normalizes and aggregates GeoIP into [`cn-ipv4.txt`](./cn-ipv4.txt) (6,516 prefixes) |
-| [`12-regression.ps1`](./12-regression.ps1) | **24-Check Automated Regression Suite**: static state, ACL lock, 0 MB memory, fail-closed tests, 10s `pktmon` capture |
-| [`13-harden-acl.ps1`](./13-harden-acl.ps1) | Locks `C:\AI-Net-Guard` DACL to Administrators write-only (`-Undo` and `-SyncWorkspace` supported) |
-| [`14-apply-policy.ps1`](./14-apply-policy.ps1) | Declarative policy orchestrator: applies 15 feature switches idempotently from `backup\guard-policy.json` |
+| [`scripts/00-audit.ps1`](./scripts/00-audit.ps1) | Read-only audit of NICs, routes, DNS, IPv6 prefix table, NTP, firewall profiles, and client configurations |
+| [`scripts/01-dns-hardening.ps1`](./scripts/01-dns-hardening.ps1) | Sets static `223.5.5.5` DNS, unbinds physical IPv6, elevates IPv4 prefix precedence, disables LLMNR/NetBIOS/SMHNR |
+| [`scripts/02-killswitch.ps1`](./scripts/02-killswitch.ps1) | Backs up `.wfw`, installs `AI-Guard-*` static ruleset, sets `DefaultOutboundAction=Block`, arms 45-min rollback safety net |
+| [`scripts/03-verify.ps1`](./scripts/03-verify.ps1) | Datapath verification: direct kernel probes (`Proxy=$null`), `-WfpCheck` filter inspection, interactive disconnect tests |
+| [`scripts/04-wfp-audit.ps1`](./scripts/04-wfp-audit.ps1) | Exports WFP filter tree to audit Xray's `permit Xray` / `block DNS` dynamic filters + `pktmon` capture support |
+| [`scripts/05-xray-direct-test.ps1`](./scripts/05-xray-direct-test.ps1) | Observational proof of Xray's `ALE_AUTH_CONNECT` kernel permit under `geosite:cn -> direct` rules |
+| [`scripts/06-boot-guard.ps1`](./scripts/06-boot-guard.ps1) | Cross-reboot safety net (armed before reboot tests, removed after verifying persistence) |
+| [`scripts/07-mode.ps1`](./scripts/07-mode.ps1) | **Core Controller**: Zero-resident event tasks, node sync, rogue allow quarantine, SMHNR heal, `-Status` dashboard |
+| [`scripts/08-commit.ps1`](./scripts/08-commit.ps1) | Verifies invariants, cancels 45-minute rollback timer, and registers zero-resident event tasks |
+| [`scripts/09-rollback.ps1`](./scripts/09-rollback.ps1) | Complete baseline restore: recovers firewall, isolated rules, DNS, IPv6, prefix policy, NTP, and cleans tasks |
+| [`scripts/10-sync-node-rule.ps1`](./scripts/10-sync-node-rule.ps1) | Manual / preview (`-WhatIfOnly`) multi-core node and port firewall synchronizer |
+| [`scripts/11-geo-cn.ps1`](./scripts/11-geo-cn.ps1) | Zero-allocation protobuf parser: normalizes and aggregates GeoIP into [`cn-ipv4.txt`](./cn-ipv4.txt) (6,516 prefixes) |
+| [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) | **24-Check Automated Regression Suite**: static state, ACL lock, 0 MB memory, fail-closed tests, 10s `pktmon` capture |
+| [`scripts/13-harden-acl.ps1`](./scripts/13-harden-acl.ps1) | Locks `C:\AI-Net-Guard` DACL to Administrators write-only (`-Undo` and `-SyncWorkspace` supported) |
+| [`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) | Declarative policy orchestrator: applies 15 feature switches idempotently from `backup\guard-policy.json` |
 | [`Emergency-Rescue.bat`](./Emergency-Rescue.bat) | Zero-dependency, pure-batch offline emergency rescue utility with automatic self-elevation |
 | [`scripts/align-xray-egress.bat`](./scripts/align-xray-egress.bat) | Injects `/32` physical host route to eliminate dual-core double-hop relay overhead |
 | [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | Disables Windows 11 telemetry services (`DiagTrack`) to prevent foreign IP `connectex 10013` errors |

@@ -154,7 +154,7 @@ namespace AiNetGuard.Gui.Services
                 InstallRoot = installRoot
             };
 
-            snap.InstallScriptsPresent = File.Exists(Path.Combine(installRoot, "07-mode.ps1"));
+            snap.InstallScriptsPresent = File.Exists(Path.Combine(installRoot, "07-mode.ps1")) || File.Exists(Path.Combine(installRoot, "scripts", "07-mode.ps1"));
             snap.BaselineExists = File.Exists(Path.Combine(installRoot, @"backup\baseline.json"));
 
             // 1. Discover v2rayN

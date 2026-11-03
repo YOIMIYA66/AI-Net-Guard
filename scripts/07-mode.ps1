@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.0 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
+    AI-Net-Guard v5.7.1 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
 
 .DESCRIPTION
     The guard itself is 100% STATIC in Windows kernel WFP (BFE / tcpip.sys):
@@ -958,7 +958,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>AI-Net-Guard v5.7.0 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
+    <Description>AI-Net-Guard v5.7.1 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
@@ -1002,7 +1002,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 }
 
 function Install-WatchdogTasks {
-    $modePath = Join-Path $Root '07-mode.ps1'
+    $modePath = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '07-mode.ps1')) { Join-Path (Join-Path $Root 'scripts') '07-mode.ps1' } else { Join-Path $Root '07-mode.ps1' }
     if (-not (Test-Path -LiteralPath $modePath)) { throw ('missing: ' + $modePath) }
 
     Stop-WatchdogTasksAndProcesses
@@ -1014,7 +1014,7 @@ function Install-WatchdogTasks {
     if ($SkipStaleProxyHeal) { $extraFlags += ' -SkipStaleProxyHeal' }
 
     if ($UseResidentWatchdog) {
-        $watchdogPath = Join-Path $Root 'watchdog.ps1'
+        $watchdogPath = if (Test-Path (Join-Path (Join-Path $Root 'scripts') 'watchdog.ps1')) { Join-Path (Join-Path $Root 'scripts') 'watchdog.ps1' } else { Join-Path $Root 'watchdog.ps1' }
         if (-not (Test-Path -LiteralPath $watchdogPath)) { throw ('missing: ' + $watchdogPath) }
         $wAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
             -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $watchdogPath + '" -Root "' + $Root + '" -TunName "' + $TunName + '"')
@@ -1061,7 +1061,7 @@ function Show-Status {
     else { 'stopped' }
 
     Write-Host ''
-    Write-Host '=== AI-Net-Guard v5.7.0 Status (read-only) ===' -ForegroundColor Cyan
+    Write-Host '=== AI-Net-Guard v5.7.1 Status (read-only) ===' -ForegroundColor Cyan
     Write-Host ('TUN : ' + $tunLabel + '   core : ' + $coreLabel)
     if (Test-Path -LiteralPath $policyFile) {
         Write-Host ('  policy preset     : ' + $guardPolicy.Preset + ' (guard-policy.json active)') -ForegroundColor Cyan
@@ -1198,7 +1198,7 @@ function Show-Status {
 }
 
 function Invoke-UpgradeV54 {
-    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.7.0 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
+    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.7.1 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
 
     # 1. Backfill new rollback fields into existing DNS baseline JSON without altering original values
     $bf = Join-Path $Root 'backup\baseline.json'
@@ -1329,7 +1329,7 @@ if ($OnNetworkEvent) {
 # ---------------------------------------------------------------- geo refresh (fast timestamp check)
 $geoFile = Join-Path $V2rayNRoot 'bin\geoip-only-cn-private.dat'
 if (-not (Test-Path -LiteralPath $geoFile)) { $geoFile = Join-Path $V2rayNRoot 'bin\geoip.dat' }
-$refresher = Join-Path $Root '11-geo-cn.ps1'
+$refresher = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '11-geo-cn.ps1')) { Join-Path (Join-Path $Root 'scripts') '11-geo-cn.ps1' } else { Join-Path $Root '11-geo-cn.ps1' }
 if ((Test-Path -LiteralPath $refresher) -and
     ((-not (Test-Path -LiteralPath $cnList)) -or ((Test-Path -LiteralPath $geoFile) -and ((Get-Item -LiteralPath $geoFile).LastWriteTimeUtc -gt (Get-Item -LiteralPath $cnList).LastWriteTimeUtc)))) {
     try { & $refresher -Root $Root -V2rayNRoot $V2rayNRoot -GeoFile $geoFile -OutFile $cnList -Quiet }
@@ -1348,7 +1348,7 @@ function Ensure-Guard {
             Set-SmhnrHardening -DisableLlmnr ([bool]$guardPolicy.DisableLlmnrNetbios) -DisableSmhnr ([bool]$guardPolicy.DisableSmhnr)
             $evTask = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Event' -ErrorAction SilentlyContinue
             if ($evTask) {
-                $modePath = Join-Path $Root '07-mode.ps1'
+                $modePath = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '07-mode.ps1')) { Join-Path (Join-Path $Root 'scripts') '07-mode.ps1' } else { Join-Path $Root '07-mode.ps1' }
                 $ef = ''
                 if ($DisableAutoNodeSync) { $ef += ' -DisableAutoNodeSync' }
                 if ($SkipQuarantineAllowRules) { $ef += ' -SkipQuarantineAllowRules' }

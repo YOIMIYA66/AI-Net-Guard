@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.0 - lock the install directory ACL (O1) and run the first
+    AI-Net-Guard v5.7.1 - lock the install directory ACL (O1) and run the first
     elevated v5.4 verification (O2).
 
 .DESCRIPTION
@@ -53,7 +53,7 @@ if ($Root.Length -le 3 -or $Root -match '(?i)^[A-Z]:\\(Windows|Program Files|Pro
     Write-Host ('ERROR: refusing to change ACLs on ' + $Root) -ForegroundColor Red
     exit 1
 }
-if (-not (Test-Path -LiteralPath (Join-Path $Root '07-mode.ps1'))) {
+if (-not (Test-Path -LiteralPath (Join-Path $Root '07-mode.ps1')) -and -not (Test-Path -LiteralPath (Join-Path (Join-Path $Root 'scripts') '07-mode.ps1'))) {
     Write-Host ('ERROR: ' + $Root + ' does not look like an AI-Net-Guard install (07-mode.ps1 missing)') -ForegroundColor Red
     exit 1
 }
@@ -66,7 +66,7 @@ function Get-InstallAclIssues([string]$Path) {
     $issues = New-Object System.Collections.Generic.List[string]
     $targets = @(Get-Item -LiteralPath $Path -Force)
     $targets += @(Get-ChildItem -LiteralPath $Path -Force -File -ErrorAction SilentlyContinue)
-    foreach ($sub in @('backup', 'logs')) {
+    foreach ($sub in @('backup', 'logs', 'scripts')) {
         $sp = Join-Path $Path $sub
         if (Test-Path -LiteralPath $sp) { $targets += @(Get-Item -LiteralPath $sp -Force) }
     }
@@ -113,7 +113,7 @@ function Invoke-Icacls([string[]]$IcaclsArgs) {
 if ($SyncWorkspace) {
     if (-not $WorkspaceRoot) {
         $cwd = (Get-Location).Path.TrimEnd('\')
-        if ($cwd -ne $Root -and (Test-Path -LiteralPath (Join-Path $cwd '07-mode.ps1'))) {
+        if ($cwd -ne $Root -and ((Test-Path -LiteralPath (Join-Path $cwd '07-mode.ps1')) -or (Test-Path -LiteralPath (Join-Path (Join-Path $cwd 'scripts') '07-mode.ps1')))) {
             $WorkspaceRoot = $cwd
         }
         else {
@@ -121,14 +121,23 @@ if ($SyncWorkspace) {
             exit 1
         }
     }
-    if (-not (Test-Path -LiteralPath (Join-Path $WorkspaceRoot '07-mode.ps1'))) {
+    if (-not (Test-Path -LiteralPath (Join-Path $WorkspaceRoot '07-mode.ps1')) -and -not (Test-Path -LiteralPath (Join-Path (Join-Path $WorkspaceRoot 'scripts') '07-mode.ps1'))) {
         Write-Host ('ERROR: WorkspaceRoot missing 07-mode.ps1: ' + $WorkspaceRoot) -ForegroundColor Red
         exit 1
     }
     $synced = 0
-    foreach ($pat in @('*.ps1', 'CURRENT-IMPLEMENTATION.md', 'README.md')) {
+    foreach ($pat in @('*.ps1', 'CURRENT-IMPLEMENTATION.md', 'README.md', 'README_EN.md')) {
         foreach ($sf in @(Get-ChildItem -Path (Join-Path $WorkspaceRoot $pat) -File -ErrorAction SilentlyContinue)) {
             Copy-Item -LiteralPath $sf.FullName -Destination (Join-Path $Root $sf.Name) -Force
+            $synced++
+        }
+    }
+    $wsScripts = Join-Path $WorkspaceRoot 'scripts'
+    if (Test-Path -LiteralPath $wsScripts) {
+        $rootScripts = Join-Path $Root 'scripts'
+        if (-not (Test-Path -LiteralPath $rootScripts)) { New-Item -ItemType Directory -Path $rootScripts -Force | Out-Null }
+        foreach ($sf in @(Get-ChildItem -Path (Join-Path $wsScripts '*.ps1') -File -ErrorAction SilentlyContinue)) {
+            Copy-Item -LiteralPath $sf.FullName -Destination (Join-Path $rootScripts $sf.Name) -Force
             $synced++
         }
     }
@@ -145,7 +154,7 @@ if ($Undo) {
 
 # ---------------------------------------------------------------- 1. ACL lock
 Write-Host ''
-Write-Host '=== AI-Net-Guard v5.7.0: install directory ACL hardening (O1) ===' -ForegroundColor Cyan
+Write-Host '=== AI-Net-Guard v5.7.1: install directory ACL hardening (O1) ===' -ForegroundColor Cyan
 $before = @(Get-InstallAclIssues -Path $Root)
 Write-Host ('    issues before: ' + $before.Count)
 $before | Select-Object -First 6 | ForEach-Object { Write-Host ('      ' + $_) -ForegroundColor DarkGray }
@@ -178,7 +187,7 @@ if ($SkipVerification) { exit 0 }
 $psExe = (Get-Process -Id $PID).Path
 Write-Host ''
 Write-Host ('=== O2: elevated v5.4 run via ' + (Split-Path -Leaf $psExe) + ' ===') -ForegroundColor Cyan
-& $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root '07-mode.ps1')
+& $psExe -NoProfile -ExecutionPolicy Bypass -File (if (Test-Path (Join-Path (Join-Path $Root 'scripts') '07-mode.ps1')) { Join-Path (Join-Path $Root 'scripts') '07-mode.ps1' } else { Join-Path $Root '07-mode.ps1' })
 $modeCode = $LASTEXITCODE
 
 $flagOk = Test-Path -LiteralPath (Join-Path $Root 'backup\v54-migrated.flag')
@@ -195,7 +204,7 @@ $sleepTrig = ($taskXml -match 'Kernel-Power') -and ($taskXml -match 'Power-Troub
 $regCode = $null
 if (-not $SkipRegression) {
     Write-Host ''
-    & $psExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root '12-regression.ps1')
+    & $psExe -NoProfile -ExecutionPolicy Bypass -File (if (Test-Path (Join-Path (Join-Path $Root 'scripts') '12-regression.ps1')) { Join-Path (Join-Path $Root 'scripts') '12-regression.ps1' } else { Join-Path $Root '12-regression.ps1' })
     $regCode = $LASTEXITCODE
 }
 

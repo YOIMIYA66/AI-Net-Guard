@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.0 - cross-reboot safety net for the restart drill.
+    AI-Net-Guard v5.7.1 - cross-reboot safety net for the restart drill.
 
 .DESCRIPTION
     After 08-commit.ps1 the normal auto-rollback task is gone, which is what
@@ -50,7 +50,7 @@ $Dir = Join-Path $Root 'backup'
 $Marker = Join-Path $Dir 'boot-guard.json'
 $Self = $MyInvocation.MyCommand.Path
 
-if (-not $Self) { $Self = Join-Path $Root '06-boot-guard.ps1' }
+if (-not $Self) { $Self = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '06-boot-guard.ps1')) { Join-Path (Join-Path $Root 'scripts') '06-boot-guard.ps1' } else { Join-Path $Root '06-boot-guard.ps1' } }
 
 function Show-State {
     $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -81,7 +81,7 @@ if ($RunIfArmed) {
     }
     if ($armed) {
         Write-Host 'boot guard: armed window still open, rolling back' -ForegroundColor Yellow
-        & (Join-Path $Root '09-rollback.ps1') -Auto -Root $Root
+        & (if (Test-Path (Join-Path (Join-Path $Root 'scripts') '09-rollback.ps1')) { Join-Path (Join-Path $Root 'scripts') '09-rollback.ps1' } else { Join-Path $Root '09-rollback.ps1' }) -Auto -Root $Root
     }
     else {
         Write-Host 'boot guard: window expired or marker missing, doing nothing'

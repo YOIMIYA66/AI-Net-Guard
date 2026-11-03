@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.0 - step 4: commit (cancel auto-rollback & install monitor tasks).
+    AI-Net-Guard v5.7.1 - step 4: commit (cancel auto-rollback & install monitor tasks).
 
 .DESCRIPTION
     Run this only after 03-verify.ps1 passed. Before removing the auto-rollback
@@ -130,7 +130,7 @@ else {
 }
 
 if (-not $SkipInstallTasks) {
-    $modeScript = Join-Path $Root '07-mode.ps1'
+    $modeScript = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '07-mode.ps1')) { Join-Path (Join-Path $Root 'scripts') '07-mode.ps1' } else { Join-Path $Root '07-mode.ps1' }
     if (Test-Path -LiteralPath $modeScript) {
         & $modeScript -InstallTasks -Root $Root -V2rayNRoot $V2rayNRoot -TunName $TunName
     }
