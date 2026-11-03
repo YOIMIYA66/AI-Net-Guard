@@ -46,54 +46,64 @@
 
 ```mermaid
 flowchart TD
-    subgraph AppLayer["用户与应用层 (Applications)"]
-        Apps["AI 编程工具 / 浏览器 / 终端 CLI<br/>(Claude Code, Codex, Cursor, Python, Git)"]
-        DNSGetAddr["系统寻址 getaddrinfo<br/>IPv4 优先级 50 > 40<br/>SMHNR=OFF (禁用物理网卡并行 DNS 试探)"]
-        Apps --> DNSGetAddr
+    subgraph APP_LAYER ["💻 用户与应用层 (Applications & AI Tools)"]
+        direction TB
+        Apps["AI 编程工具 / 浏览器 / 终端 CLI<br/>Claude Code · Cursor · Codex · Python · Git"]:::client
+        DNS_Resolver["⚡ 系统寻址与协议优先级决策<br/>IPv4 寻址优先 (权重 50 &gt; 40) · SMHNR=OFF 禁用多网卡抢答"]:::client
+        Apps --> DNS_Resolver
     end
 
-    DNSGetAddr --> Decision{"当前 TUN 虚拟网卡状态"}
+    DNS_Resolver --> TUN_STATE{"🔀 虚拟网卡状态判定<br/>TUN Mode ON / OFF"}:::decision
 
-    subgraph TunOnPath["状态 A：代理开启 (TUN Mode ON)"]
+    %% State A: TUN ON
+    subgraph TUN_ON ["🟢 状态 A：代理接管 (TUN Mode ON - 加密通道)"]
         direction TB
-        TunRoute["0.0.0.0/0 默认路由导入虚拟网卡<br/>(xray_tun / singbox_tun)"]
-        CoreSniff["代理内核 L3 捕获 & 53 端口劫持<br/>(Xray / sing-box / Mihomo)"]
-        DnsSplit{"DNS 分流解析"}
-        DomesticDns["国内域名 (geosite:cn)<br/>直连阿里 DoH 223.5.5.5"]
-        ForeignDns["国外 / AI 域名<br/>加密走节点代理至 Cloudflare DoH"]
-        NodeEgress["授权内核出站 -> 落地节点<br/>命中 AI-Guard-Allow-Node-*<br/>(例如 203.0.113.10:443)"]
+        TunRoute["🔌 0.0.0.0/0 默认路由接入虚拟网卡<br/>xray_tun / singbox_tun"]:::tunnel
+        CoreSniff["🧠 代理内核捕获 &amp; 53 端口流量劫持<br/>Xray / sing-box / Mihomo"]:::tunnel
+        DnsSplit{"🌐 域名分流路由<br/>geosite 智能解析"}:::decision
+        DomesticDns["🇨🇳 国内域名 (geosite:cn)<br/>直接请求阿里 DoH (223.5.5.5)"]:::allowed
+        ForeignDns["🌍 境外 / AI 目标域名<br/>加密走节点代理至远程 DoH"]:::tunnel
+        NodeEgress["🚀 物理网卡授权出站 (至落地节点)<br/>放行规则: AI-Guard-Allow-Node-*"]:::allowed
+        DirectEgress["⚡ 物理网卡国内直连 (线速转发)<br/>放行规则: AI-Guard-Allow-CN"]:::allowed
 
         TunRoute --> CoreSniff
         CoreSniff --> DnsSplit
-        DnsSplit -->|国内流量| DomesticDns
-        DnsSplit -->|海外 / AI 流量| ForeignDns
+        DnsSplit -->|国内域名| DomesticDns
+        DnsSplit -->|海外及AI域名| ForeignDns
         ForeignDns --> NodeEgress
-        DomesticDns --> DirectEgress["物理网卡直接出站<br/>(命中 AI-Guard-Allow-CN)"]
+        DomesticDns --> DirectEgress
     end
 
-    subgraph TunOffPath["状态 B：代理断开 / 内核崩溃 (TUN Mode OFF - 0 ms 熔断)"]
+    %% State B: TUN OFF
+    subgraph TUN_OFF ["🔴 状态 B：代理断开 / 内核崩溃 (TUN Mode OFF - 0ms 硬件级熔断)"]
         direction TB
-        NoTunRoute["无虚拟网卡路由 -> 流量落入物理网卡 (WLAN)"]
-        KernelWFP["Windows 内核防火墙 (tcpip.sys / WFP ALE)<br/>默认出站策略: BLOCK (丢弃)"]
-        
-        CnCheck{"目标 IP 匹配规则"}
-        AllowCN["大陆 IPv4 (6,516 前缀归一聚合)<br/>+ 223.5.5.5 / 国内 NTP<br/>命中 AI-Guard-Allow-CN"]
-        AllowLAN["局域网子网 / DHCP / NCSI 80<br/>命中 Companion Rules"]
-        BlockForeign["所有海外公网 IP & 境外 AI 接口<br/>(OpenAI, Claude, Google, 海外 CDN)"]
-        
+        NoTunRoute["⚠️ 代理离线 / 虚拟网卡注销<br/>流量直接落入物理网卡 (WLAN / Ethernet)"]:::blocked
+        KernelWFP["🛡️ Windows 内核防火墙 (tcpip.sys / WFP ALE)<br/>默认出站策略: BLOCK (全局丢弃)"]:::blocked
+        CnCheck{"🎯 目标 IP / 子网规则判定"}:::decision
+        AllowCN["🇨🇳 大陆 IPv4 (6,516 归一聚合前缀)<br/>放行规则: AI-Guard-Allow-CN"]:::allowed
+        AllowLAN["🏠 局域网 / DHCP / NCSI (80)<br/>放行规则: AI-Guard-Allow-LAN"]:::allowed
+        BlockForeign["🛑 所有海外公网 IP &amp; 境外 AI 接口<br/>OpenAI · Claude · Google · GitHub · 海外 CDN"]:::blocked
+        DropOut["🚫 内核硬阻断 (0 ms 丢弃 / 绝对零泄漏)"]:::dropNode
+
         NoTunRoute --> KernelWFP
         KernelWFP --> CnCheck
         CnCheck -->|国内 IP / 阿里 DNS| AllowCN
         CnCheck -->|局域网设备| AllowLAN
         CnCheck -->|境外 IP / AI API| BlockForeign
-        
-        AllowCN --> PassOut["放行出站 (O(1) 硬件级线速转发)"]
+        AllowCN --> PassOut["🟢 放行出站 (O(1) 硬件线速)"]:::allowed
         AllowLAN --> PassOut
-        BlockForeign --> DropOut["内核硬阻断 (0 ms 丢弃 / 零泄漏)"]
+        BlockForeign --> DropOut
     end
 
-    Decision -->|TUN 在线| TunRoute
-    Decision -->|TUN 离线| NoTunRoute
+    TUN_STATE -->|TUN 在线| TunRoute
+    TUN_STATE -->|TUN 离线| NoTunRoute
+
+    classDef client fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1;
+    classDef decision fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#92400e;
+    classDef tunnel fill:#ede9fe,stroke:#8b5cf6,stroke-width:2px,color:#5b21b6;
+    classDef allowed fill:#dcfce7,stroke:#10b981,stroke-width:2px,color:#065f46;
+    classDef blocked fill:#fee2e2,stroke:#ef4444,stroke-width:2px,color:#991b1b;
+    classDef dropNode fill:#fecaca,stroke:#dc2626,stroke-width:3px,color:#7f1d1d;
 ```
 
 > **为什么不在物理网卡 `WLAN` 上开启 Windows 11 原生系统级 DoH？**

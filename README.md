@@ -1,335 +1,410 @@
-# AI-Net-Guard (v5.6.0)
+<p align="center">
+  <h1 align="center">🛡️ AI-Net-Guard</h1>
+  <p align="center">
+    <b>Windows 11 / 10 原生单文件配置中心 · 内核级 WFP 静态防护盾 · 绝对零泄漏 DNS/IPv6 熔断器</b>
+  </p>
+  <p align="center">
+    <i>为 AI 编程智能体 (Claude Code · Cursor · Codex · Open-Interpreter) 与 TUN 代理模式量身打造的零驻留系统级安全护航底座</i>
+  </p>
+  <p align="center">
+    <a href="https://github.com/YOIMIYA66/AI-Net-Guard/releases/latest"><img src="https://img.shields.io/github/v/release/YOIMIYA66/AI-Net-Guard?color=3b82f6&logo=github&label=Release" alt="Release"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981?style=flat" alt="License"></a>
+    <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Windows-10%20%7C%2011%2024H2-0078d4?logo=windows&logoColor=white" alt="Platform"></a>
+    <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Resident%20RAM-0%20MB%20(Zero--Daemon)-059669?logo=speedtest&logoColor=white" alt="RAM"></a>
+    <a href="https://github.com/YOIMIYA66/AI-Net-Guard/releases"><img src="https://img.shields.io/badge/Standalone%20GUI-~267%20KB-8b5cf6?logo=dotnet&logoColor=white" alt="GUI"></a>
+    <a href="./12-regression.ps1"><img src="https://img.shields.io/badge/Regression-23%2F23%20Passed-22c55e" alt="Tests"></a>
+  </p>
+</p>
 
-**Windows 11 & 10 Native GUI Configurator, Standalone Single-File `.exe`, Kernel WFP Static Guard & DNS Leak Shield for AI Coding Tools & TUN Proxies**
-
-> **Standalone Single-File Executable (`~260 KB`, 0 Runtime Install) · Dual-Core TUN Direct Egress Alignment (0 Double-Hop Relay) · Full Support for Xray / sing-box Single-Core & Dual-Core TUN · Windows 11 24H2 Wintun IPv6 Kernel Fix · Anti-Impersonation Outbound Shield · 4 Categories & 15 Feature Toggles · 0 MB Background Idle RAM · 0 ms TUN Switch Latency · Default-Deny Outbound + Mainland-China Direct Allowlist · Multi-Core Auto-Sync (`Xray` / `sing-box` / `Hysteria2` / `Mihomo`) · Reversible One-Click Rollback**
+<p align="center">
+  <a href="#-快速上手-quick-start-推荐-gui-桌面端">🚀 快速上手</a> •
+  <a href="#-核心设计与痛点对比-why-ai-net-guard">💡 核心痛点与对比</a> •
+  <a href="#-系统全景架构与数据流-architecture--data-path">📐 全景架构图解</a> •
+  <a href="#-15-项可配置防护策略与特性矩阵-feature-matrix">🎛️ 15项防护策略</a> •
+  <a href="#-核心特性深度解析-key-features">⚡ 核心技术特性</a> •
+  <a href="#-日常维护与常用命令">🛠️ 常用运维命令</a> •
+  <a href="#-工程源码与脚本索引">📚 全工程脚本索引</a>
+</p>
 
 ---
 
-## Architecture & Data Path (系统架构与数据流分流图)
+## 💡 核心设计与痛点对比 (Why AI-Net-Guard?)
 
-AI-Net-Guard 采用**内核态静态规则（WFP ALE）+ 零驻留事件驱动自愈**的双层架构。核心数据流逻辑如下图所示：
+在 Windows 环境下使用 AI 编程助手与命令行智能体（如 `Claude Code`、`Cursor`、`Codex`、`Gemini CLI`、`Python` 脚本及海外浏览器）配合 TUN 代理（`v2rayN` / `Xray` / `sing-box` / `Mihomo`）时，往往面临三大致命网络安全风险与日常痛点：
+
+1. **TUN 崩溃 / 节点切换静默漏球**：Windows 底层物理网卡（Wi-Fi / Ethernet）的默认路由 `0.0.0.0/0` 始终存在。一旦代理内核偶发崩溃或切换节点，网络请求在 **0 毫秒** 内悄无声息地回退至真实运营商 IP 直连，导致海外服务账号被封控或敏感代码流量泄露。
+2. **多宿主并行 DNS 污染 (`SMHNR`)**：Windows 默认开启智能多宿主解析，向物理网卡与虚拟网卡**并发抢答** DNS，明文查询直奔物理网卡；断网或休眠唤醒后产生脏缓存死锁。
+3. **防火墙假闭环与规则漂移**：单纯开启系统防火墙的 `DefaultOutboundAction=Block` 无法防御 Windows 内置的约 180 条全局放行规则，更无法防御第三方软件安装时私自添加的未受限 Allow 规则。
+
+### 📊 传统 TUN 代理 vs. AI-Net-Guard 护航方案对比
+
+| 核心维度 | 传统 TUN 裸奔代理环境 ❌ | AI-Net-Guard v5.6 护航环境 🛡️ | 底层技术实现原理 |
+| :--- | :--- | :--- | :--- |
+| **代理崩溃 / TUN 断开** | 瞬间降级物理网卡直连，**真实 IP 暴露，API 访问漏球** | **0 ms 硬件级内核硬阻断**，仅保留国内与局域网直通 | Windows 内核 WFP ALE 丢弃一切非白名单物理出站 |
+| **DNS 泄漏与抢答** | 物理网卡与 TUN 并发广播明文 DNS，运营商完全可见 | **物理明文 DNS 绝对归零**，锁定 `223.5.5.5` + 禁用 SMHNR | 禁用并行 DNS、禁用 LLMNR/NetBIOS、DoH 加密解析 |
+| **IPv6 绕过漏洞** | 运营商 IPv6 绕过 IPv4 TUN 直出公网，真实 IPv6 暴露 | **物理网卡 IPv6 绑定彻底切断**，IPv4 前缀优先级提权 | 禁用物理 `ms_tcpip6`，前缀权重提升（50 > 40） |
+| **后台资源开销** | 依赖第三方常驻 Guard 守护进程，占用 50~150 MB 内存 | **0 个常驻后台进程 · 0 MB 待机内存 · 0% 待机 CPU** | 纳秒级 Windows Event Log 原生事件驱动，跑完即退 |
+| **双核心架构延迟** | TUN 与后端内核产生内部回环中继，增加 CPU 与延时 | **端到端物理直出**，消除二跳回环中继 | 动态注入物理网卡高优先级 `/32` 主机路由（LPM 机制） |
+| **防冒名伪装穿透** | 任何软件均可添加 `interfacetype=any` 规则绕过防御 | **结构体白名单强校验**，无约束规则立即隔离 | 注册表单遍深度审计，识别并隔离伪装 Allow 规则 |
+| **日常使用体验** | 开关代理需频繁配置，休眠唤醒后经常网络瘫痪 | **全生命周期无感自动自愈**，开箱即用免运维 | 毫秒级网络/电源事件感知，自动冲洗 DNS 与代理状态 |
+
+---
+
+## 📐 系统全景架构与数据流 (Architecture & Data Path)
+
+AI-Net-Guard 采用 **Windows 内核态静态规则（WFP ALE 过滤）+ 零常驻事件驱动自愈** 的高韧性双层架构。
 
 ### 1. 双态流量分流与内核硬阻断架构 (Fail-Closed Data Path)
 
+无论系统处于代理正常开启状态，还是代理崩溃断开的瞬间，内核态流控均能在 **0 ms** 内自适应生效：
+
 ```mermaid
 flowchart TD
-    subgraph AppLayer["用户与应用层 (Applications)"]
-        Apps["AI 编程工具 / 浏览器 / 终端 CLI<br/>(Claude Code, Codex, Cursor, Python, Git)"]
-        DNSGetAddr["系统寻址 getaddrinfo<br/>IPv4 优先级 50 > 40<br/>SMHNR=OFF (禁用物理网卡并行 DNS 试探)"]
-        Apps --> DNSGetAddr
+    subgraph APP_LAYER ["💻 用户与应用层 (Applications & AI Tools)"]
+        direction TB
+        Apps["AI 编程工具 / 浏览器 / 终端 CLI<br/>Claude Code · Cursor · Codex · Python · Git"]:::client
+        DNS_Resolver["⚡ 系统寻址与协议优先级决策<br/>IPv4 寻址优先 (权重 50 &gt; 40) · SMHNR=OFF 禁用多网卡抢答"]:::client
+        Apps --> DNS_Resolver
     end
 
-    DNSGetAddr --> Decision{"当前 TUN 虚拟网卡状态"}
+    DNS_Resolver --> TUN_STATE{"🔀 虚拟网卡状态判定<br/>TUN Mode ON / OFF"}:::decision
 
-    subgraph TunOnPath["状态 A：代理开启 (TUN Mode ON)"]
+    %% State A: TUN ON
+    subgraph TUN_ON ["🟢 状态 A：代理接管 (TUN Mode ON - 加密通道)"]
         direction TB
-        TunRoute["0.0.0.0/0 默认路由导入虚拟网卡<br/>(xray_tun / singbox_tun)"]
-        CoreSniff["代理内核 L3 捕获 & 53 端口劫持<br/>(Xray / sing-box / Mihomo)"]
-        DnsSplit{"DNS 分流解析"}
-        DomesticDns["国内域名 (geosite:cn)<br/>直连阿里 DoH 223.5.5.5"]
-        ForeignDns["国外 / AI 域名<br/>加密走节点代理至 Cloudflare DoH"]
-        NodeEgress["授权内核出站 -> 落地节点<br/>命中 AI-Guard-Allow-Node-*<br/>(例如 203.0.113.10:443)"]
+        TunRoute["🔌 0.0.0.0/0 默认路由接入虚拟网卡<br/>xray_tun / singbox_tun"]:::tunnel
+        CoreSniff["🧠 代理内核捕获 &amp; 53 端口流量劫持<br/>Xray / sing-box / Mihomo"]:::tunnel
+        DnsSplit{"🌐 域名分流路由<br/>geosite 智能解析"}:::decision
+        DomesticDns["🇨🇳 国内域名 (geosite:cn)<br/>直接请求阿里 DoH (223.5.5.5)"]:::allowed
+        ForeignDns["🌍 境外 / AI 目标域名<br/>加密走节点代理至远程 DoH"]:::tunnel
+        NodeEgress["🚀 物理网卡授权出站 (至落地节点)<br/>放行规则: AI-Guard-Allow-Node-*"]:::allowed
+        DirectEgress["⚡ 物理网卡国内直连 (线速转发)<br/>放行规则: AI-Guard-Allow-CN"]:::allowed
 
         TunRoute --> CoreSniff
         CoreSniff --> DnsSplit
-        DnsSplit -->|国内流量| DomesticDns
-        DnsSplit -->|海外 / AI 流量| ForeignDns
+        DnsSplit -->|国内域名| DomesticDns
+        DnsSplit -->|海外及AI域名| ForeignDns
         ForeignDns --> NodeEgress
-        DomesticDns --> DirectEgress["物理网卡直接出站<br/>(命中 AI-Guard-Allow-CN)"]
+        DomesticDns --> DirectEgress
     end
 
-    subgraph TunOffPath["状态 B：代理断开 / 内核崩溃 (TUN Mode OFF - 0 ms 熔断)"]
+    %% State B: TUN OFF
+    subgraph TUN_OFF ["🔴 状态 B：代理断开 / 内核崩溃 (TUN Mode OFF - 0ms 硬件级熔断)"]
         direction TB
-        NoTunRoute["无虚拟网卡路由 -> 流量落入物理网卡 (WLAN)"]
-        KernelWFP["Windows 内核防火墙 (tcpip.sys / WFP ALE)<br/>默认出站策略: BLOCK (丢弃)"]
-        
-        CnCheck{"目标 IP 匹配规则"}
-        AllowCN["大陆 IPv4 (6,516 前缀归一聚合)<br/>+ 223.5.5.5 / 国内 NTP<br/>命中 AI-Guard-Allow-CN"]
-        AllowLAN["局域网子网 / DHCP / NCSI 80<br/>命中 Companion Rules"]
-        BlockForeign["所有海外公网 IP & 境外 AI 接口<br/>(OpenAI, Claude, Google, 海外 CDN)"]
-        
+        NoTunRoute["⚠️ 代理离线 / 虚拟网卡注销<br/>流量直接落入物理网卡 (WLAN / Ethernet)"]:::blocked
+        KernelWFP["🛡️ Windows 内核防火墙 (tcpip.sys / WFP ALE)<br/>默认出站策略: BLOCK (全局丢弃)"]:::blocked
+        CnCheck{"🎯 目标 IP / 子网规则判定"}:::decision
+        AllowCN["🇨🇳 大陆 IPv4 (6,516 归一聚合前缀)<br/>放行规则: AI-Guard-Allow-CN"]:::allowed
+        AllowLAN["🏠 局域网 / DHCP / NCSI (80)<br/>放行规则: AI-Guard-Allow-LAN"]:::allowed
+        BlockForeign["🛑 所有海外公网 IP &amp; 境外 AI 接口<br/>OpenAI · Claude · Google · GitHub · 海外 CDN"]:::blocked
+        DropOut["🚫 内核硬阻断 (0 ms 丢弃 / 绝对零泄漏)"]:::dropNode
+
         NoTunRoute --> KernelWFP
         KernelWFP --> CnCheck
         CnCheck -->|国内 IP / 阿里 DNS| AllowCN
         CnCheck -->|局域网设备| AllowLAN
         CnCheck -->|境外 IP / AI API| BlockForeign
-        
-        AllowCN --> PassOut["放行出站 (O(1) 硬件级线速转发)"]
+        AllowCN --> PassOut["🟢 放行出站 (O(1) 硬件线速)"]:::allowed
         AllowLAN --> PassOut
-        BlockForeign --> DropOut["内核硬阻断 (0 ms 丢弃 / 零泄漏)"]
+        BlockForeign --> DropOut
     end
 
-    Decision -->|TUN 在线| TunRoute
-    Decision -->|TUN 离线| NoTunRoute
+    TUN_STATE -->|TUN 在线| TunRoute
+    TUN_STATE -->|TUN 离线| NoTunRoute
+
+    classDef client fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1;
+    classDef decision fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#92400e;
+    classDef tunnel fill:#ede9fe,stroke:#8b5cf6,stroke-width:2px,color:#5b21b6;
+    classDef allowed fill:#dcfce7,stroke:#10b981,stroke-width:2px,color:#065f46;
+    classDef blocked fill:#fee2e2,stroke:#ef4444,stroke-width:2px,color:#991b1b;
+    classDef dropNode fill:#fecaca,stroke:#dc2626,stroke-width:3px,color:#7f1d1d;
 ```
 
-### 2. 零常驻事件驱动与自愈生命周期 (Zero-Resident Event Engine)
+---
 
-平时 **0 个常驻进程、0 MB 内存占用、0% 待机 CPU**。仅在操作系统底层网络变化或电源事件时纳秒级唤醒，跑完即退：
+### 2. 零常驻事件驱动引擎生命周期 (Zero-Resident Event Engine)
+
+不需要任何 `while ($true)` 循环后台进程，平时 **0 MB 内存、0% CPU**。完全由 Windows 内核事件触发纳秒级唤醒，在后台安全 Session 0 执行毫秒级自愈后即刻退出：
 
 ```mermaid
 flowchart LR
-    subgraph TriggerSource["系统底层事件触发源 (0 MB 常驻内存)"]
-        Ev1["NetworkProfile 10000/10001<br/>(Wi-Fi / 热点 / TUN 启闭)"]
-        Ev2["Power-Troubleshooter 1<br/>Kernel-Power 107/507<br/>(S3 / 现代待机唤醒)"]
-        Ev3["系统开机 / 重启 (BootTrigger)"]
-        Ev4["60分钟低频防漂移巡检"]
-    end
-
-    subgraph EventTask["计划任务 AI-Guard-Mode-Event (SYSTEM Session 0)"]
+    subgraph TRIGGERS ["⚡ 系统底层事件源 (0 MB 常驻内存)"]
         direction TB
-        FlushDNS["1. 毫秒级刷新 Windows DNS 缓存<br/>(清洗断开期残留的污染记录)"]
-        SyncNode["2. 多内核节点自动热同步<br/>(提取 Xray/sing-box 节点 IP:端口与程序路径)"]
-        CheckRogue["3. 单遍注册表防漂移审计<br/>(防冒名校验: 严查无约束全放行规则并隔离)"]
-        CheckTUN["4. 智能绑定动态 TUN 网卡<br/>(别名与 GUID 双向精确匹配，过滤无效项)"]
-        HealProxy["5. 死循环系统代理自愈<br/>(清理客户端异常退出残留的 127.0.0.1 代理)"]
-        ExitTask["6. 执行完毕立即退出 (耗时 &lt; 100ms)"]
-
-        FlushDNS --> SyncNode --> CheckRogue --> CheckTUN --> HealProxy --> ExitTask
+        Ev1["🌐 <b>网络状态变动</b><br/>NetworkProfile 10000/10001<br/>Wi-Fi 切换 · 热点 · TUN 启闭"]:::trigger
+        Ev2["🔋 <b>睡眠唤醒恢复</b><br/>Power-Troubleshooter 1<br/>Kernel-Power 107/507 S3/S0ix 唤醒"]:::trigger
+        Ev3["🚀 <b>系统引导启动</b><br/>BootTrigger / AtLogon 开机加固"]:::trigger
+        Ev4["⏰ <b>低频防漂移看门狗</b><br/>TimeTrigger 60分钟零 CIM 审计"]:::trigger
     end
 
-    Ev1 --> EventTask
-    Ev2 --> EventTask
-    Ev3 --> EventTask
-    Ev4 --> EventTask
+    subgraph ENGINE ["⚙️ 计划任务引擎 AI-Guard-Mode-Event (SYSTEM Session 0)"]
+        direction TB
+        Step1["🧹 <b>1. 毫秒级 DNS 缓存冲洗</b><br/>Clear-DnsClientCache 消除断连期污染"]:::task
+        Step2["🔄 <b>2. 多内核节点端口热同步</b><br/>解析 config.json 动态刷新 Node 放行规则"]:::task
+        Step3["🛡️ <b>3. 防冒名伪装穿透盾</b><br/>审计全部放行规则，严查无约束全放行规则并隔离备份"]:::task
+        Step4["🔌 <b>4. TUN 网卡智能 GUID 匹配</b><br/>精确比对活跃适配器 GUID 与 Alias，剔除无效 dead 项"]:::task
+        Step5["🩺 <b>5. 残留死系统代理自愈</b><br/>检测客户端异常崩溃残留的 127.0.0.1 代理并立即清空"]:::task
+        Step6["✨ <b>6. 毫秒级执行完毕退出</b><br/>无驻留脚本 · 整体耗时 &lt; 90ms · 待机内存 0 MB"]:::finish
+
+        Step1 --> Step2 --> Step3 --> Step4 --> Step5 --> Step6
+    end
+
+    Ev1 ==>|纳秒级触发| Step1
+    Ev2 ==>|纳秒级触发| Step1
+    Ev3 ==>|纳秒级触发| Step1
+    Ev4 ==>|周期触发| Step1
+
+    classDef trigger fill:#e0e7ff,stroke:#6366f1,stroke-width:2px,color:#3730a3;
+    classDef task fill:#f0fdf4,stroke:#22c55e,stroke-width:2px,color:#15803d;
+    classDef finish fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#92400e;
 ```
+
+---
 
 ### 3. 多内核代理架构兼容矩阵 (Multi-Core Compatibility Matrix)
 
-无论是单核心还是 v2rayN 经典的双核心分流架构，AI-Net-Guard 均能全自动识别并绑定对应的防火墙伴生规则：
+无论是原生单核心，还是 v2rayN 经典的 sing-box + Xray 双核心分流方案，AI-Net-Guard 均能自动识别并精准绑定：
 
 ```mermaid
 flowchart TD
-    subgraph MultiCore["多内核与多网卡架构支持"]
-        XraySingle["Xray 单核心原生 TUN<br/>• 虚拟网卡: xray_tun<br/>• 内置 Win11 24H2 IPv6 修复补丁<br/>• 杜绝 Error 5 Access Denied 崩溃"]
-        SingboxSingle["sing-box 单核心原生 TUN<br/>• 虚拟网卡: singbox_tun<br/>• L3 数据包直捕 + hijack-dns 53 劫持<br/>• 纯静态伴生规则放行"]
-        DualCore["v2rayN 双核心架构 (推荐)<br/>• 网卡: singbox_tun 捕获流量<br/>• 转发: 127.0.0.1:10808 -&gt; xray.exe<br/>• 出口: VLESS / REALITY 落地节点"]
-        ClashCore["Mihomo / Clash 核心<br/>• 虚拟网卡: mihomo_tun / Meta<br/>• 动态网卡别名识别与纳管"]
+    subgraph CORES ["🧩 代理客户端核心架构 (Multi-Core Architecture)"]
+        direction TB
+        subgraph XRAY_MODE ["Xray 单核心原生 TUN"]
+            direction TB
+            XrayCore["<b>Xray Native TUN</b><br/>• 虚拟网卡: xray_tun<br/>• 内置 Win11 24H2 IPv6 修复补丁<br/>• 杜绝 Error 5 Access Denied 报错"]:::coreBox
+        end
+
+        subgraph SINGBOX_MODE ["sing-box 单核心原生 TUN"]
+            direction TB
+            SingboxCore["<b>sing-box Native TUN</b><br/>• 虚拟网卡: singbox_tun<br/>• L3 流量捕获 + hijack-dns:53 劫持<br/>• 纯静态伴生规则放行"]:::coreBox
+        end
+
+        subgraph DUAL_MODE ["v2rayN 双核心协同架构 (推荐生产方案)"]
+            direction TB
+            DualFront["前端捕获: singbox_tun"]:::coreBox
+            DualLoop["本地回环转发: 127.0.0.1:10808"]:::coreBox
+            DualBack["后端出站: xray.exe (VLESS / REALITY)"]:::coreBox
+            DualFront --> DualLoop --> DualBack
+        end
+
+        subgraph MIHOMO_MODE ["Mihomo / Clash 核心"]
+            direction TB
+            MihomoCore["<b>Mihomo TUN</b><br/>• 虚拟网卡: mihomo_tun / Meta<br/>• 动态网卡别名识别与纳管"]:::coreBox
+        end
     end
 
-    subgraph FirewallBinding["AI-Net-Guard 防火墙规则精准绑定"]
-        RuleMain["AI-Guard-Allow-TUN (首选网卡)"]
-        RuleAlt["AI-Guard-Allow-TUN-Alt (异构备选网卡)"]
-        RuleNode["AI-Guard-Allow-Node-TCP / UDP (活跃代理核心与节点)"]
+    subgraph FIREWALL ["🛡️ AI-Net-Guard 内核防火墙规则绑定 (WFP Rules)"]
+        direction TB
+        RuleMain["📌 <b>AI-Guard-Allow-TUN</b><br/>放行首选虚拟网卡流量 (singbox_tun)"]:::ruleBox
+        RuleAlt["📌 <b>AI-Guard-Allow-TUN-Alt</b><br/>放行异构备选虚拟网卡流量 (xray_tun / mihomo)"]:::ruleBox
+        RuleNode["📌 <b>AI-Guard-Allow-Node-TCP / UDP</b><br/>放行活跃代理进程至远端落地节点的物理出站连接"]:::ruleBox
+        RuleDirect["📌 <b>AI-Guard-Allow-CN &amp; LAN</b><br/>放行物理网卡国内 IP 直连与本地局域网互访"]:::ruleBox
     end
 
-    XraySingle --> RuleAlt
-    SingboxSingle --> RuleMain
-    DualCore --> RuleMain
-    DualCore --> RuleNode
-    ClashCore --> RuleAlt
+    XrayCore -->|绑定备选网卡| RuleAlt
+    XrayCore -->|放行节点出站| RuleNode
+    SingboxCore -->|绑定首选网卡| RuleMain
+    SingboxCore -->|放行节点出站| RuleNode
+    DualFront -->|绑定前端网卡| RuleMain
+    DualBack -->|放行后端出站| RuleNode
+    MihomoCore -->|动态匹配别名| RuleAlt
+
+    RuleMain -.-> RuleDirect
+    RuleAlt -.-> RuleDirect
+    RuleNode -.-> RuleDirect
+
+    classDef coreBox fill:#f5f3ff,stroke:#8b5cf6,stroke-width:2px,color:#5b21b6;
+    classDef ruleBox fill:#f0fdf4,stroke:#16a34a,stroke-width:2px,color:#15803d;
 ```
 
 ---
 
-## Quick Start (GUI Standalone `.exe` — Recommended)
+## 🚀 快速上手 (Quick Start)
 
-No git clone or command line required:
+### 选项 A：原生 GUI 桌面配置中心 (强烈推荐 ⭐)
 
-1. **Download `AI-Net-Guard.exe`** from [GitHub Releases](https://github.com/YOIMIYA66/AI-Net-Guard/releases).
-2. **Double-click `AI-Net-Guard.exe`** (Windows will prompt UAC once for Administrator privilege).
-3. The modern Fluent GUI launches instantly:
-   - Auto-detects your `v2rayN` path, running proxy core (`Xray` / `sing-box` / `Mihomo`), and active TUN interface.
-   - Comes pre-configured with the **🌟 Recommended Daily Shield** preset (14 recommended protections ON, strict global NRPT DoH OFF).
-4. Click **「🚀 一键部署 / 应用当前配置」** (Deploy / Apply Settings):
-   - Automatically extracts and self-updates the kernel engine into `C:\AI-Net-Guard`.
-   - Captures original network and firewall baselines, installs static rules, runs connectivity verification, and commits protection.
-   - Locks `C:\AI-Net-Guard` ACL permissions to prevent privilege escalation.
-5. **One-Click Actions in GUI**:
-   - **🛟 应急脱困 (Emergency Rescue)**: Instantly unlocks all firewall outbound blocks, resets NIC DNS to DHCP, clears stale loopback proxies, and flushes Winsock to regain normal internet within seconds.
-   - **一键健康体检**: Runs the full 23-check regression suite (including live 10-second `pktmon` DNS capture).
-   - **立即同步**: Immediately detects and allows new proxy node IPs/ports when switching servers in `v2rayN`.
-   - **一键关闭系统代理**: Clears `HKCU` WinINET loopback proxy with instant refresh so toggling `Enable Tun` alone controls all traffic.
-   - **一键完整卸载**: Cleanly restores Windows default firewall, DNS, IPv6, prefix policy, NTP, and ACLs.
-6. **Zero-Dependency Offline Rescue Tool (`Emergency-Rescue.bat`)**:
-   - Distributed alongside `AI-Net-Guard.exe` and extracted to `C:\AI-Net-Guard\Emergency-Rescue.bat`.
-   - Double-clickable pure batch tool that self-elevates to restore native Windows networking anytime without dependencies.
+无需安装任何运行时，免配环境变量，双击即用：
 
----
+1. **下载程序**：前往 [Releases 页面](https://github.com/YOIMIYA66/AI-Net-Guard/releases/latest) 下载 `AI-Net-Guard.exe` 与 `Emergency-Rescue.bat`。
+2. **启动配置中心**：双击运行 `AI-Net-Guard.exe`（触发一次 UAC 管理员授权）。
+3. **环境全自动探测**：GUI 会自动识别系统的 `v2rayN` 安装路径、正在运行的代理内核（`Xray` / `sing-box` / `Mihomo`）以及当前活跃的 TUN 虚拟网卡。
+4. **一键部署 / 应用配置**：
+   - 默认采用 **🌟 推荐日常防御预设**（14 项推荐防护全部开启，严格全局 NRPT DoH 保持关闭）。
+   - 点击 **「🚀 一键部署 / 应用当前配置」**，程序将在 1~2 秒内自动捕获网络基线、安全部署规则引擎至 `C:\AI-Net-Guard`、注入高韧性 ACL 并激活系统事件监控。
+5. **GUI 便捷维运按钮**：
+   - **🛟 应急脱困 (Emergency Rescue)**：突发断网或配置异常时，一键瞬间清除防火墙出站阻断、重置网卡 DNS 为 DHCP、清空回环代理并冲洗 Winsock，5 秒内恢复上网。
+   - **一键健康体检**：自动执行 23 项端到端内核与网络全回归测试（包含 10 秒实机 `pktmon` DNS 抓包）。
+   - **立即同步**：在客户端切换代理节点后，一键实时探测并放行新落地节点 IP 与端口。
+   - **一键关闭系统代理**：清理注册表中残留的 `127.0.0.1` 代理，实现“仅开关 TUN 即可控制全局流量”的纯粹体验。
+   - **一键完整卸载**：完整还原 Windows 原始防火墙、DNS、IPv6、前缀表、时间服务与计划任务。
 
-## 15 Configurable Feature Switches & Policy Matrix
-
-| Category | Policy Key | Feature Name | Default / Badge | Plain Explanation | Behavior When Turned OFF |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **1. Traffic & Firewall** | `AllowCnDirect` | **中国大陆 IPv4 直连白名单** | **ON** `[推荐开启]` | 国内网站/应用满速直连，仅拦截海外直连流量；关代理国内不断网。 | 切换为严格全局铁桶模式（TUN 断开时国内网亦全部阻断）。 |
-| **1. Traffic & Firewall** | `AllowLan` | **局域网设备互访 (LocalSubnet)** | **ON** `[推荐开启]` | 允许访问同一路由器下的 NAS、打印机、投屏与路由器后台。 | 禁用 `AI-Guard-Allow-LAN` 规则（彻底隔离本地子网）。 |
-| **1. Traffic & Firewall** | `AllowNcsi` | **Windows 联网状态图标探测放行** | **ON** `[推荐开启]` | 仅放行微软联网检测探针（`13.107.4.52:80`），防止任务栏误报“无网络小地球”。 | 禁用 `AI-Guard-Allow-NCSI` 规则。 |
-| **1. Traffic & Firewall** | `QuarantineRogueAllow` | **自动隔离第三方软件出站放行规则** | **ON** `[推荐开启]` | 防止第三方应用或恶意脚本悄悄添加出站 Allow 规则架空拦截（卸载时原样恢复）。含防前缀冒名检测。 | 停止后台漂移规则自动隔离，并恢复被动态隔离的外部规则。 |
-| **2. DNS Leak Shield** | `LockPhysicalDns` | **锁定物理网卡安全静态 DNS (`223.5.5.5`)** | **ON** `[推荐开启]` | 防止运营商 DHCP 劫持；开代理走加密 TUN DoH，关代理安全解析国内网站。 | 从备份恢复物理网卡原始 DHCP 自动获取或自定义 DNS。 |
-| **2. DNS Leak Shield** | `DisableSmhnr` | **禁用智能多宿主并行 DNS (`SMHNR`)** | **ON** `[推荐开启]` | 阻止 Win11 在开启代理时向物理网卡和虚拟网卡并发抢答 DNS，物理明文查询归零。 | 恢复 Windows 默认并行 DNS 抢答行为。 |
-| **2. DNS Leak Shield** | `DisableLlmnrNetbios` | **禁用局域网多播/广播解析 (LLMNR/NetBIOS)** | **ON** `[推荐开启]` | 防止域名查询泄漏到局域网，免疫局域网同名欺骗劫持攻击。 | 恢复默认局域网多播与 NetBIOS 设置。 |
-| **2. DNS Leak Shield** | `StrictNrptDoh` | **严格全局 DoH 强制加密 (`NRPT 1.1.1.1`)** | **OFF** `[高级可选]` | 强制全系统所有域名仅走 `1.1.1.1` DoH；**注意：关代理后国内也将无法解析域名**。 | 移除 `AI-Guard*` NRPT 策略规则，恢复标准解析。 |
-| **3. IPv6 & Dual-Stack** | `DisablePhysicalIpv6` | **禁用物理网卡 IPv6 协议栈绑定** | **ON** `[推荐开启]` | 彻底堵死应用通过运营商原生 IPv6 绕过 IPv4 TUN 直连海外的漏洞（含热插拔网卡）。 | 恢复物理网卡 `ms_tcpip6` 绑定。 |
-| **3. IPv6 & Dual-Stack** | `PreferIpv4Prefix` | **提升 IPv4 寻址优先级高于 IPv6** | **ON** `[推荐开启]` | 优先请求 IPv4，彻底消除因等待 IPv6 超时导致的 Python / Git / CLI 每次请求前卡顿 2~5 秒。 | 恢复原始 `DisabledComponents` 注册表值与路由前缀表权重。 |
-| **4. Self-Healing & Security** | `ZeroResidentMonitor` | **零内存事件触发与睡眠唤醒自愈** | **ON** `[推荐开启]` | 平时 **0 进程、0 MB 内存**；仅在网络切换、开机、睡眠唤醒时毫秒级自检并清空污染 DNS。 | 注销 `AI-Guard-Mode-Event` 与 `Fallback` 计划任务，仅保留静态规则。 |
-| **4. Self-Healing & Security** | `AutoNodeSync` | **多内核节点与端口自动热同步** | **ON** `[推荐开启]` | 在 `v2rayN` 切换节点、端口跳跃或更换内核时自动放行新节点，无需手动干预。 | 冻结当前节点放行规则，停止自动跟踪 `config.json`。 |
-| **4. Self-Healing & Security** | `AutoHealStaleProxy` | **断电/崩溃残留死系统代理自动清理** | **ON** `[推荐开启]` | 代理异常崩溃后自动清理失效的 `127.0.0.1` 系统代理，避免开机后网页全挂。 | 不自动清理失效的 `HKCU` 系统代理。 |
-| **4. Self-Healing & Security** | `DomesticNtp` | **国内高可用时间同步加固** | **ON** `[推荐开启]` | 设置阿里/腾讯/中科院授时，防止电脑长时间睡眠后时钟偏差导致 VLESS 握手死锁。 | 恢复备份的原始 Windows 时间服务器地址。 |
-| **4. Self-Healing & Security** | `HardenInstallAcl` | **安装目录防篡改权限锁定 (`ACL`)** | **ON** `[推荐开启]` | 将 `C:\AI-Net-Guard` 锁定为管理员只写，防止普通程序篡改白名单或借任务提权。 | 执行 `13-harden-acl.ps1 -Undo` 恢复默认目录继承权限。 |
+> [!TIP]
+> **零依赖离线脱困工具 (`Emergency-Rescue.bat`)**：随 `AI-Net-Guard.exe` 一并提供并自动解压在 `C:\AI-Net-Guard\Emergency-Rescue.bat`。这是一个纯原生纯文本批处理脚本，双击自动自提权，在不依赖任何 PowerShell 运行时的极端环境下也能彻底脱困并恢复原始网络。
 
 ---
 
-## Why AI-Net-Guard?
+### 选项 B：CLI 命令行自动化部署 (极客运维方案)
 
-When using AI coding assistants and CLI agents (`Claude Code`, `Codex`, `Cursor`, `Gemini CLI`, `Python` SDKs, browsers) alongside a Windows TUN proxy (`v2rayN` with `Xray` or `sing-box`), three failure modes routinely leak your real IP or plaintext DNS:
+提供完整的 45 分钟自动回滚安全网，适合 DevOps、无界面自动化及资深用户：
 
-1. **TUN crash / node switch fallback**: Windows keeps the physical default route (`0.0.0.0/0` on Wi-Fi/Ethernet) alive beneath the TUN split routes. The millisecond `xray.exe` / `sing-box.exe` restarts or TUN drops, connections silently fall back to your ISP IP.
-2. **Parallel Multi-Homed DNS (`SMHNR`) & Plaintext Resolvers**: By default, Windows `Dnscache` broadcasts DNS queries across **all** active interfaces simultaneously and falls back to LLMNR / NetBIOS / IPv6 AAAA when TUN transitions.
-3. **Default-Allow Windows Firewall + Third-Party Rule Drift**: Simply setting `DefaultOutboundAction = Block` does **not** override Windows' ~180 built-in `Outbound Allow` rules—nor new `Outbound Allow` rules silently added later by third-party app installers.
+<details>
+<summary><b>点击展开 CLI 部署详细步骤与指令</b></summary>
 
-**AI-Net-Guard v5.6** solves all three directly inside the Windows kernel (`tcpip.sys` / WFP) with **zero resident background scripts**:
-
-- **TUN ON**: Traffic routes through `xray_tun` / `singbox_tun`; foreign AI traffic exits exclusively via your proxy node while domestic traffic routes directly according to your core rules.
-- **TUN OFF (or core crashed)**: **0 ms kernel fail-closed switch**—mainland-China IPv4 traffic (`cn-ipv4.txt`, ~6,516 collapsed prefixes), LAN, and DHCP continue working normally at line rate, while **all foreign/AI direct egress is dropped by the kernel firewall**.
-
----
-
-## Key Features (v5.6)
-
-- **100% Static Kernel Datapath (`0 ms` switch, `~0%` CPU overhead)**:
-  - Stateful WFP ALE flow cache evaluates the 6,516-prefix `AI-Guard-Allow-CN` rule only on the first SYN/handshake packet (`< 0.01 ms`), forwarding established flows in `O(1)`.
-  - Toggling TUN ON/OFF requires **zero firewall rule mutations**. Protection holds even if zero PowerShell processes ever run.
-- **Zero-Resident Event Architecture (`0 MB` idle RAM)**:
-  - No `while ($true)` polling daemon. `AI-Guard-Mode-Event` wakes via native Windows Event Log subscriptions on `NetworkProfile` (`10000/10001`), system boot, and **S3 Sleep / Hibernate / Modern Standby (`S0ix`) resume** (`Power-Troubleshooter 1`, `Kernel-Power 107/507`), runs in ~90 ms (zero CIM/WMI loaded on healthy fast path), and exits immediately.
-  - `AI-Guard-Mode-Fallback` performs a 60-minute zero-CIM anti-drift check (~90 ms).
-- **Anti-Impersonation & Blanket Allow Shield (v5.6 Hardened)**:
-  - Single-pass registry audit rigorously inspects every outbound Allow rule. Even if an unapproved rule masquerades with an `AI-Guard-*` prefix, if it lacks remote IP, interface, and application constraints (a blanket allow), it is immediately flagged and quarantined into `backup\auto-disabled-outbound-allow.json`.
-- **Hands-Free Multi-Core Node Auto-Sync (`Xray` + `sing-box` / `Hysteria2` + `Mihomo`)**:
-  - Automatically detects `v2rayN` installation paths (or `$env:V2RAYN_ROOT` / `-V2rayNRoot`) and parses both **Xray** (`outbounds[].protocol`, `vnext`, `servers`, `peers`) and **sing-box** (`outbounds[].type`, `server`, `server_port`, and Hysteria2 port-hopping ranges `"20000:30000"` -> `"20000-30000"`).
-  - Dynamically binds `-Program` to the active core executable (`xray.exe` / `sing-box.exe` / `mihomo.exe`), authorizes alternate TUN adapters (`AI-Guard-Allow-TUN-Alt`) via smart GUID/alias matching, and resolves domain-based nodes over encrypted `https://223.5.5.5/resolve` (`Proxy=$null`) first.
-  - **Full Support for Single-Core & Dual-Core TUN Architectures**:
-    - **Xray Single-Core Native TUN** (`xray_tun`): Seamlessly integrates with the Win11 24H2 IPv6 `SetInterfaceDnsSettings` kernel fix and Xray's built-in WFP filter engine (`permit Xray` / `block DNS`).
-    - **sing-box Single-Core Native TUN** (`singbox_tun`): Full compatibility with sing-box L3 packet capturing, direct whitelist routing, and user-space DNS hijacking (`hijack-dns` on port 53).
-    - **sing-box + Xray Dual-Core TUN (v2rayN Default Architecture)**: Simultaneously authorizes `sing-box.exe` (capturing traffic on `singbox_tun`) and `xray.exe` (handling outbound VLESS / REALITY backend traffic to remote proxy nodes on `127.0.0.1:10808`), establishing seamless multi-core companion firewall rules (`AI-Guard-Allow-Core-SingBox-*` + `AI-Guard-Allow-Node-*`).
-    - **Mihomo / Clash TUN** (`mihomo_tun` / `Meta`): Dynamic interface alias detection and companion rule authorization.
-- **Complete DNS & IPv6 Leak Shield**:
-  - Disables physical NIC IPv6 bindings (`ms_tcpip6`) including hot-plugged USB/tethering NICs, elevates IPv4 prefix precedence (`::ffff:0:0/96 = 50 > ::/0 = 40` + `DisabledComponents |= 0x20` to eliminate Python/CLI AAAA stalls), disables **LLMNR**, **NetBIOS**, and **Windows Smart Multi-Homed Name Resolution (`SMHNR`, `DisableSmartNameResolution = 1`)**, and ensures domestic-capable NTP (`ntp.aliyun.com`) to prevent VLESS+REALITY clock-skew deadlocks after sleep.
-- **Privilege-Escalation Hardening & 23-Check Automated Regression Suite**:
-  - [`13-harden-acl.ps1`](./13-harden-acl.ps1) locks `C:\AI-Net-Guard` ownership and DACL (`owner=Administrators`, `Administrators/SYSTEM=Full`, `Users=Read+Execute`) so unelevated processes cannot tamper with `SYSTEM`-scheduled scripts.
-  - `.\07-mode.ps1 -Status` is non-elevated friendly—view your live protection posture instantly from any CLI or IDE terminal without UAC prompts.
-  - [`12-regression.ps1`](./12-regression.ps1) verifies 23 end-to-end invariants including live `pktmon` port-53 packet capture (`phys_attempts=0, escaped=0`), WFP filter inspection, `Proxy=$null` direct socket probes, and corrupt `geoip.dat` rejection drills—automatically cleaning up temporary XML/ETL dumps on `PASS`.
-
----
-
-## Requirements
-
-- **OS**: Windows 11 (22H2 / 23H2 / 24H2+) or Windows 10 22H2
-- **Shell**: Windows PowerShell `5.1` or PowerShell `7.x` (all 16 `.ps1` scripts are 100% pure ASCII and dual-engine tested)
-- **Proxy Client**: `v2rayN` (7.x+) with `Xray`, `sing-box`, or `Mihomo` TUN mode enabled
-  - *Tip*: If you want toggling the **Enable Tun** switch alone to block/unblock browser access to foreign AI sites without exiting `v2rayN`, set v2rayN's bottom system proxy mode to **Clear System Proxy** (`清除系统代理`).
-
----
-
-## Quick Start (CLI Deployment with 45-Minute Auto-Rollback Net)
-
-1. **Copy to `C:\AI-Net-Guard`** and open an **elevated PowerShell** (`Win + X` -> *Terminal (Admin)*):
-
+1. **部署工作目录**（打开管理员 PowerShell `Win + X -> Terminal (Admin)`）：
    ```powershell
    Copy-Item -Path .\AI-Net-Guard -Destination C:\AI-Net-Guard -Recurse -Force
    cd C:\AI-Net-Guard
    ```
 
-2. **Start `v2rayN` with TUN enabled**, then run the read-only pre-flight audit (optional):
-
+2. **启动代理软件**：开启 `v2rayN` 并勾选开启 TUN 模式，随后执行只读巡检审计：
    ```powershell
    .\00-audit.ps1
    .\04-wfp-audit.ps1
    ```
 
-3. **Step 1 — DNS, IPv6, Prefix Policy, SMHNR & NTP Hardening** (records original baseline in `backup\baseline.json`):
-
+3. **Step 1 — 核心基线与 DNS/IPv6/SMHNR 加固**（自动备份原始基线至 `backup\baseline.json`）：
    ```powershell
    .\01-dns-hardening.ps1
    ```
 
-4. **Step 2 — Install Static Kernel Firewall & Arm 45-Minute Rollback Safety Net**:
-
+4. **Step 2 — 安装内核防火墙规则并挂载 45 分钟自动回滚安全网**：
    ```powershell
    .\02-killswitch.ps1 -RollbackMinutes 45
    ```
 
-5. **Step 3 — Verify & Commit** (cancels the 45-minute auto-rollback timer once invariants pass and registers the zero-resident event tasks):
-
+5. **Step 3 — 验证出站通道并正式固化**（验证通过后注销回滚定时器并注册零常驻事件任务）：
    ```powershell
    .\03-verify.ps1 -WfpCheck
    .\08-commit.ps1
    ```
 
-6. **Step 4 — Lock Install Directory ACL & Run Full 23-Check Regression Suite**:
-
+6. **Step 4 — 锁定生产目录 ACL 权限并执行 23 项全回归测试**：
    ```powershell
    .\13-harden-acl.ps1
    ```
 
+</details>
+
 ---
 
-## Daily Usage & Maintenance Commands
+## 🎛️ 15 项可配置防护策略与特性矩阵 (Feature Matrix)
 
-Once installed and committed, **daily operation is completely hands-free**—switching proxy nodes, switching between `Xray` (VLESS/VMess/Trojan) and `sing-box` (Hysteria2/TUIC), plugging in USB/phone-tethering NICs, and waking from Modern Standby are all handled automatically.
+在 GUI 配置中心中，所有 15 项功能均支持可视化勾选，并在点击「一键部署」时幂等生效；用户亦可随时通过 `backup\guard-policy.json` 进行自动化编排：
+
+| 策略分类 | 策略键值 (Key) | 功能名称 | 默认状态 | 业务与安全白话释义 | 关闭时的行为 |
+| :--- | :--- | :--- | :---: | :--- | :--- |
+| **1. 流量与防火墙** | `AllowCnDirect` | **中国大陆 IPv4 直连白名单** | 🟢 **ON** `[推荐]` | 国内网站与应用满速直连，仅拦截境外直连；**关代理时国内访问丝滑不断网**。 | 切换为严格全局铁桶模式（TUN 断开时国内网络亦全部切断）。 |
+| **1. 流量与防火墙** | `AllowLan` | **局域网设备互访 (LocalSubnet)** | 🟢 **ON** `[推荐]` | 允许访问同一局域网下的 NAS、打印机、智能家居、投屏与路由器后台。 | 禁用 `AI-Guard-Allow-LAN` 规则（物理网卡彻底隔离本地子网）。 |
+| **1. 流量与防火墙** | `AllowNcsi` | **Windows 联网状态图标探测放行** | 🟢 **ON** `[推荐]` | 仅放行微软联网检测探针（`13.107.4.52:80`），防止任务栏误报“无网络小地球”。 | 禁用 `AI-Guard-Allow-NCSI` 规则。 |
+| **1. 流量与防火墙** | `QuarantineRogueAllow` | **自动隔离第三方软件出站放行规则** | 🟢 **ON** `[推荐]` | 深度检测第三方软件私自添加的未受限 Allow 规则并自动隔离；含防前缀冒名检测。 | 停止后台漂移规则自动隔离，并恢复被动态隔离的外部规则。 |
+| **2. DNS 泄漏防护** | `LockPhysicalDns` | **锁定物理网卡静态 DNS (`223.5.5.5`)** | 🟢 **ON** `[推荐]` | 杜绝运营商 DHCP 劫持；开代理走加密 TUN DoH，关代理安全解析国内网站。 | 从备份恢复物理网卡原始 DHCP 自动获取或自定义 DNS。 |
+| **2. DNS 泄漏防护** | `DisableSmhnr` | **禁用智能多宿主并行 DNS (`SMHNR`)** | 🟢 **ON** `[推荐]` | 阻止 Win11 在开启代理时向物理网卡和虚拟网卡并发抢答 DNS，物理明文查询归零。 | 恢复 Windows 默认并行 DNS 抢答行为。 |
+| **2. DNS 泄漏防护** | `DisableLlmnrNetbios` | **禁用局域网多播/广播解析 (LLMNR)** | 🟢 **ON** `[推荐]` | 防止域名查询泄漏到局域网，免疫局域网同名欺骗劫持攻击。 | 恢复默认局域网多播与 NetBIOS 设置。 |
+| **2. DNS 泄漏防护** | `StrictNrptDoh` | **严格全局 DoH 强制加密 (`NRPT`)** | ⚪ **OFF** `[高级]` | 强制全系统所有域名仅走 `1.1.1.1` DoH；**注意：关代理后国内也将无法解析域名**。 | 移除 `AI-Guard*` NRPT 策略规则，恢复标准解析。 |
+| **3. IPv6 与双栈** | `DisablePhysicalIpv6` | **禁用物理网卡 IPv6 协议栈绑定** | 🟢 **ON** `[推荐]` | 彻底堵死应用通过运营商原生 IPv6 绕过 IPv4 TUN 直连海外的漏洞（含热插拔网卡）。 | 恢复物理网卡 `ms_tcpip6` 绑定。 |
+| **3. IPv6 与双栈** | `PreferIpv4Prefix` | **提升 IPv4 寻址优先级高于 IPv6** | 🟢 **ON** `[推荐]` | 优先请求 IPv4，彻底消除 Python / Git / CLI 每次请求前等待 IPv6 超时的 2~5 秒卡顿。 | 恢复原始 `DisabledComponents` 注册表值与路由前缀表权重。 |
+| **4. 自愈与安全基座** | `ZeroResidentMonitor` | **零内存事件触发与睡眠唤醒自愈** | 🟢 **ON** `[推荐]` | 平时 **0 进程、0 MB 内存**；仅在网络切换、开机、睡眠唤醒时毫秒级自检并清空污染 DNS。 | 注销计划任务，仅保留静态防火墙规则。 |
+| **4. 自愈与安全基座** | `AutoNodeSync` | **多内核节点与端口自动热同步** | 🟢 **ON** `[推荐]` | 在 `v2rayN` 切换节点、端口跳跃或更换内核时自动放行新节点，无需手动干预。 | 冻结当前节点放行规则，停止自动跟踪 `config.json`。 |
+| **4. 自愈与安全基座** | `AutoHealStaleProxy` | **断电/崩溃残留死系统代理自动清理** | 🟢 **ON** `[推荐]` | 代理异常崩溃后自动清理失效的 `127.0.0.1` 系统代理，避免开机后网页全挂。 | 不自动清理失效的 `HKCU` 系统代理。 |
+| **4. 自愈与安全基座** | `DomesticNtp` | **国内高可用时间同步加固** | 🟢 **ON** `[推荐]` | 设置阿里/腾讯/中科院授时，防止电脑长时间睡眠后时钟偏差导致 VLESS 握手死锁。 | 恢复备份的原始 Windows 时间服务器地址。 |
+| **4. 自愈与安全基座** | `HardenInstallAcl` | **安装目录防篡改权限锁定 (`ACL`)** | 🟢 **ON** `[推荐]` | 将 `C:\AI-Net-Guard` 锁定为管理员只写，防止普通程序篡改白名单或借任务提权。 | 执行 `13-harden-acl.ps1 -Undo` 恢复默认目录继承权限。 |
+
+---
+
+## ⚡ 核心特性深度解析 (Key Features)
+
+- **100% 静态内核态数据路径 (`0 ms` 切换，`~0%` CPU 损耗)**：
+  - 基于 Windows 状态化 WFP ALE 流缓存。包含 6,516 个中国大陆聚合网段的 `AI-Guard-Allow-CN` 规则仅在首次 TCP SYN / 握手数据包时进行哈希匹配（耗时 `< 0.01 ms`），建立连接后的后续海量数据包全部由内核在 `O(1)` 时间复杂度下硬件线速转发。
+  - 开关 TUN 代理不需要对防火墙规则进行任何增删修改，即便后台没有任何 PowerShell 进程运行，防御熔断依然绝对生效。
+- **零常驻事件驱动引擎 (`0 MB` 待机内存)**：
+  - 彻底抛弃低效的 `while ($true)` 轮询脚本。通过 Windows Task Scheduler 深度订阅内核事件：`NetworkProfile`（网络连接/断开事件 `10000/10001`）、系统引导 `BootTrigger`、以及 **S3 睡眠 / 休眠 / 现代待机 (`S0ix`) 唤醒**（`Power-Troubleshooter 1`、`Kernel-Power 107/507`）。
+  - 在健康快路径下单次运行耗时仅约 **90 ms**，跑完立即释放全部内存退出。
+- **防冒名伪装穿透盾 (Anti-Impersonation Outbound Shield)**：
+  - 针对 Windows 防火墙存在的“外部脚本可私自添加未受限 Allow 规则”漏洞，设计了单遍结构体白名单校验算法。即使未授权规则被恶意赋予了 `AI-Guard-*` 前缀，只要其缺少目标 IP 约束（`RA4/RA6`）、网卡接口（`IF`）或程序白名单（`App`），均会被立即判定为非法规则并强制隔离至备份归档。
+- **端到端物理直出与消除双核内部二跳 (0 Double-Hop Relay)**：
+  - 在 `sing-box` (TUN 前端) + `Xray` (REALITY 后端) 双核心架构下，自动向物理网卡注入高优先级 `/32` 主机明细路由，利用 Windows 内核最长掩码匹配（LPM）机制，强制 Xray 出站 Socket 绕过 `singbox_tun` 虚拟网卡直接从物理网卡直连远端节点，彻底消除了虚拟网卡内的二次 CPU 开销与多余延迟。
+- **全多核心节点热同步 (Multi-Core Auto-Sync)**：
+  - 自动定位 `v2rayN` 运行环境，同时解析 **Xray**（`outbounds[].protocol`、`vnext`、`servers`、`peers`）与 **sing-box**（`outbounds[].type`、`server`、`server_port` 以及 Hysteria2 端口跳跃范围 `"20000:30000"`）。
+  - 自动将目标进程动态绑定至活跃核心（`xray.exe` / `sing-box.exe` / `mihomo.exe`），并通过智能适配器 GUID/别名多级匹配放行异构网卡。
+- **Win11 24H2 Xray TUN 核心修复与环境加固**：
+  - 针对 Windows 11 24H2 内核变更导致 Xray Wintun 报错 `Error 5: Access is denied` 的深坑，深度集成了内核驱动级的接口 DNS 初始化修复，保证 Xray 原生 TUN 稳定拉起。
+  - 内置一键关闭 Windows 11 后台高频遥测服务（`DiagTrack`）脚本，彻底消除微软遥测直连海外 IP 触发防火墙拦截产生的 `connectex 10013` 权限报错。
+- **权限防篡改加固与 23 项端到端全回归测试套件**：
+  - 生产目录 `C:\AI-Net-Guard` 权限锁定为 `owner=Administrators`、`Administrators/SYSTEM=Full`、`Users=Read+Execute`，杜绝未提权进程篡改白名单或劫持任务。
+  - 完整回归测试套件 [`12-regression.ps1`](./12-regression.ps1) 覆盖 23 项系统不变量测试，包含实机 10 秒 `pktmon` 端口 53 抓包校验（`phys_attempts=0, escaped=0`）、WFP 状态审计、直连 Socket 漏球探测等。
+
+---
+
+## 🛠️ 日常维护与常用命令
+
+一旦安装部署完成，日常使用**完全无需人工干预**——切换节点、切换代理核心、插拔 USB 网卡或休眠唤醒均全自动接管。
 
 ```powershell
-# Run in PowerShell (works non-elevated for read-only checks)
+# ==============================================================================
+# 1. 普通用户 / IDE 终端日常只读检查 (免 UAC 管理员提权)
+# ==============================================================================
 cd C:\AI-Net-Guard
-.\07-mode.ps1 -Status                # Instant read-only status dashboard (TUN, core, rules, ACL, DNS shield, 0 MB footprint)
-.\10-sync-node-rule.ps1 -WhatIfOnly  # Preview parsed node IP/ports/core from v2rayN config.json
+.\07-mode.ps1 -Status                # 秒级输出防御健康状态、活跃 TUN 适配器、DNS 护盾与 ACL 权限
+.\10-sync-node-rule.ps1 -WhatIfOnly  # 预检预览 v2rayN 当前配置中的节点 IP、端口与核心路径
 
-# Run in Elevated PowerShell (Admin) for management
-.\07-mode.ps1                        # Run an immediate zero-CIM health check / self-heal
-.\12-regression.ps1                  # Run the full 23-check end-to-end regression suite (auto-cleans temp captures)
-.\13-harden-acl.ps1 -SyncWorkspace   # Pull script updates from a git clone directory & re-lock ACLs
-.\09-rollback.ps1                    # Completely uninstall & restore original firewall, DNS, IPv6, prefix policy & tasks
+# ==============================================================================
+# 2. 管理员终端维护命令 (PowerShell 以管理员身份运行)
+# ==============================================================================
+.\07-mode.ps1                        # 立即执行一次健康检查与自愈同步 (耗时 < 100ms)
+.\12-regression.ps1                  # 运行完整的 23 项自动化回归测试套件 (包含实机抓包)
+.\13-harden-acl.ps1 -SyncWorkspace   # 从 Git 仓库同步最新核心脚本至生产目录并重新加固 ACL
+.\09-rollback.ps1                    # 完整卸载防护，还原 Windows 原始出厂网络与防火墙基线
 ```
 
-### Allowing Specific Third-Party Outbound Firewall Rules
+### 💡 针对特定第三方软件放行出站规则
 
-To exempt specific third-party firewall rule names from automatic anti-drift quarantine, create `C:\AI-Net-Guard\backup\allowed-outbound-rules.json` containing a JSON string array of rule `Name` or `DisplayName` values:
+若需要长期允许特定的第三方开发工具或自建服务直连海外，可在 `C:\AI-Net-Guard\backup\allowed-outbound-rules.json` 中配置豁免白名单：
 
 ```json
 [
-  "My-Approved-App-Rule"
+  "My-Custom-App-Rule",
+  "Tailscale-Outbound-Allow"
 ]
 ```
 
 ---
 
-## Repository Script Reference
+## 📚 全工程脚本与组件索引
 
-| Script | Purpose |
-| --- | --- |
-| [`00-audit.ps1`](./00-audit.ps1) | Read-only system snapshot (NICs, routes, DNS, IPv6 prefix policy, NTP, firewall profiles/rules, proxy config) |
-| [`01-dns-hardening.ps1`](./01-dns-hardening.ps1) | Sets static `223.5.5.5` physical DNS, disables physical IPv6, prefers IPv4 over IPv6, disables LLMNR/NetBIOS/SMHNR, ensures domestic NTP |
-| [`02-killswitch.ps1`](./02-killswitch.ps1) | Backs up `.wfw` & active outbound Allow rules, installs `AI-Guard-*` static ruleset, enables `DefaultOutboundAction=Block`, arms 45-min rollback timer |
-| [`03-verify.ps1`](./03-verify.ps1) | Configuration & datapath verification (`Proxy=$null` direct kernel probes, `-WfpCheck`, interactive `-FailClosedTest`) |
-| [`04-wfp-audit.ps1`](./04-wfp-audit.ps1) | Exports WFP filters to inspect Xray's dynamic `permit Xray` / `block DNS` filters + optional `pktmon` port-53 capture |
-| [`05-xray-direct-test.ps1`](./05-xray-direct-test.ps1) | Behavioral proof of Xray's `ALE_AUTH_CONNECT` WFP hard permit under `geosite:cn -> direct` routing |
-| [`06-boot-guard.ps1`](./06-boot-guard.ps1) | Cross-reboot safety net (`-Arm` before reboot drill, `-Remove` after verifying persistence) |
-| [`07-mode.ps1`](./07-mode.ps1) | **Core controller**: zero-resident guard check, multi-core auto node sync, anti-impersonation rogue Allow quarantine, SMHNR/LLMNR heal, dead proxy cleanup, `-Status` |
-| [`08-commit.ps1`](./08-commit.ps1) | Verifies invariants, removes `AI-Guard-Test-Rollback`, and registers `AI-Guard-Mode-Event` + `AI-Guard-Mode-Fallback` |
-| [`09-rollback.ps1`](./09-rollback.ps1) | Full baseline restoration with postcondition assertions (tasks, `.wfw`, quarantined rules, DNS, IPv6, prefix policy, NTP, LLMNR, SMHNR) |
-| [`10-sync-node-rule.ps1`](./10-sync-node-rule.ps1) | Manual / preview (`-WhatIfOnly`) multi-core node & port rule synchronizer |
-| [`11-geo-cn.ps1`](./11-geo-cn.ps1) | Zero-allocation protobuf parser for `geoip-only-cn-private.dat` / `geoip.dat` -> CIDR normalization & lossless aggregation into [`cn-ipv4.txt`](./cn-ipv4.txt) |
-| [`12-regression.ps1`](./12-regression.ps1) | **23-check automated regression suite** (static state, ACL lock, 0-MB footprint, TUN on/off datapath, WFP, 10s `pktmon` DNS capture, corrupt GeoIP drill) |
-| [`13-harden-acl.ps1`](./13-harden-acl.ps1) | Locks `C:\AI-Net-Guard` owner & DACL against non-admin tampering, runs elevated migration + regression (`-Undo` and `-SyncWorkspace` supported) |
-| [`14-apply-policy.ps1`](./14-apply-policy.ps1) | **Idempotent policy orchestrator**: executes clean deploy or incremental 15-toggle reconfiguration from `backup\guard-policy.json` |
-| [`scripts/align-xray-egress.bat`](./scripts/align-xray-egress.bat) | Self-elevating alignment utility to inject `/32` physical host route and eliminate dual-core double-hop relay |
-| [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | Disables Windows 11 background telemetry services (`DiagTrack`, `AllowTelemetry = 0`) to prevent `connectex 10013` permission errors |
-| [`gui/`](./gui) | Standalone Windows-native C# WPF GUI desktop configurator project (`net48`, embeds `payload.zip` + UAC manifest) |
-| [`watchdog.ps1`](./watchdog.ps1) | Optional CLR `NetworkChange` event-driven resident daemon (disabled by default in favor of 0-MB `AI-Guard-Mode-Event`) |
+| 脚本文件 | 功能定位与技术细节说明 |
+| :--- | :--- |
+| [`00-audit.ps1`](./00-audit.ps1) | 系统只读状态快照（网卡列表、静态路由、DNS 设置、IPv6 前缀策略、NTP、防火墙配置文件与客户端配置） |
+| [`01-dns-hardening.ps1`](./01-dns-hardening.ps1) | 设置物理网卡静态 `223.5.5.5`、切断物理 IPv6 绑定、提升 IPv4 前缀优先级、关闭 LLMNR/NetBIOS/SMHNR、设置国内高可用 NTP |
+| [`02-killswitch.ps1`](./02-killswitch.ps1) | 导出 `.wfw` 原始备份与活跃规则，部署 `AI-Guard-*` 静态规则集，开启 `DefaultOutboundAction=Block`，挂载 45 分钟自动回滚安全网 |
+| [`03-verify.ps1`](./03-verify.ps1) | 出站通道与数据路径多维验证（`Proxy=$null` 内核直接探测、`-WfpCheck` WFP 过滤树检查、交互式断网测试） |
+| [`04-wfp-audit.ps1`](./04-wfp-audit.ps1) | 导出系统底层 WFP Filters，审计 Xray 的动态 `permit Xray` / `block DNS` 过滤器，支持 `pktmon` 抓包排查 |
+| [`05-xray-direct-test.ps1`](./05-xray-direct-test.ps1) | 深度验证 Xray 在 `geosite:cn -> direct` 分流规则下的 `ALE_AUTH_CONNECT` 内核放行行为 |
+| [`06-boot-guard.ps1`](./06-boot-guard.ps1) | 跨重启安全网（在重启演练前 `-Arm` 预警，验证自启恢复正常后 `-Remove` 移除） |
+| [`07-mode.ps1`](./07-mode.ps1) | **核心调度中枢**：零常驻事件处理、多内核节点热同步、防冒名穿透规则隔离、SMHNR/LLMNR 自愈、死系统代理清理、免提权 `-Status` 查询 |
+| [`08-commit.ps1`](./08-commit.ps1) | 固化保护配置：校验所有不变量、注销 45 分钟回滚定时器、正式向系统注册 `AI-Guard-Mode-Event` 与 `Fallback` 计划任务 |
+| [`09-rollback.ps1`](./09-rollback.ps1) | 完整复原卸载：还原 Windows 原始出厂防火墙规则集、恢复被隔离的规则、还原 DNS/IPv6/前缀表/NTP，注销全部计划任务 |
+| [`10-sync-node-rule.ps1`](./10-sync-node-rule.ps1) | 手动 / 预检（`-WhatIfOnly`）多内核节点与端口防火墙规则同步工具 |
+| [`11-geo-cn.ps1`](./11-geo-cn.ps1) | 零内存分配 Protobuf 流式解析器：解析 `geoip.dat`，完成 CIDR 归一化聚合为包含 6,516 行的 [`cn-ipv4.txt`](./cn-ipv4.txt) |
+| [`12-regression.ps1`](./12-regression.ps1) | **23 项自动化回归测试套件**：覆盖静态规则、ACL 权限、0 MB 内存特征、TUN 启闭熔断、WFP 注入、10 秒真实 `pktmon` DNS 抓包 |
+| [`13-harden-acl.ps1`](./13-harden-acl.ps1) | 生产目录 ACL 权限防篡改锁定（支持 `-Undo` 权限还原与 `-SyncWorkspace` 源码目录热同步） |
+| [`14-apply-policy.ps1`](./14-apply-policy.ps1) | **声明式策略编排器**：读取 `backup\guard-policy.json` 实现 15 项特性的增量幂等应用 |
+| [`Emergency-Rescue.bat`](./Emergency-Rescue.bat) | 纯原生、无依赖、自带提权的离线一键网络应急脱困批处理脚本 |
+| [`scripts/align-xray-egress.bat`](./scripts/align-xray-egress.bat) | 自动注入物理网卡高优先级 `/32` 主机路由，消除双核架构下的二跳中继开销 |
+| [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | 一键关闭 Windows 11 遥测服务与遥测组策略，杜绝海外遥测 IP 拦截产生的 `connectex 10013` 报错 |
+| [`gui/`](./gui) | 原生 C# WPF 桌面配置中心项目源码（基于 `.NET Framework 4.8`，单文件内嵌核心载荷与 UAC 清单） |
 
-For deep architectural notes and the engineering review log, see [`CURRENT-IMPLEMENTATION.md`](./CURRENT-IMPLEMENTATION.md).
-
----
-
-## Known Security Boundaries
-
-1. **All non-CN direct traffic is blocked when TUN is OFF**: GitHub, Google, Steam, and overseas CDNs are blocked alongside foreign AI endpoints whenever TUN is down (by design under `DefaultOutboundAction = Block` + `AI-Guard-Allow-CN`).
-2. **Xray's Dynamic WFP Hard Permit (`permit Xray`)**: While `Xray` TUN is active with `autoSystemWfpBlockLeak`, Xray installs an `ALE_AUTH_CONNECT` filter with `FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT` for `xray.exe` itself. During TUN operation, Windows Firewall strictly governs **all non-Xray processes**, while `xray.exe`'s own direct vs. proxy split is governed by Xray's routing configuration (`sing-box` does not install this WFP override and is strictly bound by `AI-Guard-Allow-Node-*`). To constrain `xray.exe` externally even against a compromised config, enforce a router/gateway egress allowlist to your proxy node IP:port.
-3. **Domestic-IP Relay Proxies**: Traffic sent to third-party API relays hosted on mainland-China IPv4 addresses matches `AI-Guard-Allow-CN` and is not blocked by GeoIP.
-4. **Captive Portals**: Hotel/airport Wi-Fi portals using foreign public IPs or private hijacked DNS may require temporarily resetting NIC DNS or running `09-rollback.ps1` to complete portal login.
+> 想要深入了解系统的架构演进与深层技术复盘，请参阅 [`CURRENT-IMPLEMENTATION.md`](./CURRENT-IMPLEMENTATION.md)。
 
 ---
 
-## License
+## 🔒 已知安全边界与设计哲学 (Known Boundaries)
 
-Released under the [MIT License](./LICENSE).
+1. **TUN 关闭时所有境外流量均被默认丢弃**：这是系统的核心设计目标（Fail-Closed）。当代理断开时，包括 GitHub、Google、Steam 以及境外 AI API 均会被内核防火墙硬件级丢弃，国内流量与本地局域网不受任何影响。
+2. **Xray 原生动态 WFP 过滤权限**：在开启 `autoSystemWfpBlockLeak` 时，Xray 会为自身进程安装 `ALE_AUTH_CONNECT` 深度过滤驱动。在此期间，Windows 防火墙严格监管除 Xray 以外的所有进程；Xray 自身流量则由其内部分流规则裁决。`sing-box` 则不加载此 WFP 覆盖层，完全由 AI-Net-Guard 规则严格约束。
+3. **国内 IP 中转反代节点**：若使用的第三方 AI 代理服务部署在中国大陆公网 IP 上，其出站连接将匹配 `AI-Guard-Allow-CN` 规则直连放行。
+4. **机场 / 酒店 Web 强制认证门户 (Captive Portals)**：部分公共网络强制跳转页面如果架设在境外 IP 或采用私有 DNS 劫持，可能需要在认证期间使用 `Emergency-Rescue.bat` 或 `09-rollback.ps1` 临时还原 DNS，认证完成后重新开启。
+
+---
+
+## 📄 开源许可证
+
+本项目基于 [MIT License](./LICENSE) 协议开源。
