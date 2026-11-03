@@ -57,7 +57,7 @@ function Show-State {
     if ($t) { Write-Host ('task: REGISTERED (' + $t.State + ')') -ForegroundColor Yellow }
     else { Write-Host 'task: not registered' -ForegroundColor DarkGray }
     if (Test-Path $Marker) {
-        $m = Get-Content -LiteralPath $Marker -Raw | ConvertFrom-Json
+        $m = Get-Content -LiteralPath $Marker -Raw -Encoding UTF8 | ConvertFrom-Json
         Write-Host ('armed until: ' + $m.ArmedUntil + '  wait: ' + $m.WaitMinutes + ' min') -ForegroundColor Yellow
     }
     else { Write-Host 'marker: none' -ForegroundColor DarkGray }
@@ -68,13 +68,13 @@ function Show-State {
 if ($RunIfArmed) {
     $wait = 10
     if (Test-Path $Marker) {
-        try { $wait = [int](Get-Content -LiteralPath $Marker -Raw | ConvertFrom-Json).WaitMinutes } catch { }
+        try { $wait = [int](Get-Content -LiteralPath $Marker -Raw -Encoding UTF8 | ConvertFrom-Json).WaitMinutes } catch { }
     }
     Start-Sleep -Minutes $wait
     $armed = $false
     if (Test-Path $Marker) {
         try {
-            $m = Get-Content -LiteralPath $Marker -Raw | ConvertFrom-Json
+            $m = Get-Content -LiteralPath $Marker -Raw -Encoding UTF8 | ConvertFrom-Json
             if ((Get-Date) -lt ([datetime]$m.ArmedUntil)) { $armed = $true }
         }
         catch { }

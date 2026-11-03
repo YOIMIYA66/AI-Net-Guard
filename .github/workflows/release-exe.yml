@@ -1,0 +1,48 @@
+name: Build & Release GUI Executable
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Build Standalone Windows GUI Executable
+        shell: powershell
+        run: |
+          .\gui\build.ps1 -RunSmokeTest
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Net-Guard-Windows-GUI
+          path: |
+            dist/AI-Net-Guard.exe
+            dist/AI-Net-Guard.exe.sha256
+            dist/Emergency-Rescue.bat
+
+      - name: Release Assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/AI-Net-Guard.exe
+            dist/AI-Net-Guard.exe.sha256
+            dist/Emergency-Rescue.bat
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

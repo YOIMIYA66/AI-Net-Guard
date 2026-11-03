@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.4 - zero-resident static guard, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
+    AI-Net-Guard v5.5 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
 
 .DESCRIPTION
     The guard itself is 100% STATIC in Windows kernel WFP (BFE / tcpip.sys):
@@ -55,6 +55,71 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+$policyFile = Join-Path $Root 'backup\guard-policy.json'
+
+function Get-GuardPolicy {
+    $pol = [ordered]@{
+        Version              = '5.5'
+        Preset               = 'Recommended'
+        DnsServer            = $DnsServer
+        V2rayNRoot           = ''
+        AllowCnDirect        = $true
+        AllowLan             = $true
+        AllowNcsi            = $true
+        QuarantineRogueAllow = (-not [bool]$SkipQuarantineAllowRules)
+        LockPhysicalDns      = $true
+        DisableSmhnr         = $true
+        DisableLlmnrNetbios  = $true
+        StrictNrptDoh        = $false
+        DisablePhysicalIpv6  = $true
+        PreferIpv4Prefix     = $true
+        ZeroResidentMonitor  = $true
+        AutoNodeSync         = (-not [bool]$DisableAutoNodeSync)
+        AutoHealStaleProxy   = (-not [bool]$SkipStaleProxyHeal)
+        DomesticNtp          = $true
+        HardenInstallAcl     = $true
+    }
+    if (Test-Path -LiteralPath $policyFile) {
+        try {
+            $raw = Get-Content -LiteralPath $policyFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($raw) {
+                foreach ($k in @('AllowCnDirect', 'AllowLan', 'AllowNcsi', 'QuarantineRogueAllow', 'LockPhysicalDns',
+                        'DisableSmhnr', 'DisableLlmnrNetbios', 'StrictNrptDoh', 'DisablePhysicalIpv6', 'PreferIpv4Prefix',
+                        'ZeroResidentMonitor', 'AutoNodeSync', 'AutoHealStaleProxy', 'DomesticNtp', 'HardenInstallAcl')) {
+                    if ($raw.PSObject.Properties.Name -contains $k -and $null -ne $raw.$k) {
+                        $pol[$k] = [bool]$raw.$k
+                    }
+                }
+                foreach ($sk in @('Version', 'Preset', 'DnsServer', 'V2rayNRoot')) {
+                    if ($raw.PSObject.Properties.Name -contains $sk -and $raw.$sk) {
+                        $pol[$sk] = [string]$raw.$sk
+                    }
+                }
+            }
+        }
+        catch { }
+    }
+    return [pscustomobject]$pol
+}
+
+$guardPolicy = Get-GuardPolicy
+if (-not $PSBoundParameters.ContainsKey('V2rayNRoot') -and $guardPolicy.V2rayNRoot -and (Test-Path -LiteralPath $guardPolicy.V2rayNRoot)) {
+    $V2rayNRoot = $guardPolicy.V2rayNRoot
+}
+if (-not $PSBoundParameters.ContainsKey('DnsServer')) {
+    if ($guardPolicy.StrictNrptDoh) { $DnsServer = '1.1.1.1' }
+    elseif ($guardPolicy.DnsServer) { $DnsServer = $guardPolicy.DnsServer }
+}
+if (-not $PSBoundParameters.ContainsKey('DisableAutoNodeSync') -and (-not $guardPolicy.AutoNodeSync)) {
+    $DisableAutoNodeSync = [switch]::Present
+}
+if (-not $PSBoundParameters.ContainsKey('SkipQuarantineAllowRules') -and (-not $guardPolicy.QuarantineRogueAllow)) {
+    $SkipQuarantineAllowRules = [switch]::Present
+}
+if (-not $PSBoundParameters.ContainsKey('SkipStaleProxyHeal') -and (-not $guardPolicy.AutoHealStaleProxy)) {
+    $SkipStaleProxyHeal = [switch]::Present
+}
+
 if (-not $V2rayNRoot) {
     if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
     else {
@@ -89,7 +154,8 @@ $hotplugFile = Join-Path $Root 'backup\hotplug-ipv6.json'
 $logDir = Join-Path $Root 'logs'
 $eventLog = Join-Path $logDir 'watchdog.log'
 $cnRuleName = 'AI-Guard-Allow-CN'
-$requiredRules = @('AI-Guard-Allow-TUN', 'AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-DoH-Ali', 'AI-Guard-Allow-DHCP', 'AI-Guard-Allow-LAN')
+$requiredRules = @('AI-Guard-Allow-TUN', 'AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-DoH-Ali', 'AI-Guard-Allow-DHCP')
+if ($guardPolicy.AllowLan) { $requiredRules += 'AI-Guard-Allow-LAN' }
 $knownTunNames = @($TunName, 'xray_tun', 'singbox_tun', 'mihomo_tun', 'Meta', 'Mihomo') | Select-Object -Unique
 
 # ---------------------------------------------------------------- helpers (zero-CIM fast primitives)
@@ -272,7 +338,7 @@ function Get-FirewallRuleAnalysis {
     $rogues = New-Object System.Collections.Generic.List[object]
     $exceptions = @()
     if (Test-Path -LiteralPath $allowExceptionsFile) {
-        try { $exceptions = @(Get-Content -LiteralPath $allowExceptionsFile -Raw | ConvertFrom-Json) } catch { $exceptions = @() }
+        try { $exceptions = @(Get-Content -LiteralPath $allowExceptionsFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { $exceptions = @() }
     }
 
     try {
@@ -433,7 +499,7 @@ function Parse-ProxyConfigFast($Cfg) {
 function Test-NodeMetaFastHit([string]$StampPrefix) {
     if (-not (Test-Path -LiteralPath $nodeMeta)) { return $false }
     try {
-        return ((Get-Content -LiteralPath $nodeMeta -Raw).Trim().StartsWith($StampPrefix))
+        return ((Get-Content -LiteralPath $nodeMeta -Raw -Encoding UTF8).Trim().StartsWith($StampPrefix))
     }
     catch { return $false }
 }
@@ -457,7 +523,7 @@ function Sync-NodeRuleFast {
     # Fast path (<0.3 ms, 0 CIM): config.json unchanged AND live firewall rule still matches cached node + core metadata
     if ($tcpActive -and $rawTcp -and (Test-Path -LiteralPath $nodeMeta)) {
         try {
-            $cached = (Get-Content -LiteralPath $nodeMeta -Raw).Trim()
+            $cached = (Get-Content -LiteralPath $nodeMeta -Raw -Encoding UTF8).Trim()
             if ($cached.StartsWith($stampPrefix)) {
                 $parts = $cached.Split('|')
                 if ($parts.Count -ge 4) {
@@ -492,7 +558,7 @@ function Sync-NodeRuleFast {
 
     # Parse config.json only when timestamp changed or node-sync.meta missing/drifted
     try {
-        $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+        $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $parsed = Parse-ProxyConfigFast -Cfg $cfg
         if (-not $parsed) { return }
 
@@ -510,6 +576,35 @@ function Sync-NodeRuleFast {
 
         $udp = [bool]$parsed.Udp
         $udpPorts = @($parsed.UdpPorts)
+
+        # Scan test configs in binConfigs (e.g. Reality port 443 while active config is Hysteria2 25000)
+        $binCfgDir = Join-Path $V2rayNRoot 'binConfigs'
+        if (Test-Path -LiteralPath $binCfgDir) {
+            foreach ($testFile in (Get-ChildItem -LiteralPath $binCfgDir -Filter 'configTest*.json' -ErrorAction SilentlyContinue)) {
+                try {
+                    $tCfg = Get-Content -LiteralPath $testFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+                    if ($tCfg.outbounds) {
+                        foreach ($ob in $tCfg.outbounds) {
+                            $tAddr = [string]$(if ($ob.server) { $ob.server } else { $ob.settings.address })
+                            $tPort = [string]$(if ($ob.server_port) { $ob.server_port } else { $ob.settings.port })
+                            if ($tAddr) {
+                                if ($tAddr -match '^\d{1,3}(\.\d{1,3}){3}$') { $ips += @($tAddr) }
+                                else { $ips += @(Resolve-DomainIpsSafe -Domain $tAddr) }
+                            }
+                            if ($tPort) {
+                                $parsed.TcpPorts += @($tPort)
+                                if ($ob.type -match 'hysteria|tuic|wireguard' -or $ob.protocol -match 'hysteria|wireguard') {
+                                    $udpPorts += @($tPort)
+                                    $udp = $true
+                                }
+                            }
+                        }
+                    }
+                } catch { }
+            }
+        }
+        $ips = @($ips | Where-Object { $_ } | Select-Object -Unique)
+        $udpPorts = @($udpPorts | Where-Object { $_ } | Select-Object -Unique)
 
         # Extract existing IPs, ports & app from raw registry string (0 CIM) to preserve same-IP multi-port setup
         $oldIps = @([regex]::Matches($rawTcp, '(?:^|\|)RA4=([^|]+)') | ForEach-Object { $_.Groups[1].Value })
@@ -569,6 +664,34 @@ function Sync-NodeRuleFast {
                 $dohRule = Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-DoH-Ali' -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($dohRule) {
                     Set-NetFirewallRule -InputObject $dohRule -Program $coreExe -Enabled True -ErrorAction SilentlyContinue
+                }
+            }
+
+            # Keep companion rules for all installed proxy cores synchronized
+            foreach ($candRel in @('bin\xray\xray.exe', 'bin\sing_box\sing-box.exe', 'v2rayN.exe')) {
+                $compExe = Join-Path $V2rayNRoot $candRel
+                if ((Test-Path -LiteralPath $compExe) -and ($compExe -ine $coreExe)) {
+                    $cName = if ($candRel -like '*xray*') { 'Xray' } elseif ($candRel -like '*sing*') { 'SingBox' } else { 'V2rayN' }
+                    $cRuleTcp = Get-NetFirewallRule -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-TCP') -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($cRuleTcp) {
+                        Set-NetFirewallRule -InputObject $cRuleTcp -Program $compExe -RemoteAddress $ips -RemotePort $tcpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction SilentlyContinue
+                    }
+                    else {
+                        New-NetFirewallRule -Name ('AI-Guard-Allow-Core-' + $cName + '-TCP') -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-TCP') `
+                            -Direction Outbound -Action Allow -Program $compExe -Protocol TCP `
+                            -RemoteAddress $ips -RemotePort $tcpPorts -Profile Any -Enabled True -ErrorAction SilentlyContinue | Out-Null
+                    }
+                    if ($udp) {
+                        $cRuleUdp = Get-NetFirewallRule -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-UDP') -ErrorAction SilentlyContinue | Select-Object -First 1
+                        if ($cRuleUdp) {
+                            Set-NetFirewallRule -InputObject $cRuleUdp -Program $compExe -RemoteAddress $ips -RemotePort $udpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction SilentlyContinue
+                        }
+                        else {
+                            New-NetFirewallRule -Name ('AI-Guard-Allow-Core-' + $cName + '-UDP') -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-UDP') `
+                                -Direction Outbound -Action Allow -Program $compExe -Protocol UDP `
+                                -RemoteAddress $ips -RemotePort $udpPorts -Profile Any -Enabled True -ErrorAction SilentlyContinue | Out-Null
+                        }
+                    }
                 }
             }
 
@@ -632,7 +755,7 @@ function Backfill-DnsBaselineV54 {
     $bf = Join-Path $Root 'backup\baseline.json'
     $dnsJsonPath = $null
     if (Test-Path -LiteralPath $bf) {
-        try { $dnsJsonPath = (Get-Content -LiteralPath $bf -Raw | ConvertFrom-Json).Dns } catch { }
+        try { $dnsJsonPath = (Get-Content -LiteralPath $bf -Raw -Encoding UTF8 | ConvertFrom-Json).Dns } catch { }
     }
     if (-not $dnsJsonPath) {
         $oldestDns = Get-ChildItem -Path (Join-Path $Root 'backup') -Filter 'dns-*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -First 1
@@ -641,7 +764,7 @@ function Backfill-DnsBaselineV54 {
     if (-not $dnsJsonPath -or -not (Test-Path -LiteralPath $dnsJsonPath)) { return }
 
     try {
-        $db = Get-Content -LiteralPath $dnsJsonPath -Raw | ConvertFrom-Json
+        $db = Get-Content -LiteralPath $dnsJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $dbChanged = $false
 
         $polKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
@@ -665,7 +788,12 @@ function Backfill-DnsBaselineV54 {
 }
 
 function Set-SmhnrHardening {
+    param(
+        [bool]$DisableLlmnr = $true,
+        [bool]$DisableSmhnr = $true
+    )
     try {
+        if (-not $DisableLlmnr -and -not $DisableSmhnr) { return }
         $polKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
         $svcKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters'
         # NOTE: In PowerShell's Registry provider, New-Item -Force on an existing key
@@ -673,10 +801,14 @@ function Set-SmhnrHardening {
         if (-not (Test-Path -LiteralPath $polKey)) {
             New-Item -Path $polKey -Force | Out-Null
         }
-        New-ItemProperty -Path $polKey -Name 'EnableMulticast' -Value 0 -PropertyType DWord -Force | Out-Null
-        New-ItemProperty -Path $polKey -Name 'DisableSmartNameResolution' -Value 1 -PropertyType DWord -Force | Out-Null
-        if (Test-Path -LiteralPath $svcKey) {
-            New-ItemProperty -Path $svcKey -Name 'DisableSmartNameResolution' -Value 1 -PropertyType DWord -Force | Out-Null
+        if ($DisableLlmnr) {
+            New-ItemProperty -Path $polKey -Name 'EnableMulticast' -Value 0 -PropertyType DWord -Force | Out-Null
+        }
+        if ($DisableSmhnr) {
+            New-ItemProperty -Path $polKey -Name 'DisableSmartNameResolution' -Value 1 -PropertyType DWord -Force | Out-Null
+            if (Test-Path -LiteralPath $svcKey) {
+                New-ItemProperty -Path $svcKey -Name 'DisableSmartNameResolution' -Value 1 -PropertyType DWord -Force | Out-Null
+            }
         }
     }
     catch { }
@@ -714,7 +846,7 @@ function Get-WatchdogProcesses {
 
 function Read-PrevState {
     if (-not (Test-Path -LiteralPath $stateFile)) { return $null }
-    try { return (Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json) }
+    try { return (Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json) }
     catch { return $null }
 }
 
@@ -722,7 +854,7 @@ function Write-State {
     param([string]$Label, [bool]$CnEnabled, [string]$Sig, [bool]$TunState, [string[]]$Missing = @())
     New-Item -ItemType Directory -Path (Split-Path $stateFile) -Force | Out-Null
     [pscustomobject]@{
-        Version      = '5.4'
+        Version      = '5.5'
         Mode         = $Label
         CnEnabled    = $CnEnabled
         Signature    = $Sig
@@ -877,8 +1009,11 @@ function Show-Status {
     else { 'stopped' }
 
     Write-Host ''
-    Write-Host '=== AI-Net-Guard v5.4 Status (read-only) ===' -ForegroundColor Cyan
+    Write-Host '=== AI-Net-Guard v5.5 Status (read-only) ===' -ForegroundColor Cyan
     Write-Host ('TUN : ' + $tunLabel + '   core : ' + $coreLabel)
+    if (Test-Path -LiteralPath $policyFile) {
+        Write-Host ('  policy preset     : ' + $guardPolicy.Preset + ' (guard-policy.json active)') -ForegroundColor Cyan
+    }
 
     foreach ($pr in (Get-NetFirewallProfile -ErrorAction SilentlyContinue)) {
         $ok = ($pr.Enabled -and $pr.DefaultOutboundAction -eq 'Block')
@@ -886,11 +1021,16 @@ function Show-Status {
             -ForegroundColor $(if ($ok) { 'Green' } else { 'Red' })
     }
 
-    if ($ruleStates.ContainsKey($cnRuleName)) {
+    if (-not $guardPolicy.AllowCnDirect) {
+        $cnActive = ($ruleStates.ContainsKey($cnRuleName) -and $ruleStates[$cnRuleName])
+        Write-Host ('  rule {0,-24} : active={1} (disabled by policy - strict global lock)' -f $cnRuleName, $cnActive) `
+            -ForegroundColor $(if (-not $cnActive) { 'Cyan' } else { 'Yellow' })
+    }
+    elseif ($ruleStates.ContainsKey($cnRuleName)) {
         $cnActive = $ruleStates[$cnRuleName]
         $sigInfo = ''
         if (Test-Path -LiteralPath $cnSig) {
-            $rawSig = (Get-Content -LiteralPath $cnSig -Raw -ErrorAction SilentlyContinue).Trim()
+            $rawSig = (Get-Content -LiteralPath $cnSig -Raw -Encoding UTF8 -ErrorAction SilentlyContinue).Trim()
             if ($rawSig -match '^(\d+):') { $sigInfo = ' (prefixes=' + $matches[1] + ')' }
         }
         Write-Host ('  rule {0,-24} : active={1}{2}' -f $cnRuleName, $cnActive, $sigInfo) `
@@ -900,12 +1040,13 @@ function Show-Status {
         Write-Host ('  rule {0,-24} : ABSENT' -f $cnRuleName) -ForegroundColor Red
     }
 
-    $displayRules = @($requiredRules)
+    $displayRules = @('AI-Guard-Allow-TUN', 'AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-DoH-Ali', 'AI-Guard-Allow-DHCP', 'AI-Guard-Allow-LAN')
     if ($ruleStates.ContainsKey('AI-Guard-Allow-Node-UDP')) { $displayRules += 'AI-Guard-Allow-Node-UDP' }
     if ($ruleStates.ContainsKey('AI-Guard-Allow-TUN-Alt')) { $displayRules += 'AI-Guard-Allow-TUN-Alt' }
     $displayRules += 'AI-Guard-Allow-NCSI'
 
     foreach ($rn in $displayRules) {
+        $optDisabled = ($rn -eq 'AI-Guard-Allow-LAN' -and -not $guardPolicy.AllowLan) -or ($rn -eq 'AI-Guard-Allow-NCSI' -and -not $guardPolicy.AllowNcsi)
         if ($ruleStates.ContainsKey($rn)) {
             $act = $ruleStates[$rn]
             $extra = ''
@@ -918,10 +1059,14 @@ function Show-Status {
                 $syncTxt = if ($DisableAutoNodeSync) { ', auto-sync=off' } else { ', auto-sync=on' }
                 if ($rips) { $extra = ' (' + $rips + ':' + $rpts + $rapp + $syncTxt + ')' }
             }
-            Write-Host ('  rule {0,-24} : active={1}{2}' -f $rn, $act, $extra) -ForegroundColor $(if ($act) { 'Green' } else { 'Red' })
+            elseif ($optDisabled -and -not $act) {
+                $extra = ' (disabled by policy)'
+            }
+            $col = if ($act) { 'Green' } elseif ($optDisabled) { 'DarkGray' } else { 'Red' }
+            Write-Host ('  rule {0,-24} : active={1}{2}' -f $rn, $act, $extra) -ForegroundColor $col
         }
-        elseif ($rn -eq 'AI-Guard-Allow-NCSI') {
-            Write-Host ('  rule {0,-24} : not installed (optional)' -f $rn) -ForegroundColor DarkGray
+        elseif ($rn -eq 'AI-Guard-Allow-NCSI' -or $optDisabled) {
+            Write-Host ('  rule {0,-24} : not installed (disabled by policy)' -f $rn) -ForegroundColor DarkGray
         }
         else {
             Write-Host ('  rule {0,-24} : MISSING' -f $rn) -ForegroundColor Red
@@ -932,6 +1077,9 @@ function Show-Status {
     if ($rogueCnt -eq 0) {
         Write-Host '  rogue out-allow   : 0 (clean - no unapproved outbound allow rules)' -ForegroundColor Green
     }
+    elseif (-not $guardPolicy.QuarantineRogueAllow) {
+        Write-Host ('  rogue out-allow   : ' + $rogueCnt + ' active (quarantine disabled by user policy)') -ForegroundColor Yellow
+    }
     else {
         $rNames = ($analysis.RogueOutboundAllows | Select-Object -First 5 | ForEach-Object { $_.DisplayName }) -join ', '
         Write-Host ('  rogue out-allow   : ' + $rogueCnt + ' active (' + $rNames + ') - run .\07-mode.ps1 to auto-quarantine') -ForegroundColor Red
@@ -940,6 +1088,9 @@ function Show-Status {
     $aclIssues = @(Get-InstallAclIssues -Path $Root)
     if ($aclIssues.Count -eq 0) {
         Write-Host '  install ACL       : locked (owner=Administrators, Users=read-only)' -ForegroundColor Green
+    }
+    elseif (-not $guardPolicy.HardenInstallAcl) {
+        Write-Host ('  install ACL       : unlocked by user policy (' + $aclIssues.Count + ' writable ACEs)') -ForegroundColor Yellow
     }
     else {
         Write-Host ('  install ACL       : WRITABLE by non-admin (' + $aclIssues.Count + ' issue(s), e.g. ' + $aclIssues[0] + ') - run .\13-harden-acl.ps1') -ForegroundColor Red
@@ -1001,7 +1152,7 @@ function Invoke-UpgradeV54 {
     $bf = Join-Path $Root 'backup\baseline.json'
     $dnsJsonPath = $null
     if (Test-Path -LiteralPath $bf) {
-        try { $dnsJsonPath = (Get-Content -LiteralPath $bf -Raw | ConvertFrom-Json).Dns } catch { }
+        try { $dnsJsonPath = (Get-Content -LiteralPath $bf -Raw -Encoding UTF8 | ConvertFrom-Json).Dns } catch { }
     }
     if (-not $dnsJsonPath) {
         $oldestDns = Get-ChildItem -Path (Join-Path $Root 'backup') -Filter 'dns-*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -First 1
@@ -1019,7 +1170,7 @@ function Invoke-UpgradeV54 {
 
     if ($dnsJsonPath -and (Test-Path -LiteralPath $dnsJsonPath)) {
         try {
-            $db = Get-Content -LiteralPath $dnsJsonPath -Raw | ConvertFrom-Json
+            $db = Get-Content -LiteralPath $dnsJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
             $dbChanged = $false
             if ($db.PSObject.Properties.Name -notcontains 'Tcpip6DisabledComponents') {
                 $db | Add-Member -NotePropertyName 'Tcpip6DisabledComponents' -NotePropertyValue $curDisabled -Force
@@ -1142,7 +1293,7 @@ function Ensure-Guard {
     if (-not (Test-Path -LiteralPath $v54Flag)) {
         try {
             Backfill-DnsBaselineV54
-            Set-SmhnrHardening
+            Set-SmhnrHardening -DisableLlmnr ([bool]$guardPolicy.DisableLlmnrNetbios) -DisableSmhnr ([bool]$guardPolicy.DisableSmhnr)
             $evTask = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Event' -ErrorAction SilentlyContinue
             if ($evTask) {
                 $modePath = Join-Path $Root '07-mode.ps1'
@@ -1192,7 +1343,7 @@ function Ensure-Guard {
     if (-not $SkipQuarantineAllowRules -and $analysis.RogueOutboundAllows.Count -gt 0) {
         $qList = @()
         if (Test-Path -LiteralPath $quarantineFile) {
-            try { $qList = @(Get-Content -LiteralPath $quarantineFile -Raw | ConvertFrom-Json) } catch { $qList = @() }
+            try { $qList = @(Get-Content -LiteralPath $quarantineFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { $qList = @() }
         }
         $existingKeys = @($qList | ForEach-Object { $_.Name })
         $qChanged = $false
@@ -1226,9 +1377,12 @@ function Ensure-Guard {
     # 3c. hands-free multi-core automatic node sync (<0.3 ms 0-CIM fast path when config.json is unchanged)
     Sync-NodeRuleFast -Analysis $analysis
 
-    # 3d. multi-core dynamic TUN interface rule (e.g. singbox_tun / mihomo_tun when Hysteria2 / sing-box is active)
+    # 3d. multi-core dynamic TUN interface rule (e.g. singbox_tun / mihomo_tun / xray_tun)
+    $mainTunRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
+    $mainTunAliases = if ($mainTunRule) { @(($mainTunRule | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias) } else { @() }
+
     foreach ($activeTun in (Get-ActiveTunNamesFast)) {
-        if ($activeTun -eq $TunName) { continue }
+        if ($mainTunAliases -contains $activeTun) { continue }
         try {
             $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
             if ($altRule) {
@@ -1252,58 +1406,68 @@ function Ensure-Guard {
     }
 
     # 4. CN allow rule (file-stamp cache avoids parsing 6,516 lines when unchanged)
-    if (-not (Test-Path -LiteralPath $cnList)) { return $null }
-    $cnItem = Get-Item -LiteralPath $cnList -ErrorAction SilentlyContinue
-    if (-not $cnItem -or $cnItem.Length -lt 10000) {
-        $prefixes = Get-CnPrefixes
-        if ($prefixes.Count -eq 0) { return $null }
-    }
-
-    $oldSig = ''
-    if (Test-Path -LiteralPath $cnSig) { try { $oldSig = (Get-Content -LiteralPath $cnSig -Raw).Trim() } catch { } }
-
-    $stampPrefix = ($cnItem.Length.ToString() + ':' + $cnItem.LastWriteTimeUtc.Ticks.ToString() + ':')
-    $cachedMeta = ''
-    if (Test-Path -LiteralPath $cnMeta) { try { $cachedMeta = (Get-Content -LiteralPath $cnMeta -Raw).Trim() } catch { } }
-
     $sig = ''
-    $prefixes = $null
-    if ($cnExists -and $oldSig -and $cachedMeta.StartsWith($stampPrefix)) {
-        $cachedSig = $cachedMeta.Substring($stampPrefix.Length)
-        if ($cachedSig -eq $oldSig) {
-            $sig = $oldSig
+    if (-not $guardPolicy.AllowCnDirect) {
+        if ($cnActive) {
+            Disable-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
+            $script:repairedItems += 'CN-disabled(policy)'
+            Say '    enforced policy: CN allow rule disabled (strict global lock)'
         }
+        $sig = 'POLICY-NO-CN'
     }
-
-    if (-not $sig) {
-        $prefixes = Get-CnPrefixes
-        if ($prefixes.Count -eq 0) { return $null }
-        $sig = Get-ListSignature -Prefixes $prefixes
-        New-Item -ItemType Directory -Path (Split-Path $cnMeta) -Force | Out-Null
-        Set-Content -LiteralPath $cnMeta -Value ($stampPrefix + $sig) -Encoding ASCII
-    }
-
-    $needRebuild = ($oldSig -ne $sig) -or (-not $cnExists)
-    if ($needRebuild) {
-        if (-not $prefixes) {
+    else {
+        if (-not (Test-Path -LiteralPath $cnList)) { return $null }
+        $cnItem = Get-Item -LiteralPath $cnList -ErrorAction SilentlyContinue
+        if (-not $cnItem -or $cnItem.Length -lt 10000) {
             $prefixes = Get-CnPrefixes
             if ($prefixes.Count -eq 0) { return $null }
         }
-        $cn = Get-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
-        if ($cn) { $cn | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
-        New-NetFirewallRule -Name $cnRuleName -DisplayName $cnRuleName -Direction Outbound -Action Allow `
-            -Protocol Any -RemoteAddress $prefixes -Profile Any -Enabled True `
-            -Description 'Allow direct egress to mainland-China IPv4 prefixes.' | Out-Null
-        New-Item -ItemType Directory -Path (Split-Path $cnSig) -Force | Out-Null
-        Set-Content -LiteralPath $cnSig -Value $sig -Encoding ASCII
-        Set-Content -LiteralPath $cnMeta -Value ($stampPrefix + $sig) -Encoding ASCII
-        $script:repairedItems += ('CN-rebuilt(' + $prefixes.Count + ')')
-        Say ('    CN allow rule rebuilt: ' + $prefixes.Count + ' prefixes')
-    }
-    elseif (-not $cnActive) {
-        Enable-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
-        $script:repairedItems += 'CN-enabled'
-        Say '    repaired: CN allow rule re-enabled'
+
+        $oldSig = ''
+        if (Test-Path -LiteralPath $cnSig) { try { $oldSig = (Get-Content -LiteralPath $cnSig -Raw -Encoding UTF8).Trim() } catch { } }
+
+        $stampPrefix = ($cnItem.Length.ToString() + ':' + $cnItem.LastWriteTimeUtc.Ticks.ToString() + ':')
+        $cachedMeta = ''
+        if (Test-Path -LiteralPath $cnMeta) { try { $cachedMeta = (Get-Content -LiteralPath $cnMeta -Raw -Encoding UTF8).Trim() } catch { } }
+
+        $prefixes = $null
+        if ($cnExists -and $oldSig -and $cachedMeta.StartsWith($stampPrefix)) {
+            $cachedSig = $cachedMeta.Substring($stampPrefix.Length)
+            if ($cachedSig -eq $oldSig) {
+                $sig = $oldSig
+            }
+        }
+
+        if (-not $sig) {
+            $prefixes = Get-CnPrefixes
+            if ($prefixes.Count -eq 0) { return $null }
+            $sig = Get-ListSignature -Prefixes $prefixes
+            New-Item -ItemType Directory -Path (Split-Path $cnMeta) -Force | Out-Null
+            Set-Content -LiteralPath $cnMeta -Value ($stampPrefix + $sig) -Encoding ASCII
+        }
+
+        $needRebuild = ($oldSig -ne $sig) -or (-not $cnExists)
+        if ($needRebuild) {
+            if (-not $prefixes) {
+                $prefixes = Get-CnPrefixes
+                if ($prefixes.Count -eq 0) { return $null }
+            }
+            $cn = Get-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
+            if ($cn) { $cn | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
+            New-NetFirewallRule -Name $cnRuleName -DisplayName $cnRuleName -Direction Outbound -Action Allow `
+                -Protocol Any -RemoteAddress $prefixes -Profile Any -Enabled True `
+                -Description 'Allow direct egress to mainland-China IPv4 prefixes.' | Out-Null
+            New-Item -ItemType Directory -Path (Split-Path $cnSig) -Force | Out-Null
+            Set-Content -LiteralPath $cnSig -Value $sig -Encoding ASCII
+            Set-Content -LiteralPath $cnMeta -Value ($stampPrefix + $sig) -Encoding ASCII
+            $script:repairedItems += ('CN-rebuilt(' + $prefixes.Count + ')')
+            Say ('    CN allow rule rebuilt: ' + $prefixes.Count + ' prefixes')
+        }
+        elseif (-not $cnActive) {
+            Enable-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
+            $script:repairedItems += 'CN-enabled'
+            Say '    repaired: CN allow rule re-enabled'
+        }
     }
 
     # 5. required companion rules (check existence AND Active=TRUE; auto-enable if disabled)
@@ -1319,13 +1483,30 @@ function Ensure-Guard {
             Say ('    repaired: re-enabled rule ' + $n)
         }
     }
+    if (-not $guardPolicy.AllowLan -and $ruleStates.ContainsKey('AI-Guard-Allow-LAN') -and $ruleStates['AI-Guard-Allow-LAN']) {
+        Disable-NetFirewallRule -DisplayName 'AI-Guard-Allow-LAN' -ErrorAction SilentlyContinue
+        Disable-NetFirewallRule -Name 'AI-Guard-Allow-LAN' -ErrorAction SilentlyContinue
+        $script:repairedItems += 'AI-Guard-Allow-LAN-disabled(policy)'
+    }
+    if ($guardPolicy.AllowNcsi) {
+        if ($ruleStates.ContainsKey('AI-Guard-Allow-NCSI') -and (-not $ruleStates['AI-Guard-Allow-NCSI'])) {
+            Enable-NetFirewallRule -DisplayName 'AI-Guard-Allow-NCSI' -ErrorAction SilentlyContinue
+            Enable-NetFirewallRule -Name 'AI-Guard-Allow-NCSI' -ErrorAction SilentlyContinue
+            $script:repairedItems += 'AI-Guard-Allow-NCSI-enabled'
+        }
+    }
+    elseif ($ruleStates.ContainsKey('AI-Guard-Allow-NCSI') -and $ruleStates['AI-Guard-Allow-NCSI']) {
+        Disable-NetFirewallRule -DisplayName 'AI-Guard-Allow-NCSI' -ErrorAction SilentlyContinue
+        Disable-NetFirewallRule -Name 'AI-Guard-Allow-NCSI' -ErrorAction SilentlyContinue
+        $script:repairedItems += 'AI-Guard-Allow-NCSI-disabled(policy)'
+    }
 
     # 6. pure .NET DNS & IPv6 fast check (<2 ms; loads DnsClient/NetAdapter CIM ONLY if drifted)
     $nrptActive = Test-AiGuardNrptActiveFast
     $dnsChanged = $false
 
     foreach ($ni in (Get-ActivePhysicalNicsFast)) {
-        if (-not $nrptActive -and $ni.Supports([System.Net.NetworkInformation.NetworkInterfaceComponent]::IPv4)) {
+        if ($guardPolicy.LockPhysicalDns -and -not $nrptActive -and $ni.Supports([System.Net.NetworkInformation.NetworkInterfaceComponent]::IPv4)) {
             $v4Dns = @($ni.GetIPProperties().DnsAddresses |
                 Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
                 ForEach-Object { $_.IPAddressToString })
@@ -1340,13 +1521,13 @@ function Ensure-Guard {
             }
         }
 
-        if ($ni.Supports([System.Net.NetworkInformation.NetworkInterfaceComponent]::IPv6)) {
+        if ($guardPolicy.DisablePhysicalIpv6 -and $ni.Supports([System.Net.NetworkInformation.NetworkInterfaceComponent]::IPv6)) {
             try {
                 $b = Get-NetAdapterBinding -Name $ni.Name -ComponentID 'ms_tcpip6' -ErrorAction SilentlyContinue
                 if ($b -and $b.Enabled) {
                     $tracked = @()
                     if (Test-Path -LiteralPath $hotplugFile) {
-                        try { $tracked = @(Get-Content -LiteralPath $hotplugFile -Raw | ConvertFrom-Json) } catch { $tracked = @() }
+                        try { $tracked = @(Get-Content -LiteralPath $hotplugFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { $tracked = @() }
                     }
                     if ($tracked -notcontains $ni.Name) {
                         $tracked += $ni.Name
@@ -1368,21 +1549,27 @@ function Ensure-Guard {
 
     # 7. IPv4 over IPv6 prefix policy & SMHNR (<0.5 ms registry fast check)
     try {
-        $dc = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' -ErrorAction SilentlyContinue).DisabledComponents
-        if ($null -eq $dc -or (([int]$dc -band 0x20) -eq 0)) {
-            $v4pol = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::ffff:0:0/96' } | Select-Object -First 1
-            $v6pol = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::/0' } | Select-Object -First 1
-            if ($v4pol -and $v6pol -and $v4pol.Precedence -le $v6pol.Precedence) {
-                netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 50 4 | Out-Null
-                $script:repairedItems += 'IPv4-precedence'
-                Say '    repaired: IPv4 prefix precedence set above IPv6 (50 > 40)'
+        if ($guardPolicy.PreferIpv4Prefix) {
+            $dc = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' -ErrorAction SilentlyContinue).DisabledComponents
+            if ($null -eq $dc -or (([int]$dc -band 0x20) -eq 0)) {
+                $v4pol = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::ffff:0:0/96' } | Select-Object -First 1
+                $v6pol = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::/0' } | Select-Object -First 1
+                if ($v4pol -and $v6pol -and $v4pol.Precedence -le $v6pol.Precedence) {
+                    netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 50 4 | Out-Null
+                    $script:repairedItems += 'IPv4-precedence'
+                    Say '    repaired: IPv4 prefix precedence set above IPv6 (50 > 40)'
+                }
             }
         }
-        $dnsPol = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -ErrorAction SilentlyContinue
-        if (-not $dnsPol -or $dnsPol.EnableMulticast -ne 0 -or $dnsPol.DisableSmartNameResolution -ne 1) {
-            Set-SmhnrHardening
-            $script:repairedItems += 'LLMNR+SMHNR-hardened'
-            Say '    repaired: LLMNR & Smart Multi-Homed Name Resolution disabled'
+        if ($guardPolicy.DisableLlmnrNetbios -or $guardPolicy.DisableSmhnr) {
+            $dnsPol = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -ErrorAction SilentlyContinue
+            $needLlmnr = ($guardPolicy.DisableLlmnrNetbios -and (-not $dnsPol -or $dnsPol.EnableMulticast -ne 0))
+            $needSmhnr = ($guardPolicy.DisableSmhnr -and (-not $dnsPol -or $dnsPol.DisableSmartNameResolution -ne 1))
+            if ($needLlmnr -or $needSmhnr) {
+                Set-SmhnrHardening -DisableLlmnr ([bool]$guardPolicy.DisableLlmnrNetbios) -DisableSmhnr ([bool]$guardPolicy.DisableSmhnr)
+                $script:repairedItems += 'LLMNR+SMHNR-hardened'
+                Say '    repaired: DNS leak-shield policy hardened'
+            }
         }
     }
     catch { }
@@ -1466,10 +1653,21 @@ else {
         }
 
         if ($tunFlipped) {
+            $mainTunRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
+            $mainTunAliasesLate = if ($mainTunRuleLate) { @(($mainTunRuleLate | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias) } else { @() }
             foreach ($activeTun in (Get-ActiveTunNamesFast)) {
-                if ($activeTun -eq $TunName) { continue }
+                if ($mainTunAliasesLate -contains $activeTun) { continue }
                 try {
-                    if (-not (Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue)) {
+                    $altRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
+                    if ($altRuleLate) {
+                        $curAliasesLate = @(($altRuleLate | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias)
+                        if ($altRuleLate.Enabled -ne 'True' -or ($curAliasesLate -notcontains $activeTun)) {
+                            $mergedAliasesLate = @($curAliasesLate + @($activeTun) | Where-Object { $_ -and $_ -ne 'Any' } | Select-Object -Unique)
+                            Set-NetFirewallRule -InputObject $altRuleLate -InterfaceAlias $mergedAliasesLate -Enabled True -ErrorAction Stop
+                            $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
+                        }
+                    }
+                    else {
                         New-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -DisplayName 'AI-Guard-Allow-TUN-Alt' `
                             -Direction Outbound -Action Allow -InterfaceAlias $activeTun -Profile Any -Enabled True `
                             -Description ('Allow outbound traffic routed into alternate TUN (' + $activeTun + ').') | Out-Null
@@ -1491,8 +1689,14 @@ else {
     }
 
     $label = if ($tunUp) { 'Guard (proxy on)' } else { 'Guard (proxy off)' }
-    Say ('[+] ' + $label + ': static guard intact, CN direct allowed, foreign blocked')
-    Write-State -Label $label -CnEnabled $true -Sig $sig -TunState $tunUp -Missing $script:missingRules
+    if ($sig -eq 'POLICY-NO-CN') {
+        Say ('[+] ' + $label + ': static guard intact, strict global lock (CN direct disabled by policy)')
+        Write-State -Label $label -CnEnabled $false -Sig $sig -TunState $tunUp -Missing $script:missingRules
+    }
+    else {
+        Say ('[+] ' + $label + ': static guard intact, CN direct allowed, foreign blocked')
+        Write-State -Label $label -CnEnabled $true -Sig $sig -TunState $tunUp -Missing $script:missingRules
+    }
 
     if ($Upgrade) {
         Install-WatchdogTasks

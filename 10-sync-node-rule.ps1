@@ -94,7 +94,7 @@ $cfgPath = Join-Path $V2rayNRoot 'binConfigs\config.json'
 if (-not (Test-Path -LiteralPath $cfgPath)) { throw ('missing proxy config: ' + $cfgPath) }
 $cfgItem = Get-Item -LiteralPath $cfgPath
 
-$cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+$cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $coreType = 'xray'
 $address = ''
 $proto = ''
@@ -149,8 +149,8 @@ else {
     $alpn = @()
     try { if ($sNode.tls -and $sNode.tls.alpn) { $alpn += @($sNode.tls.alpn) } } catch { }
     $udp = ($proto -in @('hysteria2', 'hysteria', 'tuic', 'wireguard')) -or ($network -match '(?i)quic') -or ($alpn -contains 'h3')
-    $baseTcpPorts = if ($proto -in @('hysteria2', 'hysteria', 'tuic', 'wireguard')) { @($ports[0]) } else { $ports }
-    if ($udp) { $baseUdpPorts = $ports }
+    $baseTcpPorts = @(if ($proto -in @('hysteria2', 'hysteria', 'tuic', 'wireguard')) { $ports[0] } else { $ports })
+    if ($udp) { $baseUdpPorts = @($ports) }
 }
 
 if (-not $address) { throw 'cannot find node address in config.json' }
@@ -163,6 +163,46 @@ if ($address -match '^\d{1,3}(\.\d{1,3}){3}$') {
 else {
     $ips = @(Resolve-NodeDomainSafe -Domain $address)
     if ($ips.Count -eq 0) { throw ('cannot resolve node address: ' + $address) }
+}
+
+# Scan test configs in binConfigs (e.g. Reality port 443 while active config is Hysteria2 25000)
+$binCfgDir = Join-Path $V2rayNRoot 'binConfigs'
+if (Test-Path -LiteralPath $binCfgDir) {
+    foreach ($testFile in (Get-ChildItem -LiteralPath $binCfgDir -Filter 'configTest*.json' -ErrorAction SilentlyContinue)) {
+        try {
+            $tCfg = Get-Content -LiteralPath $testFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($tCfg.outbounds) {
+                foreach ($ob in $tCfg.outbounds) {
+                    $tAddr = [string]$(if ($ob.server) { $ob.server } else { $ob.settings.address })
+                    $tPort = [string]$(if ($ob.server_port) { $ob.server_port } else { $ob.settings.port })
+                    if ($tAddr) {
+                        if ($tAddr -match '^\d{1,3}(\.\d{1,3}){3}$') { $ips += @($tAddr) }
+                        else { $ips += @(Resolve-NodeDomainSafe -Domain $tAddr) }
+                    }
+                    if ($tPort) {
+                        $baseTcpPorts += @($tPort)
+                        if ($ob.type -match 'hysteria|tuic|wireguard' -or $ob.protocol -match 'hysteria|wireguard') {
+                            $baseUdpPorts += @($tPort)
+                            $udp = $true
+                        }
+                    }
+                }
+            }
+        } catch { }
+    }
+}
+$ips = @($ips | Where-Object { $_ } | Select-Object -Unique)
+$baseTcpPorts = @($baseTcpPorts | Where-Object { $_ } | Select-Object -Unique)
+$baseUdpPorts = @($baseUdpPorts | Where-Object { $_ } | Select-Object -Unique)
+
+# Detect all installed proxy core binaries
+$allCores = @{}
+foreach ($candRel in @('bin\xray\xray.exe', 'bin\sing_box\sing-box.exe', 'bin\mihomo\mihomo-windows-amd64-v1.exe', 'bin\mihomo\mihomo.exe', 'v2rayN.exe')) {
+    $cp = Join-Path $V2rayNRoot $candRel
+    if (Test-Path -LiteralPath $cp) {
+        $key = (Split-Path -Leaf $cp).Replace('.exe', '').ToLowerInvariant()
+        $allCores[$key] = $cp
+    }
 }
 
 $tcpRule = Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-Node-TCP' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -221,7 +261,34 @@ elseif ($udpRule) {
 
 $dohRule = Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-DoH-Ali' -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($dohRule) {
-    Set-NetFirewallRule -InputObject $dohRule -Program $coreExe -Enabled True -ErrorAction SilentlyContinue
+    Set-NetFirewallRule -InputObject $dohRule -RemoteAddress @('223.5.5.5', '223.6.6.6') -RemotePort @('443') -Enabled True -ErrorAction SilentlyContinue
+}
+
+# Sync companion rules for all other detected cores
+foreach ($ck in $allCores.Keys) {
+    $cExe = $allCores[$ck]
+    if ($cExe -ieq $coreExe) { continue }
+    $cName = if ($ck -like '*xray*') { 'Xray' } elseif ($ck -like '*sing*') { 'SingBox' } elseif ($ck -like '*v2rayn*') { 'V2rayN' } else { $ck }
+    $cRuleTcp = Get-NetFirewallRule -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-TCP') -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cRuleTcp) {
+        Set-NetFirewallRule -InputObject $cRuleTcp -Program $cExe -RemoteAddress $ips -RemotePort $tcpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction SilentlyContinue
+    }
+    else {
+        New-NetFirewallRule -Name ('AI-Guard-Allow-Core-' + $cName + '-TCP') -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-TCP') `
+            -Direction Outbound -Action Allow -Program $cExe -Protocol TCP `
+            -RemoteAddress $ips -RemotePort $tcpPorts -Profile Any -Enabled True -ErrorAction SilentlyContinue | Out-Null
+    }
+    if ($udp) {
+        $cRuleUdp = Get-NetFirewallRule -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-UDP') -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cRuleUdp) {
+            Set-NetFirewallRule -InputObject $cRuleUdp -Program $cExe -RemoteAddress $ips -RemotePort $udpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction SilentlyContinue
+        }
+        else {
+            New-NetFirewallRule -Name ('AI-Guard-Allow-Core-' + $cName + '-UDP') -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-UDP') `
+                -Direction Outbound -Action Allow -Program $cExe -Protocol UDP `
+                -RemoteAddress $ips -RemotePort $udpPorts -Profile Any -Enabled True -ErrorAction SilentlyContinue | Out-Null
+        }
+    }
 }
 
 $nodeMeta = Join-Path $Root 'backup\node-sync.meta'

@@ -94,7 +94,7 @@ if (-not $xray) { Write-Host 'ERROR: xray.exe is not running.' -ForegroundColor 
 $xrayPid = @($xray)[0].Id
 
 $cfgPath = Join-Path $V2rayNRoot 'binConfigs\config.json'
-$cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+$cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $node = Get-NodeEndpoint -Cfg $cfg
 Log ('node: ' + $node.Address + ' (' + $node.Protocol + ')')
 

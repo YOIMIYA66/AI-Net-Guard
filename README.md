@@ -1,8 +1,55 @@
-# AI-Net-Guard (v5.4)
+# AI-Net-Guard (v5.5)
 
-**Zero-Resident Windows 11 Kernel WFP Static Guard & DNS Leak Shield for AI Coding Tools & TUN Proxies**
+**Windows 11 & 10 Native GUI Configurator, Standalone Single-File `.exe`, Kernel WFP Static Guard & DNS Leak Shield for AI Coding Tools & TUN Proxies**
 
-> **0 MB background RAM · 0 ms TUN switch latency · Default-Deny Outbound + Mainland-China Direct Allowlist · Multi-Core Auto-Sync (`Xray` / `sing-box` / `Hysteria2` / `Mihomo`) · Reversible One-Command Rollback**
+> **Standalone Single-File Executable (`~235 KB`, 0 Runtime Install) · 4 Categories & 15 Feature Toggles · 0 MB Background Idle RAM · 0 ms TUN Switch Latency · Default-Deny Outbound + Mainland-China Direct Allowlist · Multi-Core Auto-Sync (`Xray` / `sing-box` / `Hysteria2` / `Mihomo`) · Reversible One-Click Rollback**
+
+---
+
+## Quick Start (GUI Standalone `.exe` — Recommended)
+
+No git clone or command line required:
+
+1. **Download `AI-Net-Guard.exe`** from [GitHub Releases](https://github.com/YOIMIYA66/AI-Net-Guard/releases).
+2. **Double-click `AI-Net-Guard.exe`** (Windows will prompt UAC once for Administrator privilege).
+3. The modern Fluent GUI launches instantly:
+   - Auto-detects your `v2rayN` path, running proxy core (`Xray` / `sing-box` / `Mihomo`), and active TUN interface.
+   - Comes pre-configured with the **🌟 Recommended Daily Shield** preset (14 recommended protections ON, strict global NRPT DoH OFF).
+4. Click **「🚀 一键部署 / 应用当前配置」** (Deploy / Apply Settings):
+   - Automatically extracts and self-updates the kernel engine into `C:\AI-Net-Guard`.
+   - Captures original network and firewall baselines, installs static rules, runs connectivity verification, and commits protection.
+   - Locks `C:\AI-Net-Guard` ACL permissions to prevent privilege escalation.
+5. **One-Click Actions in GUI**:
+   - **🛟 应急脱困 (Emergency Rescue)**: Instantly unlocks all firewall outbound blocks, resets NIC DNS to DHCP, clears stale loopback proxies, and flushes Winsock to regain normal internet within seconds.
+   - **一键健康体检**: Runs the full 23-check regression suite (including live 10-second `pktmon` DNS capture).
+   - **立即同步**: Immediately detects and allows new proxy node IPs/ports when switching servers in `v2rayN`.
+   - **一键关闭系统代理**: Clears `HKCU` WinINET loopback proxy with instant refresh so toggling `Enable Tun` alone controls all traffic.
+   - **一键完整卸载**: Cleanly restores Windows default firewall, DNS, IPv6, prefix policy, NTP, and ACLs.
+6. **Zero-Dependency Offline Rescue Tool (`Emergency-Rescue.bat`)**:
+   - Distributed alongside `AI-Net-Guard.exe` and extracted to `C:\AI-Net-Guard\Emergency-Rescue.bat`.
+   - Double-clickable pure batch tool that self-elevates to restore native Windows networking anytime without dependencies.
+
+---
+
+## 15 Configurable Feature Switches & Policy Matrix
+
+| Category | Policy Key | Feature Name | Default / Badge | Plain Explanation | Behavior When Turned OFF |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1. Traffic & Firewall** | `AllowCnDirect` | **中国大陆 IPv4 直连白名单** | **ON** `[推荐开启]` | 国内网站/应用满速直连，仅拦截海外直连流量；关代理国内不断网。 | 切换为严格全局铁桶模式（TUN 断开时国内网亦全部阻断）。 |
+| **1. Traffic & Firewall** | `AllowLan` | **局域网设备互访 (LocalSubnet)** | **ON** `[推荐开启]` | 允许访问同一路由器下的 NAS、打印机、投屏与路由器后台。 | 禁用 `AI-Guard-Allow-LAN` 规则（彻底隔离本地子网）。 |
+| **1. Traffic & Firewall** | `AllowNcsi` | **Windows 联网状态图标探测放行** | **ON** `[推荐开启]` | 仅放行微软联网检测探针（`13.107.4.52:80`），防止任务栏误报“无网络小地球”。 | 禁用 `AI-Guard-Allow-NCSI` 规则。 |
+| **1. Traffic & Firewall** | `QuarantineRogueAllow` | **自动隔离第三方软件出站放行规则** | **ON** `[推荐开启]` | 防止第三方应用悄悄添加出站 Allow 规则架空默认拦截（卸载时原样恢复）。 | 停止后台漂移规则自动隔离，并恢复被动态隔离的外部规则。 |
+| **2. DNS Leak Shield** | `LockPhysicalDns` | **锁定物理网卡安全静态 DNS (`223.5.5.5`)** | **ON** `[推荐开启]` | 防止运营商 DHCP 劫持；开代理走加密 TUN DoH，关代理安全解析国内网站。 | 从备份恢复物理网卡原始 DHCP 自动获取或自定义 DNS。 |
+| **2. DNS Leak Shield** | `DisableSmhnr` | **禁用智能多宿主并行 DNS (`SMHNR`)** | **ON** `[推荐开启]` | 阻止 Win11 在开启代理时向物理网卡和虚拟网卡并发抢答 DNS，物理明文查询归零。 | 恢复 Windows 默认并行 DNS 抢答行为。 |
+| **2. DNS Leak Shield** | `DisableLlmnrNetbios` | **禁用局域网多播/广播解析 (LLMNR/NetBIOS)** | **ON** `[推荐开启]` | 防止域名查询泄漏到局域网，免疫局域网同名欺骗劫持攻击。 | 恢复默认局域网多播与 NetBIOS 设置。 |
+| **2. DNS Leak Shield** | `StrictNrptDoh` | **严格全局 DoH 强制加密 (`NRPT 1.1.1.1`)** | **OFF** `[高级可选]` | 强制全系统所有域名仅走 `1.1.1.1` DoH；**注意：关代理后国内也将无法解析域名**。 | 移除 `AI-Guard*` NRPT 策略规则，恢复标准解析。 |
+| **3. IPv6 & Dual-Stack** | `DisablePhysicalIpv6` | **禁用物理网卡 IPv6 协议栈绑定** | **ON** `[推荐开启]` | 彻底堵死应用通过运营商原生 IPv6 绕过 IPv4 TUN 直连海外的漏洞（含热插拔网卡）。 | 恢复物理网卡 `ms_tcpip6` 绑定。 |
+| **3. IPv6 & Dual-Stack** | `PreferIpv4Prefix` | **提升 IPv4 寻址优先级高于 IPv6** | **ON** `[推荐开启]` | 优先请求 IPv4，彻底消除因等待 IPv6 超时导致的 Python / Git / CLI 每次请求前卡顿 2~5 秒。 | 恢复原始 `DisabledComponents` 注册表值与路由前缀表权重。 |
+| **4. Self-Healing & Security** | `ZeroResidentMonitor` | **零内存事件触发与睡眠唤醒自愈** | **ON** `[推荐开启]` | 平时 **0 进程、0 MB 内存**；仅在网络切换、开机、睡眠唤醒时毫秒级自检并清空污染 DNS。 | 注销 `AI-Guard-Mode-Event` 与 `Fallback` 计划任务，仅保留静态规则。 |
+| **4. Self-Healing & Security** | `AutoNodeSync` | **多内核节点与端口自动热同步** | **ON** `[推荐开启]` | 在 `v2rayN` 切换节点、端口跳跃或更换内核时自动放行新节点，无需手动干预。 | 冻结当前节点放行规则，停止自动跟踪 `config.json`。 |
+| **4. Self-Healing & Security** | `AutoHealStaleProxy` | **断电/崩溃残留死系统代理自动清理** | **ON** `[推荐开启]` | 代理异常崩溃后自动清理失效的 `127.0.0.1` 系统代理，避免开机后网页全挂。 | 不自动清理失效的 `HKCU` 系统代理。 |
+| **4. Self-Healing & Security** | `DomesticNtp` | **国内高可用时间同步加固** | **ON** `[推荐开启]` | 设置阿里/腾讯/中科院授时，防止电脑长时间睡眠后时钟偏差导致 VLESS 握手死锁。 | 恢复备份的原始 Windows 时间服务器地址。 |
+| **4. Self-Healing & Security** | `HardenInstallAcl` | **安装目录防篡改权限锁定 (`ACL`)** | **ON** `[推荐开启]` | 将 `C:\AI-Net-Guard` 锁定为管理员只写，防止普通程序篡改白名单或借任务提权。 | 执行 `13-harden-acl.ps1 -Undo` 恢复默认目录继承权限。 |
 
 ---
 
@@ -164,6 +211,8 @@ To exempt specific third-party firewall rule names from automatic anti-drift qua
 | [`11-geo-cn.ps1`](./11-geo-cn.ps1) | Zero-allocation protobuf parser for `geoip-only-cn-private.dat` / `geoip.dat` -> CIDR normalization & lossless aggregation into [`cn-ipv4.txt`](./cn-ipv4.txt) |
 | [`12-regression.ps1`](./12-regression.ps1) | **23-check automated regression suite** (static state, ACL lock, 0-MB footprint, TUN on/off datapath, WFP, 10s `pktmon` DNS capture, corrupt GeoIP drill) |
 | [`13-harden-acl.ps1`](./13-harden-acl.ps1) | Locks `C:\AI-Net-Guard` owner & DACL against non-admin tampering, runs elevated migration + regression (`-Undo` and `-SyncWorkspace` supported) |
+| [`14-apply-policy.ps1`](./14-apply-policy.ps1) | **Idempotent policy orchestrator**: executes clean deploy or incremental 15-toggle reconfiguration from `backup\guard-policy.json` |
+| [`gui/`](./gui) | Standalone Windows-native C# WPF GUI desktop configurator project (`net48`, embeds `payload.zip` + UAC manifest) |
 | [`watchdog.ps1`](./watchdog.ps1) | Optional CLR `NetworkChange` event-driven resident daemon (disabled by default in favor of 0-MB `AI-Guard-Mode-Event`) |
 
 For deep architectural notes and the full `v5 -> v5.4` (`R1–R24`) engineering review log, see [`CURRENT-IMPLEMENTATION.md`](./CURRENT-IMPLEMENTATION.md).

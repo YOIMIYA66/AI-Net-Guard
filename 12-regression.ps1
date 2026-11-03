@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.4 - automated regression suite (TUN-on/off & multi-core aware, zero capture bloat).
+    AI-Net-Guard v5.5 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
 
 .DESCRIPTION
     Verifies the v5.4 static guard end-to-end. Read-only, except for a temporary
@@ -36,6 +36,57 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+$policyFile = Join-Path $Root 'backup\guard-policy.json'
+$guardPolicy = [ordered]@{
+    Version              = '5.5'
+    Preset               = 'Recommended'
+    DnsServer            = $DnsServer
+    V2rayNRoot           = ''
+    AllowCnDirect        = $true
+    AllowLan             = $true
+    AllowNcsi            = $true
+    QuarantineRogueAllow = $true
+    LockPhysicalDns      = $true
+    DisableSmhnr         = $true
+    DisableLlmnrNetbios  = $true
+    StrictNrptDoh        = $false
+    DisablePhysicalIpv6  = $true
+    PreferIpv4Prefix     = $true
+    ZeroResidentMonitor  = $true
+    AutoNodeSync         = $true
+    AutoHealStaleProxy   = $true
+    DomesticNtp          = $true
+    HardenInstallAcl     = $true
+}
+if (Test-Path -LiteralPath $policyFile) {
+    try {
+        $rawPol = Get-Content -LiteralPath $policyFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($rawPol) {
+            foreach ($k in @('AllowCnDirect', 'AllowLan', 'AllowNcsi', 'QuarantineRogueAllow', 'LockPhysicalDns',
+                    'DisableSmhnr', 'DisableLlmnrNetbios', 'StrictNrptDoh', 'DisablePhysicalIpv6', 'PreferIpv4Prefix',
+                    'ZeroResidentMonitor', 'AutoNodeSync', 'AutoHealStaleProxy', 'DomesticNtp', 'HardenInstallAcl')) {
+                if ($rawPol.PSObject.Properties.Name -contains $k -and $null -ne $rawPol.$k) {
+                    $guardPolicy[$k] = [bool]$rawPol.$k
+                }
+            }
+            foreach ($sk in @('Version', 'Preset', 'DnsServer', 'V2rayNRoot')) {
+                if ($rawPol.PSObject.Properties.Name -contains $sk -and $rawPol.$sk) {
+                    $guardPolicy[$sk] = [string]$rawPol.$sk
+                }
+            }
+        }
+    }
+    catch { }
+}
+$guardPolicy = [pscustomobject]$guardPolicy
+if (-not $PSBoundParameters.ContainsKey('V2rayNRoot') -and $guardPolicy.V2rayNRoot -and (Test-Path -LiteralPath $guardPolicy.V2rayNRoot)) {
+    $V2rayNRoot = $guardPolicy.V2rayNRoot
+}
+if (-not $PSBoundParameters.ContainsKey('DnsServer')) {
+    if ($guardPolicy.StrictNrptDoh) { $DnsServer = '1.1.1.1' }
+    elseif ($guardPolicy.DnsServer) { $DnsServer = $guardPolicy.DnsServer }
+}
+
 if (-not $V2rayNRoot) {
     if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
     else {
@@ -159,7 +210,7 @@ function Invoke-DirectHttp {
 function Get-ConfiguredNodeInfo {
     $cfgPath = Join-Path $V2rayNRoot 'binConfigs\config.json'
     if (-not (Test-Path -LiteralPath $cfgPath)) { return [pscustomobject]@{ CoreType = 'xray'; Address = ''; Ips = @() } }
-    $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+    $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $coreType = 'xray'
     $node = ''
     $xOut = $cfg.outbounds | Where-Object { $_.protocol -in @('vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'wireguard', 'socks', 'http') } | Select-Object -First 1
@@ -197,7 +248,7 @@ function Get-ConfiguredNodeInfo {
     }
 }
 
-W ('=== AI-Net-Guard v5.4 regression ' + (Get-Date -Format 'o') + ' ===')
+W ('=== AI-Net-Guard v5.5 regression ' + (Get-Date -Format 'o') + ' ===')
 function Get-ActiveIpPhysicalNics {
     @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
         $_.OperationalStatus -eq 'Up' -and
@@ -223,12 +274,19 @@ Check 'default outbound = Block (all profiles)' {
     $true
 }
 
-Check 'CN allow rule enabled with >=1000 prefixes' {
-    $r = Get-NetFirewallRule -Name 'AI-Guard-Allow-CN' -ErrorAction Stop
-    if ($r.Enabled -ne 'True') { throw 'disabled' }
-    $n = @(($r | Get-NetFirewallAddressFilter).RemoteAddress).Count
-    if ($n -lt 1000) { throw ('prefixes=' + $n) }
-    ('prefixes=' + $n)
+Check 'CN allow rule matches policy' {
+    $r = Get-NetFirewallRule -Name 'AI-Guard-Allow-CN' -ErrorAction SilentlyContinue
+    if (-not $guardPolicy.AllowCnDirect) {
+        if ($r -and $r.Enabled -eq 'True') { throw 'expected disabled in strict global lock policy, but Enabled=True' }
+        'disabled as configured (strict global lock)'
+    }
+    else {
+        if (-not $r) { throw 'missing AI-Guard-Allow-CN' }
+        if ($r.Enabled -ne 'True') { throw 'disabled' }
+        $n = @(($r | Get-NetFirewallAddressFilter).RemoteAddress).Count
+        if ($n -lt 1000) { throw ('prefixes=' + $n) }
+        ('prefixes=' + $n)
+    }
 }
 
 Check 'required companion rules present AND Active=TRUE' {
@@ -239,7 +297,7 @@ Check 'required companion rules present AND Active=TRUE' {
     $exceptions = @()
     $exFile = Join-Path $Root 'backup\allowed-outbound-rules.json'
     if (Test-Path -LiteralPath $exFile) {
-        try { $exceptions = @(Get-Content -LiteralPath $exFile -Raw | ConvertFrom-Json) } catch { $exceptions = @() }
+        try { $exceptions = @(Get-Content -LiteralPath $exFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { $exceptions = @() }
     }
     foreach ($pr in $props) {
         if ($pr.Name -match '^PS(Path|ParentPath|ChildName|Drive|Provider)$') { continue }
@@ -257,105 +315,150 @@ Check 'required companion rules present AND Active=TRUE' {
     }
     $script:regStates = $states
     $script:regRogues = $rogues
-    $need = @('AI-Guard-Allow-TUN', 'AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-DoH-Ali', 'AI-Guard-Allow-DHCP', 'AI-Guard-Allow-LAN')
+    $need = @('AI-Guard-Allow-TUN', 'AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-DoH-Ali', 'AI-Guard-Allow-DHCP')
+    if ($guardPolicy.AllowLan) { $need += 'AI-Guard-Allow-LAN' }
     $bad = @()
     foreach ($n in $need) {
         if (-not $states.ContainsKey($n)) { $bad += ($n + '=missing') }
         elseif (-not $states[$n]) { $bad += ($n + '=disabled') }
     }
-    if ($bad.Count -gt 0) { throw ($bad -join '; ') }
-    'all 5 active'
-}
-
-Check 'zero unapproved active outbound ALLOW rules (anti-drift)' {
-    if ($script:regRogues.Count -gt 0) {
-        throw ('found ' + $script:regRogues.Count + ': ' + (($script:regRogues | Select-Object -First 5) -join '; '))
-    }
-    '0 rogue rules'
-}
-
-Check ('active physical adapters use ' + $DnsServer) {
-    $bad = @()
-    foreach ($a in (Get-ActiveIpPhysicalNics)) {
-        if (-not $a.Supports([System.Net.NetworkInformation.NetworkInterfaceComponent]::IPv4)) { continue }
-        $s = @((Get-DnsClientServerAddress -InterfaceAlias $a.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
-        if (($s -join ',') -ne $DnsServer) { $bad += ($a.Name + '=' + ($s -join ',')) }
+    if (-not $guardPolicy.AllowLan -and $states.ContainsKey('AI-Guard-Allow-LAN') -and $states['AI-Guard-Allow-LAN']) {
+        $bad += 'AI-Guard-Allow-LAN=enabled(expected disabled by policy)'
     }
     if ($bad.Count -gt 0) { throw ($bad -join '; ') }
-    'ok'
+    ('all ' + $need.Count + ' active')
 }
 
-Check 'IPv6 binding disabled on active physical adapters' {
-    $names = @(Get-ActiveIpPhysicalNics | ForEach-Object { $_.Name })
-    if ($names.Count -eq 0) { throw 'no active physical adapter' }
-    foreach ($n in $names) {
-        $b = Get-NetAdapterBinding -Name $n -ComponentID 'ms_tcpip6' -ErrorAction SilentlyContinue
-        if ($b -and $b.Enabled) { throw ('IPv6 enabled on ' + $n) }
-    }
-    'ok'
-}
-
-Check 'IPv4 preferred over IPv6 in prefix policy' {
-    $v4 = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::ffff:0:0/96' } | Select-Object -First 1
-    $v6 = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::/0' } | Select-Object -First 1
-    if ($v4 -and $v6 -and $v4.Precedence -le $v6.Precedence) {
-        throw ('::ffff:0:0/96 (' + $v4.Precedence + ') <= ::/0 (' + $v6.Precedence + ')')
-    }
-    ('::ffff:0:0/96=' + $v4.Precedence + ' > ::/0=' + $v6.Precedence)
-}
-
-Check 'LLMNR & Smart Multi-Homed DNS (SMHNR) hardened' {
-    $pol = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -ErrorAction SilentlyContinue
-    if (-not $pol -or $pol.EnableMulticast -ne 0) { throw ('EnableMulticast=' + $(if ($pol) { $pol.EnableMulticast } else { 'null' })) }
-    $v54Migrated = Test-Path -LiteralPath (Join-Path $Root 'backup\v54-migrated.flag')
-    if ($pol.DisableSmartNameResolution -eq 1) {
-        'LLMNR=off, SMHNR=off'
-    }
-    elseif (-not $v54Migrated) {
-        'LLMNR=off (SMHNR queued for next event or .\07-mode.ps1)'
+Check 'outbound ALLOW drift quarantine matches policy' {
+    if (-not $guardPolicy.QuarantineRogueAllow) {
+        ('quarantine disabled by policy (active external rules=' + $script:regRogues.Count + ')')
     }
     else {
-        throw ('DisableSmartNameResolution=' + $pol.DisableSmartNameResolution)
+        if ($script:regRogues.Count -gt 0) {
+            throw ('found ' + $script:regRogues.Count + ': ' + (($script:regRogues | Select-Object -First 5) -join '; '))
+        }
+        '0 rogue rules'
     }
 }
 
-Check 'install directory locked (no non-admin owner/write rights)' {
-    $trusted = @('S-1-5-32-544', 'S-1-5-18', 'S-1-3-0', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-    $writeMask = [int64]0x500D0156
-    $issues = @()
-    $targets = @(Get-Item -LiteralPath $Root -Force) + @(Get-ChildItem -LiteralPath $Root -Force -File -ErrorAction SilentlyContinue)
-    foreach ($sub in @('backup', 'logs')) {
-        $sp = Join-Path $Root $sub
-        if (Test-Path -LiteralPath $sp) { $targets += @(Get-Item -LiteralPath $sp -Force) }
+Check ('physical adapter DNS policy (' + $(if ($guardPolicy.LockPhysicalDns) { $DnsServer } else { 'unlocked/DHCP' }) + ')') {
+    if (-not $guardPolicy.LockPhysicalDns -and -not $guardPolicy.StrictNrptDoh) {
+        'unlocked as configured by policy'
     }
-    foreach ($t in $targets) {
-        $sections = [System.Security.AccessControl.AccessControlSections]'Owner, Access'
-        $acl = if ($t.PSIsContainer) { New-Object System.Security.AccessControl.DirectorySecurity($t.FullName, $sections) }
-               else { New-Object System.Security.AccessControl.FileSecurity($t.FullName, $sections) }
-        $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-        if ($trusted -notcontains $owner) { $issues += ($t.Name + ': owner=' + $owner) }
-        foreach ($ace in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
-            if ($ace.AccessControlType -ne 'Allow' -or ($trusted -contains $ace.IdentityReference.Value)) { continue }
-            if (([int64]$ace.FileSystemRights -band $writeMask) -ne 0) { $issues += ($t.Name + ': ' + $ace.IdentityReference.Value + ' has ' + $ace.FileSystemRights) }
+    else {
+        $bad = @()
+        foreach ($a in (Get-ActiveIpPhysicalNics)) {
+            if (-not $a.Supports([System.Net.NetworkInformation.NetworkInterfaceComponent]::IPv4)) { continue }
+            $s = @((Get-DnsClientServerAddress -InterfaceAlias $a.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses)
+            if (($s -join ',') -ne $DnsServer) { $bad += ($a.Name + '=' + ($s -join ',')) }
+        }
+        if ($bad.Count -gt 0) { throw ($bad -join '; ') }
+        'ok'
+    }
+}
+
+Check 'physical adapter IPv6 policy' {
+    if (-not $guardPolicy.DisablePhysicalIpv6) {
+        'IPv6 allowed by user policy'
+    }
+    else {
+        $names = @(Get-ActiveIpPhysicalNics | ForEach-Object { $_.Name })
+        if ($names.Count -eq 0) { throw 'no active physical adapter' }
+        foreach ($n in $names) {
+            $b = Get-NetAdapterBinding -Name $n -ComponentID 'ms_tcpip6' -ErrorAction SilentlyContinue
+            if ($b -and $b.Enabled) { throw ('IPv6 enabled on ' + $n) }
+        }
+        'ok'
+    }
+}
+
+Check 'IPv4/IPv6 prefix precedence policy' {
+    if (-not $guardPolicy.PreferIpv4Prefix) {
+        'default prefix policy kept by user policy'
+    }
+    else {
+        $v4 = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::ffff:0:0/96' } | Select-Object -First 1
+        $v6 = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::/0' } | Select-Object -First 1
+        if ($v4 -and $v6 -and $v4.Precedence -le $v6.Precedence) {
+            throw ('::ffff:0:0/96 (' + $v4.Precedence + ') <= ::/0 (' + $v6.Precedence + ')')
+        }
+        ('::ffff:0:0/96=' + $v4.Precedence + ' > ::/0=' + $v6.Precedence)
+    }
+}
+
+Check 'LLMNR & Smart Multi-Homed DNS (SMHNR) policy' {
+    $pol = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -ErrorAction SilentlyContinue
+    $parts = @()
+    if ($guardPolicy.DisableLlmnrNetbios) {
+        if (-not $pol -or $pol.EnableMulticast -ne 0) { throw ('EnableMulticast=' + $(if ($pol) { $pol.EnableMulticast } else { 'null' })) }
+        $parts += 'LLMNR=off'
+    }
+    else { $parts += 'LLMNR=allowed(policy)' }
+
+    if ($guardPolicy.DisableSmhnr) {
+        $v54Migrated = Test-Path -LiteralPath (Join-Path $Root 'backup\v54-migrated.flag')
+        if ($pol -and $pol.DisableSmartNameResolution -eq 1) {
+            $parts += 'SMHNR=off'
+        }
+        elseif (-not $v54Migrated) {
+            $parts += 'SMHNR=queued'
+        }
+        else {
+            throw ('DisableSmartNameResolution=' + $(if ($pol) { $pol.DisableSmartNameResolution } else { 'null' }))
         }
     }
-    if ($issues.Count -gt 0) { throw ([string]$issues.Count + ' issue(s), e.g. ' + $issues[0] + ' (run .\13-harden-acl.ps1)') }
-    ('owner=Administrators, Users=RX, ' + $targets.Count + ' objects checked')
+    else { $parts += 'SMHNR=allowed(policy)' }
+    ($parts -join ', ')
+}
+
+Check 'install directory ACL policy' {
+    if (-not $guardPolicy.HardenInstallAcl) {
+        'ACL lock disabled by user policy'
+    }
+    else {
+        $trusted = @('S-1-5-32-544', 'S-1-5-18', 'S-1-3-0', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+        $writeMask = [int64]0x500D0156
+        $issues = @()
+        $targets = @(Get-Item -LiteralPath $Root -Force) + @(Get-ChildItem -LiteralPath $Root -Force -File -ErrorAction SilentlyContinue)
+        foreach ($sub in @('backup', 'logs')) {
+            $sp = Join-Path $Root $sub
+            if (Test-Path -LiteralPath $sp) { $targets += @(Get-Item -LiteralPath $sp -Force) }
+        }
+        foreach ($t in $targets) {
+            $sections = [System.Security.AccessControl.AccessControlSections]'Owner, Access'
+            $acl = if ($t.PSIsContainer) { New-Object System.Security.AccessControl.DirectorySecurity($t.FullName, $sections) }
+                   else { New-Object System.Security.AccessControl.FileSecurity($t.FullName, $sections) }
+            $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+            if ($trusted -notcontains $owner) { $issues += ($t.Name + ': owner=' + $owner) }
+            foreach ($ace in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+                if ($ace.AccessControlType -ne 'Allow' -or ($trusted -contains $ace.IdentityReference.Value)) { continue }
+                if (([int64]$ace.FileSystemRights -band $writeMask) -ne 0) { $issues += ($t.Name + ': ' + $ace.IdentityReference.Value + ' has ' + $ace.FileSystemRights) }
+            }
+        }
+        if ($issues.Count -gt 0) { throw ([string]$issues.Count + ' issue(s), e.g. ' + $issues[0] + ' (run .\13-harden-acl.ps1)') }
+        ('owner=Administrators, Users=RX, ' + $targets.Count + ' objects checked')
+    }
 }
 
 # ---------------------------------------------------------------- 2. tasks & background footprint
 W ''
 W '--- 2. task health & background footprint ---'
-Check 'monitor + fallback tasks registered (AI-Guard-Mode-*)' {
+Check 'monitor + fallback tasks policy (AI-Guard-Mode-*)' {
     $ev = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Event' -ErrorAction SilentlyContinue
     $w = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Watcher' -ErrorAction SilentlyContinue
     $f = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Fallback' -ErrorAction SilentlyContinue
-    if ((-not $ev -and -not $w) -or (-not $f)) { throw 'missing monitor or fallback task (run 07-mode.ps1 -InstallTasks)' }
-    if ($ev) {
-        ('AI-Guard-Mode-Event(' + $ev.State + '), AI-Guard-Mode-Fallback(' + $f.State + ')')
+    if (-not $guardPolicy.ZeroResidentMonitor) {
+        if ($ev -or $w -or $f) { throw 'expected no AI-Guard-Mode-* tasks when ZeroResidentMonitor=false' }
+        'unregistered as configured by policy'
     }
     else {
-        ('AI-Guard-Mode-Watcher(' + $w.State + '), AI-Guard-Mode-Fallback(' + $f.State + ')')
+        if ((-not $ev -and -not $w) -or (-not $f)) { throw 'missing monitor or fallback task (run 07-mode.ps1 -InstallTasks)' }
+        if ($ev) {
+            ('AI-Guard-Mode-Event(' + $ev.State + '), AI-Guard-Mode-Fallback(' + $f.State + ')')
+        }
+        else {
+            ('AI-Guard-Mode-Watcher(' + $w.State + '), AI-Guard-Mode-Fallback(' + $f.State + ')')
+        }
     }
 }
 
@@ -363,7 +466,11 @@ Check 'background footprint (zero-resident event mode vs legacy daemon)' {
     $ev = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Event' -ErrorAction SilentlyContinue
     $wd = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine -match 'watchdog\.ps1' })
-    if ($ev) {
+    if (-not $guardPolicy.ZeroResidentMonitor) {
+        if ($wd.Count -gt 0) { throw ('unexpected resident watchdog pid=' + (($wd | ForEach-Object { $_.ProcessId }) -join ',')) }
+        '0 resident scripts (background monitor disabled by policy)'
+    }
+    elseif ($ev) {
         if ($wd.Count -gt 0) { throw ('orphaned resident watchdog pid=' + (($wd | ForEach-Object { $_.ProcessId }) -join ',')) }
         '0 resident scripts (0 MB idle RAM, event + sleep-resume triggered)'
     }
@@ -389,8 +496,19 @@ function Test-UrlStatus($url) {
     }
 }
 
-foreach ($u in @('https://www.baidu.com', 'https://www.qq.com')) {
-    Check ('domestic ' + $u) { $st = Test-UrlStatus $u; if ($st -ne '200') { throw $st }; $st }
+if (-not $guardPolicy.AllowCnDirect -and -not $tunUp) {
+    foreach ($u in @('https://www.baidu.com', 'https://www.qq.com')) {
+        Check ('domestic blocked in strict global lock when TUN off ' + $u) {
+            $st = Test-UrlStatus $u
+            if ($st -ne 'BLOCKED') { throw ('expected BLOCKED, got ' + $st) }
+            'BLOCKED'
+        }
+    }
+}
+elseif ($guardPolicy.AllowCnDirect) {
+    foreach ($u in @('https://www.baidu.com', 'https://www.qq.com')) {
+        Check ('domestic ' + $u) { $st = Test-UrlStatus $u; if ($st -ne '200') { throw $st }; $st }
+    }
 }
 
 if ($tunUp) {
@@ -415,12 +533,14 @@ else {
     }
 }
 
-Check 'domestic DNS resolves quickly' {
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $r = @(Resolve-DnsName -Name 'www.baidu.com' -Type A -ErrorAction Stop | Where-Object { $_.IPAddress })
-    $sw.Stop()
-    if ($r.Count -eq 0) { throw 'no answer' }
-    ((([int]$sw.Elapsed.TotalMilliseconds).ToString()) + ' ms')
+if ($guardPolicy.AllowCnDirect -or $tunUp) {
+    Check 'domestic DNS resolves quickly' {
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $r = @(Resolve-DnsName -Name 'www.baidu.com' -Type A -ErrorAction Stop | Where-Object { $_.IPAddress })
+        $sw.Stop()
+        if ($r.Count -eq 0) { throw 'no answer' }
+        ((([int]$sw.Elapsed.TotalMilliseconds).ToString()) + ' ms')
+    }
 }
 
 # ---------------------------------------------------------------- 4. WFP (auto-cleans 8.7 MB XML dump on PASS)
@@ -432,7 +552,7 @@ New-Item -ItemType Directory -Path $wfpDir -Force | Out-Null
 $wfpFile = Join-Path $wfpDir 'filters.xml'
 netsh wfp show filters file="$wfpFile" 2>$null | Out-Null
 if (Test-Path -LiteralPath $wfpFile) {
-    $wf = Get-Content -LiteralPath $wfpFile -Raw
+    $wf = Get-Content -LiteralPath $wfpFile -Raw -Encoding UTF8
     $pCnt = ([regex]::Matches($wf, 'permit Xray')).Count
     $bCnt = ([regex]::Matches($wf, 'block DNS')).Count
     if ($tunUp) {
@@ -515,7 +635,10 @@ else {
 W ''
 W '--- 6. Proxy core direct egress (whitelist routing) ---'
 $coreProc = @(Get-Process -Name @('xray', 'sing-box', 'mihomo', 'mihomo-windows-amd64-v1') -ErrorAction SilentlyContinue) | Select-Object -First 1
-if ($coreProc -and $tunUp) {
+if (-not $guardPolicy.AllowCnDirect) {
+    W '  skipped (CN direct whitelist disabled by strict global lock policy)'
+}
+elseif ($coreProc -and $tunUp) {
     $corePid = $coreProc.Id
     $job = Start-Job {
         if ([int][Net.ServicePointManager]::SecurityProtocol -ne 0) {

@@ -179,3 +179,23 @@ cd C:\AI-Net-Guard
 > Windows 中对象所有者（Owner）隐含 `WRITE_DAC` 权限，若不把所有者一并改为 `Administrators`，原普通用户所有者仍可把写权限重新赋回给自己。[`13-harden-acl.ps1`](./13-harden-acl.ps1) 会同时执行 `/setowner *S-1-5-32-544 /T` 并使用 `.NET` ACL API 逐项校验。
 
 锁定后更新代码的方式：在管理员终端从仓库目录执行 `C:\AI-Net-Guard\13-harden-acl.ps1 -SyncWorkspace`（或传 `-WorkspaceRoot <仓库路径>`）。
+
+---
+
+## 8. v5.5 升级：Windows 原生 GUI 桌面配置器与单文件 `.exe` 发布架构
+
+v5.5 在底层 WFP 静态防护与零驻留自愈内核之上，引入了**纯 Windows 原生、零外部依赖的桌面 GUI 配置器**：
+
+1. **单文件独立执行 (`dist\AI-Net-Guard.exe`)**：
+   - 基于 Windows 10/11 系统自带的 `.NET Framework 4.8 (net48)` WPF 引擎编译，产物体积仅 **~235 KB**，无需用户额外安装任何运行时；
+   - 内置 UAC 清单（`requireAdministrator`）与 `PerMonitorV2` 4K 高分屏感知；
+   - 内嵌高压缩 `payload.zip`（内含全部 16 个核心脚本、`cn-ipv4.txt` 及文档），下载单个 `.exe` 双击即可自动释放自愈并执行部署，免去 git clone 或命令行操作门槛。
+2. **4 大模块 15 项开关双向持久化策略引擎 (`guard-policy.json`)**：
+   - 界面直观呈现 15 项开关，每项均标有 **`[推荐开启]`** 或 **`[高级可选]`** 及通俗白话解释；
+   - 提供 **3 套一键预设**（推荐日常防泄漏、严格全局铁桶锁、开发者兼容模式）；
+   - 引入 [`14-apply-policy.ps1`](./14-apply-policy.ps1) 幂等编排引擎：不仅首次部署全自动完成基线备份、规则建立、连通性快速探测与提交，且在已部署状态下修改任意单项开关时，支持秒级增量切换而绝不污染原始基线；
+   - [`07-mode.ps1`](./07-mode.ps1) 与 [`12-regression.ps1`](./12-regression.ps1) 严格读取并遵循用户在 GUI 中配置的策略，确保后台自愈与体检断言与用户意图 100% 一致。
+3. **桌面一键运维与安全防篡改**：
+   - 顶部提供 `v2rayN` 路径自动探测与配置校验徽章；
+   - 自动检测并提供 **「一键关闭系统代理」**（`HKCU` WinINET `ProxyEnable=0` + `InternetSetOption` 实时刷新），实现仅通过 `v2rayN` 的「启用 Tun」单开关控制全局分流；
+   - 底部集成 **「一键部署」**、**「一键 23 项健康体检」**、**「一键完整卸载回滚」** 及可折叠的实时流式输出控制台。

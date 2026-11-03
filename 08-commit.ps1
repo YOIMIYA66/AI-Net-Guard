@@ -74,7 +74,7 @@ try {
     if ([int][Net.ServicePointManager]::SecurityProtocol -ne 0) {
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     }
-    $cfg = Get-Content -LiteralPath (Join-Path $V2rayNRoot 'binConfigs\config.json') -Raw | ConvertFrom-Json
+    $cfg = Get-Content -LiteralPath (Join-Path $V2rayNRoot 'binConfigs\config.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $want = ''
     $node = $cfg.outbounds | Where-Object { $_.protocol -in @('vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'wireguard', 'socks', 'http') } | Select-Object -First 1
     if ($node) {

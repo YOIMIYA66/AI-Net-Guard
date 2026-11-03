@@ -221,7 +221,7 @@ Save-Report '14-v2rayn-config.txt' {
     ''
     '--- generated Xray config: ' + $cfgPath + ' ---'
     if (Test-Path $cfgPath) {
-        $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+        $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
         'TUN inbound:'
         $tun = $cfg.inbounds | Where-Object { $_.protocol -eq 'tun' }
         if ($tun) { $tun.settings | ConvertTo-Json -Depth 8 }
@@ -247,7 +247,7 @@ Save-Report '14-v2rayn-config.txt' {
     ''
     '--- guiNConfig: TUN / DNS / SystemProxy ---'
     if (Test-Path $guiPath) {
-        $g = Get-Content -LiteralPath $guiPath -Raw | ConvertFrom-Json
+        $g = Get-Content -LiteralPath $guiPath -Raw -Encoding UTF8 | ConvertFrom-Json
         'TunModeItem:'
         $g.TunModeItem | ConvertTo-Json -Depth 6
         'SimpleDNSItem:'

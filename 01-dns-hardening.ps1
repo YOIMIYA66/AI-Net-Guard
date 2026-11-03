@@ -88,7 +88,7 @@ New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
 $BaselineFile = Join-Path $BackupDir 'baseline.json'
 $baseline = $null
 if (Test-Path -LiteralPath $BaselineFile) {
-    try { $baseline = Get-Content -LiteralPath $BaselineFile -Raw | ConvertFrom-Json } catch { }
+    try { $baseline = Get-Content -LiteralPath $BaselineFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
 }
 if ($baseline -and $baseline.Dns -and -not $Force) {
     Write-Host 'ERROR: a DNS baseline already exists (AI-Guard was applied before).' -ForegroundColor Red

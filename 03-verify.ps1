@@ -125,7 +125,7 @@ function Get-HttpExceptionCode($ErrorRecord) {
 
 function Get-NodeInfo {
     $cfgPath = Join-Path $V2rayNRoot 'binConfigs\config.json'
-    $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+    $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $addr = ''
     $port = ''
     $net = ''
@@ -446,7 +446,7 @@ if ($WfpCheck) {
     $f = Join-Path $wfpDir 'filters.xml'
     netsh wfp show filters file="$f" 2>$null | Out-Null
     if (Test-Path -LiteralPath $f) {
-        $t = Get-Content -LiteralPath $f -Raw
+        $t = Get-Content -LiteralPath $f -Raw -Encoding UTF8
         $permitXray = ([regex]::Matches($t, 'permit Xray')).Count
         if ($permitXray -gt 0) {
             Write-Host ('  Xray hard permit present (' + $permitXray + ' filters).') -ForegroundColor Yellow

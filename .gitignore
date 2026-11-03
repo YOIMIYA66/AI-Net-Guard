@@ -18,3 +18,11 @@ dns-*/
 Thumbs.db
 .vscode/
 .idea/
+*.user
+
+# Build outputs & standalone release binaries
+gui/bin/
+gui/obj/
+dist/
+*.suo
+scratch/

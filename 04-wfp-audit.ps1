@@ -68,7 +68,7 @@ if (-not (Test-Path $filtersXml)) {
     exit 1
 }
 
-$text = Get-Content -LiteralPath $filtersXml -Raw
+$text = Get-Content -LiteralPath $filtersXml -Raw -Encoding UTF8
 
 # ---------------------------------------------------------------- analysis
 Write-Host ''
