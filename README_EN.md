@@ -15,8 +15,8 @@
     <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981?style=flat" alt="License"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Windows-10%20%7C%2011%2024H2-0078d4?logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Resident%20RAM-0%20MB%20(Zero--Daemon)-059669?logo=speedtest&logoColor=white" alt="RAM"></a>
-    <a href="https://github.com/YOIMIYA66/AI-Net-Guard/releases"><img src="https://img.shields.io/badge/Standalone%20GUI-~267%20KB-8b5cf6?logo=dotnet&logoColor=white" alt="GUI"></a>
-    <a href="./scripts/12-regression.ps1"><img src="https://img.shields.io/badge/Regression-23%2F23%20Passed-22c55e" alt="Tests"></a>
+    <a href="https://github.com/YOIMIYA66/AI-Net-Guard/releases"><img src="https://img.shields.io/badge/Standalone%20GUI-~358%20KB-8b5cf6?logo=dotnet&logoColor=white" alt="GUI"></a>
+    <a href="./scripts/12-regression.ps1"><img src="https://img.shields.io/badge/Regression-24%2F24%20Passed-22c55e" alt="Tests"></a>
   </p>
 </p>
 
@@ -234,11 +234,14 @@ Zero installation, zero runtime dependencies, single-click executable:
 4. **Deploy**:
    - Comes preloaded with the **🌟 Recommended Daily Shield** preset (14 recommended protections ON, strict global NRPT DoH OFF).
    - Click **「🚀 一键部署 / 应用当前配置」** (Deploy Settings) to capture baselines, deploy the kernel engine to `C:\AI-Net-Guard`, lock down ACLs, and register system event monitors within seconds.
-5. **Key GUI Utility Buttons**:
+5. **Key GUI Utilities & Modernized UX (v5.7.3+)**:
+   - **Vector-First Fluent / Lucide Icon System**: Fully phased out low-fidelity emojis in favor of 13 native XAML `StreamGeometry` vector paths (Shield, Network Gateway, Globe, Lock, Check Circle, Alert Triangle, Zap, Rescue Lifebuoy, Folder, Refresh, Trash, Bilingual Languages) for pixel-crisp rendering across all DPI scalings.
+   - **Elastic Zero-Truncation Layout**: Elastic bottom status pills and adaptive layouts eliminate text clipping and label overflows on any window resolution or DPI setting.
+   - **Official Recommended Clean TUN Mode (ProxyEnable=0)**: Explicitly guides users to keep WinINET proxy cleared (`ProxyEnable = 0`) in TUN mode so network traffic is filtered strictly at kernel level by `xray_tun`, preventing loopback proxy conflicts. Includes 1-click dynamic switching between Clean TUN and System Proxy.
+   - **🌐 Instant Bilingual Switching**: Full English and Chinese localization across all 15 policies, presets, telemetry cards, and modals with persistent preference saving.
    - **🛟 应急脱困 (Emergency Rescue)**: Instantly unlocks all firewall outbound blocks, resets NIC DNS to DHCP, clears stale loopback proxies, and flushes Winsock within 5 seconds.
    - **一键健康体检 (Health Check)**: Runs the full 24-check regression suite (including live 10-second `pktmon` DNS capture).
    - **立即同步 (Sync Nodes)**: Dynamically extracts and authorizes new proxy node IPs/ports when switching servers in `v2rayN`.
-   - **一键关闭系统代理 (Clear System Proxy)**: Clears `HKCU` WinINET loopback proxies so toggling TUN alone controls all traffic.
    - **一键完整卸载 (Full Uninstall)**: Reversibly restores default Windows firewall, DNS, IPv6, prefix policy, NTP, and ACLs.
 
 > [!TIP]

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.1 - regenerate cn-ipv4.txt from v2rayN's own geoip data.
+    AI-Net-Guard v5.7.3 - regenerate cn-ipv4.txt from v2rayN's own geoip data.
 
 .DESCRIPTION
     Reads the same geoip database that v2rayN's "bypass mainland China"

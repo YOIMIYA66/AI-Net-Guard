@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.1 - step 0b: audit Xray's WFP filters and prove/disprove
+    AI-Net-Guard v5.7.3 - step 0b: audit Xray's WFP filters and prove/disprove
     whether xray.exe is exempt from Windows Firewall blocks (run as Administrator).
 
 .DESCRIPTION
@@ -79,6 +79,10 @@ $patterns = @(
     'permit DNS through the TUN',
     'block DNS',
     'block the DNS Client service',
+    'block tcp/53',
+    'block udp/53',
+    'block tcp/853',
+    'block udp/853',
     'block IPv4',
     'block IPv6',
     'permit DHCP'

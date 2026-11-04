@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.1 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.7.3 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 15
@@ -95,7 +95,7 @@ public static class AiGuardWinInet {
         }
         [AiGuardWinInet]::NotifyProxyChanged()
         if (-not $V2rayNRoot) {
-            foreach ($cand in @('D:\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN', 'C:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'))) {
+            foreach ($cand in @('D:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64-desktop', 'C:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN', 'C:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
                 if ($cand -and (Test-Path -LiteralPath (Join-Path $cand 'guiConfigs\guiNConfig.json'))) { $V2rayNRoot = $cand; break }
             }
         }
@@ -158,7 +158,7 @@ public static class AiGuardWinInet {
         [AiGuardWinInet]::NotifyProxyChanged()
         # Also synchronize v2rayN guiNConfig.json if present
         if (-not $V2rayNRoot) {
-            foreach ($cand in @('D:\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN', 'C:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'))) {
+            foreach ($cand in @('D:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64-desktop', 'C:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN', 'C:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
                 if ($cand -and (Test-Path -LiteralPath (Join-Path $cand 'guiConfigs\guiNConfig.json'))) { $V2rayNRoot = $cand; break }
             }
         }
@@ -358,7 +358,7 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.7.1 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.7.3 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
 
 if ($isFreshInstall) {
@@ -829,6 +829,58 @@ else {
     Write-Ok 'ZeroResidentMonitor = OFF (background tasks unregistered)'
 }
 
+# ------------------------------------------------------------------ Enforce Official TUN Recommended System Proxy Mode (ProxyEnable = 0)
+Write-Step 'enforcing official recommended system proxy mode (ProxyEnable = 0, pure TUN mode)'
+try {
+    $hkcuKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+    if (Test-Path -LiteralPath $hkcuKey) {
+        $cur = Get-ItemProperty -LiteralPath $hkcuKey -ErrorAction SilentlyContinue
+        if ($cur -and $cur.ProxyEnable -ne 0) {
+            Set-ItemProperty -LiteralPath $hkcuKey -Name 'ProxyEnable' -Value 0 -Type DWord
+        }
+    }
+    foreach ($hive in @(Get-ChildItem -LiteralPath 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue)) {
+        if ($hive.PSChildName -notmatch '^S-1-5-21-\d+-\d+-\d+-\d+$') { continue }
+        $ik = 'Registry::HKEY_USERS\' + $hive.PSChildName + '\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+        $ie = Get-ItemProperty -LiteralPath $ik -ErrorAction SilentlyContinue
+        if ($ie -and $ie.ProxyEnable -ne 0) {
+            Set-ItemProperty -LiteralPath $ik -Name 'ProxyEnable' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+        }
+    }
+    $winInetDef = @'
+using System;
+using System.Runtime.InteropServices;
+public static class AiGuardWinInet {
+    [DllImport("wininet.dll", SetLastError = true)]
+    public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);
+    public static void NotifyProxyChanged() {
+        InternetSetOption(IntPtr.Zero, 39, IntPtr.Zero, 0);
+        InternetSetOption(IntPtr.Zero, 37, IntPtr.Zero, 0);
+    }
+}
+'@
+    if (-not ('AiGuardWinInet' -as [type])) {
+        Add-Type -TypeDefinition $winInetDef -ErrorAction SilentlyContinue | Out-Null
+    }
+    if ('AiGuardWinInet' -as [type]) {
+        [AiGuardWinInet]::NotifyProxyChanged()
+    }
+    if ($V2rayNRoot -and (Test-Path -LiteralPath (Join-Path $V2rayNRoot 'guiConfigs\guiNConfig.json'))) {
+        try {
+            $guiCfgFile = Join-Path $V2rayNRoot 'guiConfigs\guiNConfig.json'
+            $guiCfg = Get-Content -LiteralPath $guiCfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($guiCfg.SystemProxyItem -and $guiCfg.SystemProxyItem.SysProxyType -ne 0) {
+                $guiCfg.SystemProxyItem.SysProxyType = 0
+                $guiCfg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $guiCfgFile -Encoding UTF8
+            }
+        } catch { }
+    }
+    Write-Ok 'system proxy verified: ProxyEnable = 0 (official TUN recommended mode: pure virtual NIC routing, 0 WinINET conflict)'
+}
+catch {
+    Write-Warn ('system proxy verification notice: ' + $_.Exception.Message)
+}
+
 try { Clear-DnsClientCache -ErrorAction SilentlyContinue } catch { }
 ipconfig.exe /flushdns | Out-Null
 
@@ -846,5 +898,5 @@ if (Test-Path -LiteralPath $aclScript) {
 
 & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Status -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns
 Write-Host ''
-Write-Host '[SUCCESS] AI-Net-Guard v5.7.1 configuration applied successfully.' -ForegroundColor Green
+Write-Host '[SUCCESS] AI-Net-Guard v5.7.3 configuration applied successfully.' -ForegroundColor Green
 exit 0

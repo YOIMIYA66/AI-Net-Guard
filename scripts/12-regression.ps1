@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.1 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
+    AI-Net-Guard v5.7.3 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
 
 .DESCRIPTION
     Verifies the v5.4 static guard end-to-end. Read-only, except for a temporary
@@ -248,7 +248,7 @@ function Get-ConfiguredNodeInfo {
     }
 }
 
-W ('=== AI-Net-Guard v5.7.1 regression ' + (Get-Date -Format 'o') + ' ===')
+W ('=== AI-Net-Guard v5.7.3 regression ' + (Get-Date -Format 'o') + ' ===')
 function Get-ActiveIpPhysicalNics {
     @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
         $_.OperationalStatus -eq 'Up' -and
@@ -581,7 +581,7 @@ netsh wfp show filters file="$wfpFile" 2>$null | Out-Null
 if (Test-Path -LiteralPath $wfpFile) {
     $wf = Get-Content -LiteralPath $wfpFile -Raw -Encoding UTF8
     $pCnt = ([regex]::Matches($wf, 'permit Xray')).Count
-    $bCnt = ([regex]::Matches($wf, 'block DNS')).Count
+    $bCnt = ([regex]::Matches($wf, 'block (?:the )?DNS|block (?:tcp|udp)/(?:53|853)')).Count
     if ($tunUp) {
         if ($nodeInfo.CoreType -eq 'xray' -and ($ipMap.TunNames -contains 'xray_tun')) {
             Check 'permit Xray present while TUN up' { if ($pCnt -le 0) { throw 'count=0' }; ('count=' + $pCnt) }

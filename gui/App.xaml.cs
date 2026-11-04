@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -9,7 +9,7 @@ namespace AiNetGuard.Gui
     public partial class App : Application
     {
         private const string AppMutexName = "Local\\AI_Net_Guard_SingleInstance_App_Mutex";
-        private const string WindowTitle = "AI-Net-Guard v5.6.0 — Windows 内核级防泄漏与智能分流配置中心";
+        private const string WindowTitle = "AI-Net-Guard v5.7.3 — Windows 内核级防泄漏与智能分流配置中心";
         private const int SW_SHOW = 5;
         private const int SW_RESTORE = 9;
 
@@ -44,16 +44,6 @@ namespace AiNetGuard.Gui
         {
             base.OnStartup(e);
 
-            DispatcherUnhandledException += (_, args) =>
-            {
-                MessageBox.Show(
-                    "界面运行发生未预期异常：\n\n" + args.Exception.Message,
-                    "AI-Net-Guard 错误提示",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error);
-                args.Handled = true;
-            };
-
             string smokeOutDir = null;
             if (e.Args != null)
             {
@@ -66,6 +56,22 @@ namespace AiNetGuard.Gui
                     }
                 }
             }
+
+            DispatcherUnhandledException += (_, args) =>
+            {
+                if (!string.IsNullOrEmpty(smokeOutDir))
+                {
+                    try { System.IO.File.WriteAllText(System.IO.Path.Combine(smokeOutDir, "smoke-error.txt"), args.Exception.ToString()); } catch { }
+                    Shutdown(2);
+                    return;
+                }
+                MessageBox.Show(
+                    "界面运行发生未预期异常：\n\n" + args.Exception.Message,
+                    "AI-Net-Guard 错误提示",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
+                args.Handled = true;
+            };
 
             // Single-instance enforcement (bypassed in headless smoke test mode)
             if (string.IsNullOrEmpty(smokeOutDir))

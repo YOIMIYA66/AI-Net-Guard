@@ -1,4 +1,4 @@
-# AI-Net-Guard Leak & Connectivity Verification Test (v5.7)
+# AI-Net-Guard Leak & Connectivity Verification Test (v5.7.3)
 $ErrorActionPreference = 'Continue'
 Write-Host '===============================================================================' -ForegroundColor Cyan
 Write-Host '               AI-Net-Guard Post-Optimization Leak & Health Test               ' -ForegroundColor Cyan

@@ -15,8 +15,8 @@
     <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-10b981?style=flat" alt="License"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Windows-10%20%7C%2011%2024H2-0078d4?logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Resident%20RAM-0%20MB%20(Zero--Daemon)-059669?logo=speedtest&logoColor=white" alt="RAM"></a>
-    <a href="https://github.com/YOIMIYA66/AI-Net-Guard/releases"><img src="https://img.shields.io/badge/Standalone%20GUI-~267%20KB-8b5cf6?logo=dotnet&logoColor=white" alt="GUI"></a>
-    <a href="./scripts/12-regression.ps1"><img src="https://img.shields.io/badge/Regression-23%2F23%20Passed-22c55e" alt="Tests"></a>
+    <a href="https://github.com/YOIMIYA66/AI-Net-Guard/releases"><img src="https://img.shields.io/badge/Standalone%20GUI-~358%20KB-8b5cf6?logo=dotnet&logoColor=white" alt="GUI"></a>
+    <a href="./scripts/12-regression.ps1"><img src="https://img.shields.io/badge/Regression-24%2F24%20Passed-22c55e" alt="Tests"></a>
   </p>
 </p>
 
@@ -234,11 +234,14 @@ flowchart TD
 4. **一键部署 / 应用配置**：
    - 默认采用 **🌟 推荐日常防御预设**（14 项推荐防护全部开启，严格全局 NRPT DoH 保持关闭）。
    - 点击 **「🚀 一键部署 / 应用当前配置」**，程序将在 1~2 秒内自动捕获网络基线、安全部署规则引擎至 `C:\AI-Net-Guard`、注入高韧性 ACL 并激活系统事件监控。
-5. **GUI 便捷维运按钮**：
+5. **GUI 便捷维运与现代化体验 (v5.7.3+)**：
+   - **纯矢量 Fluent / Lucide 渲染体系**：全面淘汰低保真 Emoji，升级为 13 组原生 XAML `StreamGeometry` 矢量 Path 图标（盾牌、网络拓扑网关、全球地球仪、锁、校验圈、报警三角、闪电、求生圈、文件夹、刷新、垃圾桶、中英双语），任意 DPI 缩放像素级清晰锐利。
+   - **弹性底栏防截断布局**：底栏状态胶囊采用弹性伸缩与自动收折布局，在任意窗口尺寸与缩放下保证 0 截断、0 溢出。
+   - **官方推荐系统代理模式 (ProxyEnable=0 纯 TUN 模式)**：对于 TUN 模式，推荐保持系统代理处于已清除状态（`ProxyEnable = 0`），所有出站流量在内核网络层直接由 `xray_tun` 虚拟网卡捕获与分流，彻底杜绝 WinINET HTTP 代理与本地应用程序抢占、冲突或死代理残留；GUI 支持一键在“清除系统代理（官方推荐）”与“临时开启系统代理”之间动态切换。
+   - **🌐 中英双语一键切换**：原生桌面 GUI 支持中英文一键即时切换，配置与语言偏好自动持久化。
    - **🛟 应急脱困 (Emergency Rescue)**：突发断网或配置异常时，一键瞬间清除防火墙出站阻断、重置网卡 DNS 为 DHCP、清空回环代理并冲洗 Winsock，5 秒内恢复上网。
    - **一键健康体检**：自动执行 24 项端到端内核与网络全回归测试（包含 10 秒实机 `pktmon` DNS 抓包）。
    - **立即同步**：在客户端切换代理节点后，一键实时探测并放行新落地节点 IP 与端口。
-   - **一键关闭系统代理**：清理注册表中残留的 `127.0.0.1` 代理，实现“仅开关 TUN 即可控制全局流量”的纯粹体验。
    - **一键完整卸载**：完整还原 Windows 原始防火墙、DNS、IPv6、前缀表、时间服务与计划任务。
 
 > [!TIP]

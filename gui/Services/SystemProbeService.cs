@@ -121,6 +121,10 @@ namespace AiNetGuard.Gui.Services
             string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             var candidates = new List<string>
             {
+                @"D:\v2rayN-windows-64-desktop\v2rayN-windows-64",
+                @"D:\v2rayN-windows-64-desktop",
+                @"C:\v2rayN-windows-64-desktop\v2rayN-windows-64",
+                @"C:\v2rayN-windows-64-desktop",
                 @"C:\v2rayN-windows-64",
                 @"D:\v2rayN-windows-64",
                 @"E:\v2rayN-windows-64",

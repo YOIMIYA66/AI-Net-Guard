@@ -442,12 +442,21 @@ namespace AiNetGuard.Gui.Models
 
     public sealed class FeatureToggleItem
     {
-        public string Category { get; set; }
+        public string CategoryZh { get; set; }
+        public string CategoryEn { get; set; }
         public string Key { get; set; }
-        public string Title { get; set; }
-        public string BadgeText { get; set; }
+        public string TitleZh { get; set; }
+        public string TitleEn { get; set; }
+        public string BadgeTextZh { get; set; }
+        public string BadgeTextEn { get; set; }
         public bool IsRecommended { get; set; }
-        public string Summary { get; set; }
+        public string SummaryZh { get; set; }
+        public string SummaryEn { get; set; }
+
+        public string Category => Services.LocalizationService.IsEnglish ? (CategoryEn ?? CategoryZh) : CategoryZh;
+        public string Title => Services.LocalizationService.IsEnglish ? (TitleEn ?? TitleZh) : TitleZh;
+        public string BadgeText => Services.LocalizationService.IsEnglish ? (BadgeTextEn ?? BadgeTextZh) : BadgeTextZh;
+        public string Summary => Services.LocalizationService.IsEnglish ? (SummaryEn ?? SummaryZh) : SummaryZh;
     }
 
     public static class FeatureCatalog
@@ -456,141 +465,201 @@ namespace AiNetGuard.Gui.Models
         {
             new FeatureToggleItem
             {
-                Category = "一、流量分流与防火墙边界 (Traffic & Firewall Boundary)",
+                CategoryZh = "一、流量分流与防火墙边界 (Traffic & Firewall Boundary)",
+                CategoryEn = "1. Traffic Routing & Firewall Boundary",
                 Key = "AllowCnDirect",
-                Title = "中国大陆 IPv4 直连白名单 (AI-Guard-Allow-CN)",
-                BadgeText = "推荐开启",
+                TitleZh = "中国大陆 IPv4 直连白名单 (AI-Guard-Allow-CN)",
+                TitleEn = "Mainland China IPv4 Direct Whitelist (AI-Guard-Allow-CN)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "国内网站、微信、游戏免代理满速直连，仅严防海外流量明文泄漏；若关闭此项则进入“严格全局铁桶锁”（关闭 TUN 时国内网也会一并阻断）。"
+                SummaryZh = "国内网站、微信、游戏免代理满速直连，仅严防海外流量明文泄漏；若关闭此项则进入“严格全局铁桶锁”（关闭 TUN 时国内网也会一并阻断）。",
+                SummaryEn = "Direct high-speed connection for domestic websites, WeChat, and games without proxy. Strictly guards against overseas plaintext leaks; disabling switches to 'Strict Global Lock'."
             },
             new FeatureToggleItem
             {
-                Category = "一、流量分流与防火墙边界 (Traffic & Firewall Boundary)",
+                CategoryZh = "一、流量分流与防火墙边界 (Traffic & Firewall Boundary)",
+                CategoryEn = "1. Traffic Routing & Firewall Boundary",
                 Key = "AllowLan",
-                Title = "局域网设备互访 (LAN / LocalSubnet)",
-                BadgeText = "推荐开启",
+                TitleZh = "局域网设备互访 (LAN / LocalSubnet)",
+                TitleEn = "Local Area Network Device Access (LAN / LocalSubnet)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "允许访问同一路由器下的 NAS、局域网打印机、无线投屏与路由器管理后台（192.168.x.x）；在机场或咖啡厅公共 Wi-Fi 下可关闭以彻底隔离内网。"
+                SummaryZh = "允许访问同一路由器下的 NAS、局域网打印机、无线投屏与路由器管理后台（192.168.x.x）；在机场或咖啡厅公共 Wi-Fi 下可关闭以彻底隔离内网。",
+                SummaryEn = "Allows access to local NAS, printers, cast devices, and router admin (192.168.x.x). Can be disabled on untrusted public Wi-Fi to completely isolate intranet."
             },
             new FeatureToggleItem
             {
-                Category = "一、流量分流与防火墙边界 (Traffic & Firewall Boundary)",
+                CategoryZh = "一、流量分流与防火墙边界 (Traffic & Firewall Boundary)",
+                CategoryEn = "1. Traffic Routing & Firewall Boundary",
                 Key = "AllowNcsi",
-                Title = "Windows 联网状态图标探测放行 (NCSI)",
-                BadgeText = "推荐开启",
+                TitleZh = "Windows 联网状态图标探测放行 (NCSI)",
+                TitleEn = "Windows Network Connectivity Status Indicator (NCSI)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "仅精准放行微软联网检测探针（13.107.4.52:80），避免关闭代理时任务栏右下角误报“无 Internet 小地球”导致 Office 与微软商店拒绝联网。"
+                SummaryZh = "仅精准放行微软联网检测探针（13.107.4.52:80），避免关闭代理时任务栏右下角误报“无 Internet 小地球”导致 Office 与微软商店拒绝联网。",
+                SummaryEn = "Selectively allows Microsoft network detection probe (13.107.4.52:80) to avoid false 'No Internet' globe icons that cause Office and Microsoft Store to refuse connection."
             },
             new FeatureToggleItem
             {
-                Category = "一、流量分流与防火墙边界 (Traffic & Firewall Boundary)",
+                CategoryZh = "一、流量分流与防火墙边界 (Traffic & Firewall Boundary)",
+                CategoryEn = "1. Traffic Routing & Firewall Boundary",
                 Key = "QuarantineRogueAllow",
-                Title = "自动隔离第三方软件私自添加的出站放行规则 (防规则漂移)",
-                BadgeText = "推荐开启",
+                TitleZh = "自动隔离第三方软件私自添加的出站放行规则 (防规则漂移)",
+                TitleEn = "Quarantine Unauthorized Third-Party Outbound Allow Rules",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "Windows 防火墙中任何第三方出站 Allow 规则都会架空默认拦截；开启后自动冻结其他软件静默植入的出站放行规则（关闭或卸载时原样恢复）。"
+                SummaryZh = "Windows 防火墙中任何第三方出站 Allow 规则都会架空默认拦截；开启后自动冻结其他软件静默植入的出站放行规则（关闭或卸载时原样恢复）。",
+                SummaryEn = "Any third-party outbound allow rule voids default block. Automatically freezes rogue allow rules quietly added by other software (restored on disable/uninstall)."
             },
 
             new FeatureToggleItem
             {
-                Category = "二、DNS 防污染与防泄漏护盾 (DNS & Leak-Shield Hardening)",
+                CategoryZh = "二、DNS 防污染与防泄漏护盾 (DNS & Leak-Shield Hardening)",
+                CategoryEn = "2. DNS Leak Protection & Protocol Hardening",
                 Key = "LockPhysicalDns",
-                Title = "锁定物理网卡安全静态 DNS (223.5.5.5)",
-                BadgeText = "推荐开启",
+                TitleZh = "锁定物理网卡安全静态 DNS (223.5.5.5)",
+                TitleEn = "Lock Physical Adapter Secure Static DNS (223.5.5.5)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "防止路由器 DHCP 下发运营商劫持 DNS；开启代理时 53 端口自动被 TUN 接管走加密 DoH，关闭代理时也能在大陆白名单内安全解析国内域名。"
+                SummaryZh = "防止路由器 DHCP 下发运营商劫持 DNS；开启代理时 53 端口自动被 TUN 接管走加密 DoH，关闭代理时也能在大陆白名单内安全解析国内域名。",
+                SummaryEn = "Prevents rogue DHCP router DNS hijacking. When proxy is ON, port 53 is captured by TUN for encrypted DoH; when OFF, securely resolves domestic domains."
             },
             new FeatureToggleItem
             {
-                Category = "二、DNS 防污染与防泄漏护盾 (DNS & Leak-Shield Hardening)",
+                CategoryZh = "二、DNS 防污染与防泄漏护盾 (DNS & Leak-Shield Hardening)",
+                CategoryEn = "2. DNS Leak Protection & Protocol Hardening",
                 Key = "DisableSmhnr",
-                Title = "禁用 Windows 智能多宿主并行 DNS 抢答 (SMHNR)",
-                BadgeText = "推荐开启",
+                TitleZh = "禁用 Windows 智能多宿主并行 DNS 抢答 (SMHNR)",
+                TitleEn = "Disable Smart Multi-Homed Name Resolution (SMHNR)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "阻止 Windows 11 在开启代理时同时向物理网卡和 TUN 虚拟网卡并发喷射 DNS 查询，将物理网卡明文 53 端口尝试次数彻底压降至 0。"
+                SummaryZh = "阻止 Windows 11 在开启代理时同时向物理网卡和 TUN 虚拟网卡并发喷射 DNS 查询，将物理网卡明文 53 端口尝试次数彻底压降至 0。",
+                SummaryEn = "Stops Windows 11 from blasting parallel DNS queries to both physical and TUN adapters simultaneously, dropping plaintext port 53 leaks to 0."
             },
             new FeatureToggleItem
             {
-                Category = "二、DNS 防污染与防泄漏护盾 (DNS & Leak-Shield Hardening)",
+                CategoryZh = "二、DNS 防污染与防泄漏护盾 (DNS & Leak-Shield Hardening)",
+                CategoryEn = "2. DNS Leak Protection & Protocol Hardening",
                 Key = "DisableLlmnrNetbios",
-                Title = "禁用局域网多播与广播名称解析 (LLMNR & NetBIOS)",
-                BadgeText = "推荐开启",
+                TitleZh = "禁用局域网多播与广播名称解析 (LLMNR & NetBIOS)",
+                TitleEn = "Disable Local Multicast & Broadcast Resolution (LLMNR & NetBIOS)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "关闭陈旧的局域网广播域名解析协议，既防止未命中域名泄漏到局域网，也能免疫局域网内常见的 LLMNR / NBT-NS 欺骗劫持攻击。"
+                SummaryZh = "关闭陈旧的局域网广播域名解析协议，既防止未命中域名泄漏到局域网，也能免疫局域网内常见的 LLMNR / NBT-NS 欺骗劫持攻击。",
+                SummaryEn = "Disables legacy local broadcast name resolution protocols, preventing unresolved queries from leaking to LAN and blocking LLMNR/NBT-NS spoofing attacks."
             },
             new FeatureToggleItem
             {
-                Category = "二、DNS 防污染与防泄漏护盾 (DNS & Leak-Shield Hardening)",
+                CategoryZh = "二、DNS 防污染与防泄漏护盾 (DNS & Leak-Shield Hardening)",
+                CategoryEn = "2. DNS Leak Protection & Protocol Hardening",
                 Key = "StrictNrptDoh",
-                Title = "严格系统级全局 DoH 强制加密 (NRPT 1.1.1.1 · 禁 UDP 回退)",
-                BadgeText = "高级可选 · 默认关闭",
+                TitleZh = "严格系统级全局 DoH 强制加密 (NRPT 1.1.1.1 · 禁 UDP 回退)",
+                TitleEn = "Strict Global DoH Enforcement (NRPT 1.1.1.1 · No UDP Fallback)",
+                BadgeTextZh = "高级可选 · 默认关闭",
+                BadgeTextEn = "Advanced · Default OFF",
                 IsRecommended = false,
-                Summary = "强制全系统所有域名仅通过 1.1.1.1 DoH 解析；注意：开启后一旦关闭 TUN 代理，国内网页也将无法解析域名（仅建议 24 小时常开 TUN 的用户开启）。"
+                SummaryZh = "强制全系统所有域名仅通过 1.1.1.1 DoH 解析；注意：开启后一旦关闭 TUN 代理，国内网页也将无法解析域名（仅建议 24 小时常开 TUN 的用户开启）。",
+                SummaryEn = "Forces all system DNS queries exclusively through 1.1.1.1 encrypted DoH. Note: If TUN is OFF, domain resolution will fail entirely (recommended for 24/7 TUN users)."
             },
 
             new FeatureToggleItem
             {
-                Category = "三、IPv6 防绕过与双栈连接加速 (IPv6 & Dual-Stack Speed)",
+                CategoryZh = "三、IPv6 防绕过与双栈连接加速 (IPv6 & Dual-Stack Speed)",
+                CategoryEn = "3. IPv6 Leak Shield & Dual-Stack Speed",
                 Key = "DisablePhysicalIpv6",
-                Title = "禁用物理网卡 IPv6 协议栈绑定 (ms_tcpip6)",
-                BadgeText = "推荐开启",
+                TitleZh = "禁用物理网卡 IPv6 协议栈绑定 (ms_tcpip6)",
+                TitleEn = "Disable Physical Adapter IPv6 Protocol Binding (ms_tcpip6)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "彻底堵死浏览器或应用通过运营商原生 IPv6 绕过 IPv4 TUN 隧道直连海外的严重泄漏隐患（含手机 USB 共享网络等热插拔网卡自动防护）。"
+                SummaryZh = "彻底堵死浏览器或应用通过运营商原生 IPv6 绕过 IPv4 TUN 隧道直连海外的严重泄漏隐患（含手机 USB 共享网络等热插拔网卡自动防护）。",
+                SummaryEn = "Completely blocks browsers and applications from bypassing IPv4 TUN tunnels via native ISP IPv6 to reach foreign IPs (auto-protects hotplug adapters)."
             },
             new FeatureToggleItem
             {
-                Category = "三、IPv6 防绕过与双栈连接加速 (IPv6 & Dual-Stack Speed)",
+                CategoryZh = "三、IPv6 防绕过与双栈连接加速 (IPv6 & Dual-Stack Speed)",
+                CategoryEn = "3. IPv6 Leak Shield & Dual-Stack Speed",
                 Key = "PreferIpv4Prefix",
-                Title = "提升 IPv4 双栈寻址优先级高于 IPv6 (::ffff:0:0/96 > ::/0)",
-                BadgeText = "推荐开启",
+                TitleZh = "提升 IPv4 双栈寻址优先级高于 IPv6 (::ffff:0:0/96 > ::/0)",
+                TitleEn = "Prioritize IPv4 Address Precedence over IPv6 (::ffff:0:0/96 > ::/0)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "让系统及 Python / Git / Node 等命令行开发工具优先请求 IPv4，彻底消除因等待 IPv6 AAAA 超时导致的每次联网前卡顿 2~5 秒问题。"
+                SummaryZh = "让系统及 Python / Git / Node 等命令行开发工具优先请求 IPv4，彻底消除因等待 IPv6 AAAA 超时导致的每次联网前卡顿 2~5 秒问题。",
+                SummaryEn = "Prioritizes IPv4 requests for system and dev tools (Python, Git, Node), eliminating 2-5 second freezes caused by IPv6 AAAA lookup timeouts."
             },
 
             new FeatureToggleItem
             {
-                Category = "四、零驻留自愈、多核联动与防篡改加固 (Automation & Tamper-Lock)",
+                CategoryZh = "四、零驻留自愈、多核联动与防篡改加固 (Automation & Tamper-Lock)",
+                CategoryEn = "4. Zero-Resident Automation & Tamper Protection",
                 Key = "ZeroResidentMonitor",
-                Title = "零内存事件触发与合盖睡眠唤醒自愈 (0 MB 后台常驻)",
-                BadgeText = "推荐开启",
+                TitleZh = "零内存事件触发与合盖睡眠唤醒自愈 (0 MB 后台常驻)",
+                TitleEn = "Zero-Resident Event-Triggered & Sleep-Resume Self-Healing",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "平时后台 0 进程、0 MB 内存占用；仅在网络切换、开机、笔记本睡眠唤醒时由系统事件毫秒级唤醒自检并刷新污染 DNS 缓存。"
+                SummaryZh = "平时后台 0 进程、0 MB 内存占用；仅在网络切换、开机、笔记本睡眠唤醒时由系统事件毫秒级唤醒自检并刷新污染 DNS 缓存。",
+                SummaryEn = "0 background processes and 0 MB RAM footprint. Awakens on network switch, boot, or laptop sleep-resume via Windows system events to self-check and flush DNS."
             },
             new FeatureToggleItem
             {
-                Category = "四、零驻留自愈、多核联动与防篡改加固 (Automation & Tamper-Lock)",
+                CategoryZh = "四、零驻留自愈、多核联动与防篡改加固 (Automation & Tamper-Lock)",
+                CategoryEn = "4. Zero-Resident Automation & Tamper Protection",
                 Key = "AutoNodeSync",
-                Title = "多内核代理节点与端口自动热同步 (Xray / sing-box / Hysteria2)",
-                BadgeText = "推荐开启",
+                TitleZh = "多内核代理节点与端口自动热同步 (Xray / sing-box / Hysteria2)",
+                TitleEn = "Multi-Core Proxy Node & Port Auto Hot-Sync (Xray / sing-box / Hy2)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "在 v2rayN 中切换节点、更换协议（如 VLESS 切 Hysteria2 端口跳跃）或切换代理内核时，自动识别并更新防火墙放行节点 IP 与端口。"
+                SummaryZh = "在 v2rayN 中切换节点、更换协议（如 VLESS 切 Hysteria2 端口跳跃）或切换代理内核时，自动识别并更新防火墙放行节点 IP 与端口。",
+                SummaryEn = "Automatically detects node changes, protocol updates (e.g. VLESS to Hysteria2 port hopping), or core changes in v2rayN and updates firewall rules."
             },
             new FeatureToggleItem
             {
-                Category = "四、零驻留自愈、多核联动与防篡改加固 (Automation & Tamper-Lock)",
+                CategoryZh = "四、零驻留自愈、多核联动与防篡改加固 (Automation & Tamper-Lock)",
+                CategoryEn = "4. Zero-Resident Automation & Tamper Protection",
                 Key = "AutoHealStaleProxy",
-                Title = "代理异常退出/断电后残留死系统代理自动修复",
-                BadgeText = "推荐开启",
+                TitleZh = "代理异常退出/断电后残留死系统代理自动修复",
+                TitleEn = "Auto-Heal Stale Loopback Proxy on Crash or Abnormal Shutdown",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "当代理软件崩溃或关机未正常退出导致系统残留失效的 127.0.0.1 本地代理（引发开机后浏览器全部报错打不开网页）时自动清理恢复。"
+                SummaryZh = "TUN 模式官方推荐状态为清除系统代理（ProxyEnable=0），全流量由虚拟网卡接管。若代理软件崩溃或关机残留失效的 127.0.0.1 代理时自动清理恢复为推荐纯净状态。",
+                SummaryEn = "Official TUN recommendation is ProxyEnable=0 (cleared proxy, all traffic via virtual NIC). Automatically clears stale 127.0.0.1 proxy on crash or unexpected shutdown to restore clean recommended state."
             },
             new FeatureToggleItem
             {
-                Category = "四、零驻留自愈、多核联动与防篡改加固 (Automation & Tamper-Lock)",
+                CategoryZh = "四、零驻留自愈、多核联动与防篡改加固 (Automation & Tamper-Lock)",
+                CategoryEn = "4. Zero-Resident Automation & Tamper Protection",
                 Key = "DomesticNtp",
-                Title = "国内高可用时间同步加固 (阿里云/腾讯云/中科院授时)",
-                BadgeText = "推荐开启",
+                TitleZh = "国内高可用时间同步加固 (阿里云/腾讯云/中科院授时)",
+                TitleEn = "High-Availability Domestic Time Synchronization (Aliyun / Tencent / NTSC)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "解决默认 time.windows.com 在未开代理时被拦截，导致电脑睡眠后时钟偏差超过 90 秒、引发 VLESS+REALITY 节点握手死锁连不上的痛点。"
+                SummaryZh = "解决默认 time.windows.com 在未开代理时被拦截，导致电脑睡眠后时钟偏差超过 90 秒、引发 VLESS+REALITY 节点握手死锁连不上的痛点。",
+                SummaryEn = "Replaces default time.windows.com to prevent time drift exceeding 90 seconds after sleep, which causes VLESS+REALITY TLS handshake deadlock."
             },
             new FeatureToggleItem
             {
-                Category = "四、零驻留自愈、多核联动与防篡改加固 (Automation & Tamper-Lock)",
+                CategoryZh = "四、零驻留自愈、多核联动与防篡改加固 (Automation & Tamper-Lock)",
+                CategoryEn = "4. Zero-Resident Automation & Tamper Protection",
                 Key = "HardenInstallAcl",
-                Title = "安装目录防篡改权限锁定 (C:\\AI-Net-Guard 管理员只写 ACL)",
-                BadgeText = "推荐开启",
+                TitleZh = "安装目录防篡改权限锁定 (C:\\AI-Net-Guard 管理员只写 ACL)",
+                TitleEn = "Install Directory Anti-Tamper ACL Lock (C:\\AI-Net-Guard Admin-Only)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                Summary = "将防护安装目录锁定为仅系统管理员 (Administrators/SYSTEM) 可修改，防止普通权限恶意程序篡改白名单规则或借系统计划任务提权。"
+                SummaryZh = "将防护安装目录锁定为仅系统管理员 (Administrators/SYSTEM) 可修改，防止普通权限恶意程序篡改白名单规则或借系统计划任务提权。",
+                SummaryEn = "Locks installation directory to Administrator/SYSTEM write-only, preventing unprivileged malware from tampering with whitelists or exploiting scheduled tasks."
             }
         };
     }

@@ -1,7 +1,7 @@
-﻿<Window x:Class="AiNetGuard.Gui.MainWindow"
+<Window x:Class="AiNetGuard.Gui.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="AI-Net-Guard v5.7 — Windows 内核级防泄漏与智能分流配置中心"
+        Title="AI-Net-Guard v5.7.3 — Windows 内核级防泄漏与智能分流配置中心"
         Width="1050"
         Height="840"
         MinWidth="920"
@@ -56,7 +56,7 @@
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <TextBlock Text="AI-Net-Guard" Foreground="{StaticResource TextPrimaryBrush}" FontSize="17" FontWeight="SemiBold"/>
                         <Border Background="#F5F5F7" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="5" Padding="6,1.5" Margin="8,0,0,0" VerticalAlignment="Center">
-                            <TextBlock Text="v5.7 原生桌面版" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" FontWeight="Medium"/>
+                            <TextBlock x:Name="HeaderVersionBadgeText" Text="v5.7.3 原生桌面版" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" FontWeight="Medium"/>
                         </Border>
                         <!-- Live Guard Status Pill -->
                         <Border x:Name="GuardStatusBadge" Background="{StaticResource SuccessBgBrush}" BorderBrush="{StaticResource SuccessBorderBrush}" BorderThickness="1" CornerRadius="12" Padding="10,2.5" Margin="12,0,0,0" VerticalAlignment="Center">
@@ -66,62 +66,119 @@
                             </StackPanel>
                         </Border>
                     </StackPanel>
-                    <TextBlock Text="Windows 内核级 WFP 失败关闭防泄漏 · 国内直连白名单 · 零内存事件自愈配置中心"
+                    <TextBlock x:Name="HeaderSubtitleText" Text="Windows 内核级 WFP 失败关闭防泄漏 · 国内直连白名单 · 零内存事件自愈配置中心"
                                Foreground="{StaticResource TextMutedBrush}" FontSize="11.5" Margin="0,3,0,0"/>
                 </StackPanel>
 
                 <!-- Header Quick Buttons -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button x:Name="RescueBtn" Style="{StaticResource HeaderGhostButtonStyle}" Content="🛟 应急脱困" Margin="0,0,8,0" Click="RescueBtn_Click" ToolTip="若遇网络异常或急需上网，一键秒级重置 Windows 原生网络并解除所有内核拦截"/>
-                    <Button x:Name="OpenDirBtn" Style="{StaticResource HeaderGhostButtonStyle}" Content="打开安装目录" Margin="0,0,8,0" Click="OpenDirBtn_Click"/>
-                    <Button x:Name="RefreshBtn" Style="{StaticResource HeaderGhostButtonStyle}" Content="刷新状态" Click="RefreshBtn_Click"/>
+                    <Button x:Name="LangSwitchBtn" Style="{StaticResource HeaderGhostButtonStyle}" Margin="0,0,8,0" Click="LangSwitchBtn_Click" ToolTip="切换界面语言 (Switch Language)">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconLanguages}" Stroke="{StaticResource TextSecondaryBrush}" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="13" Height="13" Stretch="Uniform" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="LangSwitchBtnText" Text="English" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="RescueBtn" Style="{StaticResource HeaderGhostButtonStyle}" Margin="0,0,8,0" Click="RescueBtn_Click" ToolTip="若遇网络异常或急需上网，一键秒级重置 Windows 原生网络并解除所有内核拦截">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconLifebuoy}" Stroke="#D97706" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="13" Height="13" Stretch="Uniform" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="RescueBtnText" Text="应急脱困" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="OpenDirBtn" Style="{StaticResource HeaderGhostButtonStyle}" Margin="0,0,8,0" Click="OpenDirBtn_Click">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconFolder}" Stroke="{StaticResource TextSecondaryBrush}" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="13" Height="13" Stretch="Uniform" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="OpenDirBtnText" Text="打开安装目录" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="RefreshBtn" Style="{StaticResource HeaderGhostButtonStyle}" Click="RefreshBtn_Click">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconRefresh}" Stroke="{StaticResource TextSecondaryBrush}" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="12.5" Height="12.5" Stretch="Uniform" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="RefreshBtnText" Text="刷新状态" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
             </Grid>
         </Border>
 
         <!-- ==================== ROW 1: LIVE TELEMETRY & V2RAYN BAR ==================== -->
         <StackPanel Grid.Row="1" Margin="20,14,20,6">
-            <!-- 4-Column Status Cards -->
+            <!-- 4-Column Status Cards with Micro-Icons -->
             <UniformGrid Columns="4" Margin="0,0,0,10">
                 <!-- Card 1: Firewall -->
-                <Border Background="{StaticResource CardBgBrush}" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="14,10" Margin="0,0,8,0">
-                    <StackPanel>
-                        <TextBlock Text="内核防火墙与防漂移" Foreground="{StaticResource TextMutedBrush}" FontSize="11.5" FontWeight="Medium"/>
-                        <TextBlock x:Name="CardFirewallMain" Text="-" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13.5" FontWeight="SemiBold" Margin="0,4,0,2" TextTrimming="CharacterEllipsis"/>
-                        <TextBlock x:Name="CardFirewallSub" Text="-" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" TextTrimming="CharacterEllipsis"/>
-                    </StackPanel>
+                <Border Background="{StaticResource CardBgBrush}" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="12,10" Margin="0,0,6,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Width="36" Height="36" CornerRadius="8" Background="#ECFDF5" BorderBrush="#A7F3D0" BorderThickness="1" Margin="0,0,10,0" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconShieldCheck}" Stroke="#059669" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="18" Height="18" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock x:Name="CardFirewallTitle" Text="内核防火墙与防漂移" Foreground="{StaticResource TextMutedBrush}" FontSize="11" FontWeight="Medium"/>
+                            <TextBlock x:Name="CardFirewallMain" Text="-" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13.5" FontWeight="SemiBold" Margin="0,2,0,1" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="CardFirewallSub" Text="-" Foreground="{StaticResource TextSecondaryBrush}" FontSize="10.5" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </Grid>
                 </Border>
 
                 <!-- Card 2: TUN & Core -->
-                <Border Background="{StaticResource CardBgBrush}" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="14,10" Margin="4,0,4,0">
-                    <StackPanel>
-                        <TextBlock Text="TUN 虚拟网卡与代理内核" Foreground="{StaticResource TextMutedBrush}" FontSize="11.5" FontWeight="Medium"/>
-                        <TextBlock x:Name="CardTunMain" Text="-" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13.5" FontWeight="SemiBold" Margin="0,4,0,2" TextTrimming="CharacterEllipsis"/>
-                        <TextBlock x:Name="CardTunSub" Text="-" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" TextTrimming="CharacterEllipsis"/>
-                    </StackPanel>
+                <Border Background="{StaticResource CardBgBrush}" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="12,10" Margin="3,0,3,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Width="36" Height="36" CornerRadius="8" Background="#EFF6FF" BorderBrush="#BFDBFE" BorderThickness="1" Margin="0,0,10,0" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconNetwork}" Stroke="#2563EB" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="18" Height="18" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock x:Name="CardTunTitle" Text="TUN 虚拟网卡与核心" Foreground="{StaticResource TextMutedBrush}" FontSize="11" FontWeight="Medium"/>
+                            <TextBlock x:Name="CardTunMain" Text="-" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13.5" FontWeight="SemiBold" Margin="0,2,0,1" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="CardTunSub" Text="-" Foreground="{StaticResource TextSecondaryBrush}" FontSize="10.5" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </Grid>
                 </Border>
 
                 <!-- Card 3: Active Node & Sync -->
-                <Border Background="{StaticResource CardBgBrush}" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="14,10" Margin="4,0,4,0">
-                    <StackPanel>
-                        <Grid>
-                            <TextBlock Text="当前放行节点 (点击打码/显示)" Foreground="{StaticResource TextMutedBrush}" FontSize="11.5" FontWeight="Medium" VerticalAlignment="Center"/>
-                            <Button x:Name="SyncNodeNowBtn" Content="立即同步" HorizontalAlignment="Right" Padding="7,1" FontSize="11" Cursor="Hand"
-                                    Style="{StaticResource HeaderGhostButtonStyle}" Click="SyncNodeNowBtn_Click"/>
-                        </Grid>
-                        <TextBlock x:Name="CardNodeMain" Text="-" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13.5" FontWeight="SemiBold" Margin="0,4,0,2"
-                                   Cursor="Hand" ToolTip="点击切换隐藏/显示完整节点 IP" MouseLeftButtonUp="CardNodeMain_MouseLeftButtonUp" TextTrimming="CharacterEllipsis"/>
-                        <TextBlock x:Name="CardNodeSub" Text="-" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" TextTrimming="CharacterEllipsis"/>
-                    </StackPanel>
+                <Border Background="{StaticResource CardBgBrush}" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="12,10" Margin="3,0,3,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Width="36" Height="36" CornerRadius="8" Background="#F5F3FF" BorderBrush="#DDD6FE" BorderThickness="1" Margin="0,0,10,0" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconGlobe}" Stroke="#7C3AED" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="18" Height="18" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <Grid>
+                                <TextBlock x:Name="CardNodeTitle" Text="当前放行节点" Foreground="{StaticResource TextMutedBrush}" FontSize="11" FontWeight="Medium" VerticalAlignment="Center"/>
+                                <Button x:Name="SyncNodeNowBtn" Content="同步" ToolTip="立即提取并放行 v2rayN 当前活跃节点" HorizontalAlignment="Right" Padding="6,1" FontSize="10.5" Cursor="Hand"
+                                        Style="{StaticResource HeaderGhostButtonStyle}" Click="SyncNodeNowBtn_Click"/>
+                            </Grid>
+                            <TextBlock x:Name="CardNodeMain" Text="-" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13.5" FontWeight="SemiBold" Margin="0,2,0,1"
+                                        Cursor="Hand" ToolTip="点击切换隐藏/显示完整节点 IP" MouseLeftButtonUp="CardNodeMain_MouseLeftButtonUp" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="CardNodeSub" Text="-" Foreground="{StaticResource TextSecondaryBrush}" FontSize="10.5" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </Grid>
                 </Border>
 
                 <!-- Card 4: DNS & Background RAM -->
-                <Border Background="{StaticResource CardBgBrush}" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="14,10" Margin="8,0,0,0">
-                    <StackPanel>
-                        <TextBlock Text="DNS 防泄漏护盾与后台占用" Foreground="{StaticResource TextMutedBrush}" FontSize="11.5" FontWeight="Medium"/>
-                        <TextBlock x:Name="CardDnsMain" Text="-" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13.5" FontWeight="SemiBold" Margin="0,4,0,2" TextTrimming="CharacterEllipsis"/>
-                        <TextBlock x:Name="CardDnsSub" Text="-" Foreground="{StaticResource TextSecondaryBrush}" FontSize="11" TextTrimming="CharacterEllipsis"/>
-                    </StackPanel>
+                <Border Background="{StaticResource CardBgBrush}" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="10" Padding="12,10" Margin="6,0,0,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Width="36" Height="36" CornerRadius="8" Background="#ECFEFF" BorderBrush="#A5F3FC" BorderThickness="1" Margin="0,0,10,0" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconLock}" Stroke="#0891B2" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="17" Height="17" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock x:Name="CardDnsTitle" Text="DNS 防泄漏与后台" Foreground="{StaticResource TextMutedBrush}" FontSize="11" FontWeight="Medium"/>
+                            <TextBlock x:Name="CardDnsMain" Text="-" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13.5" FontWeight="SemiBold" Margin="0,2,0,1" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock x:Name="CardDnsSub" Text="-" Foreground="{StaticResource TextSecondaryBrush}" FontSize="10.5" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </Grid>
                 </Border>
             </UniformGrid>
 
@@ -134,7 +191,7 @@
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="v2rayN 目录：" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" FontSize="12.5" Margin="0,0,10,0"/>
+                    <TextBlock x:Name="V2rayNPathLabel" Grid.Column="0" Text="v2rayN 目录：" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" FontSize="12.5" Margin="0,0,10,0"/>
                     <TextBox x:Name="V2rayNPathBox" Grid.Column="1" Style="{StaticResource AppleTextBoxStyle}" Height="34" VerticalContentAlignment="Center" TextChanged="V2rayNPathBox_TextChanged"/>
                     <Button x:Name="BrowseV2rayNBtn" Grid.Column="2" Style="{StaticResource SecondaryButtonStyle}" Content="浏览选择..." Height="34" Padding="14,0" FontSize="12" Margin="10,0,0,0" VerticalAlignment="Center" Click="BrowseV2rayNBtn_Click"/>
                     <Border x:Name="V2rayNValidBadge" Grid.Column="3" Background="{StaticResource SuccessBgBrush}" CornerRadius="6" Height="28" Padding="10,0" Margin="10,0,0,0" VerticalAlignment="Center">
@@ -143,17 +200,19 @@
                 </Grid>
             </Border>
 
-            <!-- System Proxy Configuration Banner -->
-            <Border x:Name="SystemProxyBanner" Visibility="Visible" Background="#182234" BorderBrush="#2563EB" BorderThickness="1" CornerRadius="9" Padding="14,8" Margin="0,8,0,0">
+            <!-- System Proxy Configuration Banner (Soft Accent Card) -->
+            <Border x:Name="SystemProxyBanner" Visibility="Visible" Background="#F0FDF4" BorderBrush="#86EFAC" BorderThickness="3.5,1,1,1" CornerRadius="10" Padding="14,9" Margin="0,8,0,0">
                 <Grid>
                     <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock x:Name="SystemProxyText" Grid.Column="0" VerticalAlignment="Center" Foreground="#93C5FD" FontSize="12" TextWrapping="Wrap"
-                               Text="系统代理状态：推荐使用「自动配置系统代理」，与 Xray Reality 核心原生协同。"/>
-                    <Button x:Name="ClearSysProxyBtn" Grid.Column="1" Content="自动配置系统代理" Padding="12,5" FontSize="11.5" FontWeight="SemiBold" Cursor="Hand"
-                            Background="#1D4ED8" Foreground="#FFFFFF" BorderBrush="#3B82F6" BorderThickness="1" Margin="12,0,0,0" Click="ClearSysProxyBtn_Click"/>
+                    <Path x:Name="SystemProxyIconPath" Grid.Column="0" Data="{StaticResource IconCheckCircle}" Stroke="#16A34A" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="15" Height="15" Stretch="Uniform" Margin="0,0,9,0" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="SystemProxyText" Grid.Column="1" VerticalAlignment="Center" Foreground="#166534" FontSize="12" TextWrapping="Wrap"
+                               Text="Windows 系统代理：当前处于 ProxyEnable = 0（已清除代理 · 官方推荐 TUN 纯净状态，全量流量无感走虚拟网卡，免 WinINET 冲突）。"/>
+                    <Button x:Name="ClearSysProxyBtn" Grid.Column="2" Content="临时开启系统代理" Padding="12,5" FontSize="11.5" FontWeight="SemiBold" Cursor="Hand"
+                            Background="#FFFFFF" Foreground="#15803D" BorderBrush="#22C55E" BorderThickness="1" Margin="12,0,0,0" Click="ClearSysProxyBtn_Click"/>
                 </Grid>
             </Border>
         </StackPanel>
@@ -163,7 +222,7 @@
             <StackPanel>
                 <!-- Section Header: Presets -->
                 <Grid Margin="2,4,2,6">
-                    <TextBlock Text="防护方案预设" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="PresetsSectionTitle" Text="防护方案预设" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
                     <Button x:Name="ResetRecommendedBtn" Content="恢复默认推荐设置" HorizontalAlignment="Right" Padding="6,2" FontSize="11.5" Cursor="Hand"
                             Background="Transparent" Foreground="{StaticResource AccentBrush}" BorderThickness="0" Click="ResetRecommendedBtn_Click"/>
                 </Grid>
@@ -180,9 +239,9 @@
                         <!-- Segment 1: Recommended -->
                         <Border x:Name="PresetRecommendedCard" Grid.Column="0" Background="#FFFFFF" CornerRadius="7" Padding="10,7" Cursor="Hand" MouseLeftButtonUp="PresetRecommendedCard_Click">
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                <TextBlock Text="推荐日常防泄漏" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"/>
-                                <Border Background="{StaticResource SuccessBgBrush}" CornerRadius="4" Padding="5,1" Margin="6,0,0,0" VerticalAlignment="Center">
-                                    <TextBlock Text="强烈推荐" Foreground="{StaticResource SuccessTextBrush}" FontSize="10" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="Preset1TitleText" Text="推荐日常防泄漏" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"/>
+                                <Border Background="{StaticResource SuccessBgBrush}" BorderBrush="{StaticResource SuccessBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock x:Name="Preset1BadgeText" Text="强烈推荐" Foreground="{StaticResource SuccessTextBrush}" FontSize="10.5" FontWeight="SemiBold"/>
                                 </Border>
                             </StackPanel>
                         </Border>
@@ -190,9 +249,9 @@
                         <!-- Segment 2: Strict Global Lock -->
                         <Border x:Name="PresetStrictCard" Grid.Column="1" Background="Transparent" CornerRadius="7" Padding="10,7" Cursor="Hand" MouseLeftButtonUp="PresetStrictCard_Click">
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                <TextBlock Text="严格全局铁桶" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
-                                <Border Background="{StaticResource WarnBgBrush}" CornerRadius="4" Padding="5,1" Margin="6,0,0,0" VerticalAlignment="Center">
-                                    <TextBlock Text="零直连" Foreground="{StaticResource WarnTextBrush}" FontSize="10" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="Preset2TitleText" Text="严格全局铁桶" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
+                                <Border Background="{StaticResource WarnBgBrush}" BorderBrush="{StaticResource WarnBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock x:Name="Preset2BadgeText" Text="零直连" Foreground="{StaticResource WarnTextBrush}" FontSize="10.5" FontWeight="SemiBold"/>
                                 </Border>
                             </StackPanel>
                         </Border>
@@ -200,9 +259,9 @@
                         <!-- Segment 3: Developer Compatible -->
                         <Border x:Name="PresetCompatibleCard" Grid.Column="2" Background="Transparent" CornerRadius="7" Padding="10,7" Cursor="Hand" MouseLeftButtonUp="PresetCompatibleCard_Click">
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                <TextBlock Text="开发者 / 兼容模式" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
-                                <Border Background="#F5F5F7" CornerRadius="4" Padding="5,1" Margin="6,0,0,0" VerticalAlignment="Center">
-                                    <TextBlock Text="保留 IPv6" Foreground="{StaticResource TextMutedBrush}" FontSize="10" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="Preset3TitleText" Text="开发者 / 兼容模式" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
+                                <Border Background="#F5F5F7" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                    <TextBlock x:Name="Preset3BadgeText" Text="保留 IPv6" Foreground="{StaticResource TextMutedBrush}" FontSize="10.5" FontWeight="SemiBold"/>
                                 </Border>
                             </StackPanel>
                         </Border>
@@ -218,9 +277,8 @@
                 <!-- Mandatory Core Foundation Explanation Banner -->
                 <Border Background="#F5F5F7" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="1" CornerRadius="8" Padding="14,8" Margin="0,0,0,12">
                     <TextBlock Foreground="{StaticResource TextSecondaryBrush}" FontSize="11.5" LineHeight="17" TextWrapping="Wrap">
-                        <Run Text="内核静态防护底座（部署期间恒定生效）：" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}"/>
-                        <Run Text="Windows 防火墙三配置默认出站拦截 (DefaultOutbound=Block) + TUN 隧道网卡放行 + 授权代理节点 / 阿里 DoH / DHCP 基础放行。"/>
-                        <Run Text="代理进程退出也是 0 毫秒内核拦截，绝无裸连泄漏窗口。如需彻底关闭防护底座，请点击左下角「一键完整卸载」。"/>
+                        <Run x:Name="FoundationBannerTitleRun" Text="内核静态防护底座（部署期间恒定生效）：" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                        <Run x:Name="FoundationBannerTextRun" Text="Windows 防火墙三配置默认出站拦截 (DefaultOutbound=Block) + TUN 隧道网卡放行 + 授权代理节点 / 阿里 DoH / DHCP 基础放行。代理进程退出也是 0 毫秒内核拦截，绝无裸连泄漏窗口。如需彻底关闭防护底座，请点击左下角「一键完整卸载」。"/>
                     </TextBlock>
                 </Border>
 
@@ -263,7 +321,7 @@
         </Border>
 
         <!-- ==================== ROW 4: BOTTOM STICKY ACTION BAR ==================== -->
-        <Border Grid.Row="4" Background="#FFFFFF" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="0,1,0,0" Padding="20,12">
+        <Border Grid.Row="4" Background="#FFFFFF" BorderBrush="{StaticResource CardBorderBrush}" BorderThickness="0,1,0,0" Padding="18,10">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
@@ -272,21 +330,43 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
+                <!-- 1. Danger Uninstall -->
                 <Button x:Name="UninstallBtn" Grid.Column="0" Style="{StaticResource DangerOutlineButtonStyle}"
-                        Content="一键完整卸载 / 恢复默认" Margin="0,0,10,0" Click="UninstallBtn_Click"/>
+                        ToolTip="完整还原 Windows 原始防火墙、DNS、IPv6 及系统计划任务" Margin="0,0,10,0" Click="UninstallBtn_Click">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Path Data="{StaticResource IconTrash}" Stroke="{StaticResource DangerBrush}" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="13" Height="13" Stretch="Uniform" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="UninstallBtnText" Text="一键完整卸载" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
 
+                <!-- 2. Inspection Action Group -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
-                    <Button x:Name="RegressionBtn" Style="{StaticResource SecondaryButtonStyle}"
-                            Content="完整深度回归 (24项全量体检)" Click="RegressionBtn_Click"/>
-                    <Button x:Name="LeakCheckBtn" Style="{StaticResource SecondaryButtonStyle}"
-                            Content="⚡ 极速防漏体检 (5秒)" Margin="8,0,0,0" Click="LeakCheckBtn_Click"
-                            ToolTip="5秒极速检测：底层物理网卡 Socket 强绑定直接出站拦截、活跃 TUN 网卡与海外连通性"/>
+                    <Button x:Name="LeakCheckBtn" Style="{StaticResource SecondaryButtonStyle}" Click="LeakCheckBtn_Click"
+                            ToolTip="5秒极速检测：底层物理网卡 Socket 强绑定直接出站拦截、活跃 TUN 网卡与海外连通性">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconZap}" Stroke="#D97706" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="13" Height="13" Stretch="Uniform" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="LeakCheckBtnText" Text="极速体检 (5s)" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="RegressionBtn" Style="{StaticResource SecondaryButtonStyle}" Margin="8,0,0,0" Click="RegressionBtn_Click"
+                            ToolTip="运行 24 项全链路自动化防泄漏回归测试，含 10 秒实机网络抓包">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Path Data="{StaticResource IconSearchCheck}" Stroke="#2563EB" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="13" Height="13" Stretch="Uniform" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="RegressionBtnText" Text="24项全量回归" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
 
-                <TextBlock x:Name="FooterHintText" Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Right"
-                           Margin="14,0,14,0" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12.5" TextTrimming="CharacterEllipsis"
-                           Text="就绪"/>
+                <!-- 3. Status Pill (0 Truncation, Elastic Width) -->
+                <Border x:Name="FooterStatusBorder" Grid.Column="2" Background="{StaticResource SuccessBgBrush}" BorderBrush="{StaticResource SuccessBorderBrush}" BorderThickness="1" CornerRadius="12" Padding="10,3.5" Margin="10,0,14,0" VerticalAlignment="Center" HorizontalAlignment="Right">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Ellipse x:Name="FooterStatusDot" Width="6.5" Height="6.5" Fill="{StaticResource SuccessBrush}" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="FooterHintText" VerticalAlignment="Center" Foreground="{StaticResource SuccessTextBrush}" FontSize="11.5" FontWeight="Medium" TextTrimming="CharacterEllipsis"
+                                   Text="内核零泄漏防护中"/>
+                    </StackPanel>
+                </Border>
 
+                <!-- 4. Primary CTA -->
                 <Button x:Name="ApplyBtn" Grid.Column="3" Style="{StaticResource PrimaryButtonStyle}"
                         Content="一键部署 / 应用当前配置" Click="ApplyBtn_Click"/>
             </Grid>
@@ -311,7 +391,7 @@
                 <StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,14" VerticalAlignment="Center">
                         <Border x:Name="ConfirmModalIconBorder" Width="38" Height="38" CornerRadius="10" Background="{StaticResource WarnBgBrush}" BorderBrush="{StaticResource WarnBorderBrush}" BorderThickness="1" Margin="0,0,12,0" VerticalAlignment="Center">
-                            <TextBlock x:Name="ConfirmModalIconText" Text="⚠️" FontSize="18" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Path x:Name="ConfirmModalIconPath" Data="{StaticResource IconAlertTriangle}" Stroke="#D97706" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" Width="18" Height="18" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                         <StackPanel VerticalAlignment="Center">
                             <TextBlock x:Name="ConfirmModalTitle" Text="确认操作" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}"/>

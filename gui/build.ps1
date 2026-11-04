@@ -320,7 +320,10 @@ if ($RunSmokeTest) {
     $psi.Arguments = '--smoke-test "' + $SmokeOutDir + '"'
     $psi.UseShellExecute = $false
     $proc = [System.Diagnostics.Process]::Start($psi)
-    $proc.WaitForExit()
+    if (-not $proc.WaitForExit(30000)) {
+        try { $proc.Kill() } catch { }
+        throw 'GUI smoke test timed out after 30 seconds'
+    }
     $code = $proc.ExitCode
     $proc.Dispose()
     Remove-Item -LiteralPath $smokeBinDir -Recurse -Force -ErrorAction SilentlyContinue

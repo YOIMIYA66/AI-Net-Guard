@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -31,15 +31,87 @@ namespace AiNetGuard.Gui
         private bool _suppressUiEvents;
         private bool _isBusy;
         private bool _revealFullNodeIp;
+        private bool _smokeTestExecuted;
 
         public MainWindow(string smokeTestOutDir = null)
         {
             _smokeTestOutDir = smokeTestOutDir;
             InitializeComponent();
-            BuildFeatureCategoryCards();
+            LocalizationService.LoadLanguagePreference(DefaultInstallRoot);
+            ApplyLanguage();
 
             Loaded += MainWindow_Loaded;
             ContentRendered += MainWindow_ContentRendered;
+        }
+
+        private void LangSwitchBtn_Click(object sender, RoutedEventArgs e)
+        {
+            LocalizationService.ToggleLanguage(DefaultInstallRoot);
+            ApplyLanguage();
+        }
+
+        private void ApplyLanguage()
+        {
+            Title = LocalizationService.T("AppTitle");
+            if (HeaderVersionBadgeText != null) HeaderVersionBadgeText.Text = LocalizationService.T("HeaderVersionBadge");
+            if (HeaderSubtitleText != null) HeaderSubtitleText.Text = LocalizationService.T("HeaderSubtitle");
+            if (RescueBtnText != null) RescueBtnText.Text = LocalizationService.T("RescueBtn");
+            if (RescueBtn != null) RescueBtn.ToolTip = LocalizationService.T("RescueBtnToolTip");
+
+            if (OpenDirBtnText != null) OpenDirBtnText.Text = LocalizationService.T("OpenDirBtn");
+            if (RefreshBtnText != null) RefreshBtnText.Text = LocalizationService.T("RefreshBtn");
+
+            if (LangSwitchBtnText != null) LangSwitchBtnText.Text = LocalizationService.T("LangSwitchBtn");
+            if (LangSwitchBtn != null) LangSwitchBtn.ToolTip = LocalizationService.T("LangSwitchBtnToolTip");
+
+            if (CardFirewallTitle != null) CardFirewallTitle.Text = LocalizationService.T("CardFirewallTitle");
+            if (CardTunTitle != null) CardTunTitle.Text = LocalizationService.T("CardTunTitle");
+            if (CardNodeTitle != null) CardNodeTitle.Text = LocalizationService.T("CardNodeTitle");
+            if (SyncNodeNowBtn != null) SyncNodeNowBtn.Content = LocalizationService.T("SyncNow");
+            if (CardDnsTitle != null) CardDnsTitle.Text = LocalizationService.T("CardDnsTitle");
+
+            if (V2rayNPathLabel != null) V2rayNPathLabel.Text = LocalizationService.T("V2rayNPathLabel");
+            if (BrowseV2rayNBtn != null) BrowseV2rayNBtn.Content = LocalizationService.T("BrowseBtn");
+
+            if (PresetsSectionTitle != null) PresetsSectionTitle.Text = LocalizationService.T("PresetsTitle");
+            if (ResetRecommendedBtn != null) ResetRecommendedBtn.Content = LocalizationService.T("ResetRecommendedBtn");
+            if (Preset1TitleText != null) Preset1TitleText.Text = LocalizationService.T("Preset1Title");
+            if (Preset1BadgeText != null) Preset1BadgeText.Text = LocalizationService.T("Preset1Badge");
+            if (Preset2TitleText != null) Preset2TitleText.Text = LocalizationService.T("Preset2Title");
+            if (Preset2BadgeText != null) Preset2BadgeText.Text = LocalizationService.T("Preset2Badge");
+            if (Preset3TitleText != null) Preset3TitleText.Text = LocalizationService.T("Preset3Title");
+            if (Preset3BadgeText != null) Preset3BadgeText.Text = LocalizationService.T("Preset3Badge");
+
+            if (FoundationBannerTitleRun != null) FoundationBannerTitleRun.Text = LocalizationService.T("FoundationTitle");
+            if (FoundationBannerTextRun != null) FoundationBannerTextRun.Text = LocalizationService.T("FoundationText");
+
+            if (CopyLogBtn != null) CopyLogBtn.Content = LocalizationService.T("CopyLogBtn");
+            if (ClearLogBtn != null) ClearLogBtn.Content = LocalizationService.T("ClearLogBtn");
+            if (ToggleConsoleBtn != null)
+            {
+                ToggleConsoleBtn.Content = ConsoleBodyBorder.Visibility == Visibility.Visible
+                    ? LocalizationService.T("ToggleConsoleCollapse")
+                    : LocalizationService.T("ToggleConsoleExpand");
+            }
+
+            if (UninstallBtnText != null) UninstallBtnText.Text = LocalizationService.T("UninstallBtn");
+            if (UninstallBtn != null) UninstallBtn.ToolTip = LocalizationService.T("UninstallBtnToolTip");
+
+            if (RegressionBtnText != null) RegressionBtnText.Text = LocalizationService.T("RegressionBtn");
+            if (RegressionBtn != null) RegressionBtn.ToolTip = LocalizationService.T("RegressionBtnToolTip");
+
+            if (LeakCheckBtnText != null) LeakCheckBtnText.Text = LocalizationService.T("LeakCheckBtn");
+            if (LeakCheckBtn != null) LeakCheckBtn.ToolTip = LocalizationService.T("LeakCheckBtnToolTip");
+            if (ApplyBtn != null) ApplyBtn.Content = LocalizationService.T("ApplyBtn");
+            if (ConfirmModalCancelBtn != null) ConfirmModalCancelBtn.Content = LocalizationService.T("Cancel");
+            if (ConfirmModalOkBtn != null) ConfirmModalOkBtn.Content = LocalizationService.T("Confirm");
+            if (ConfirmModalSubtitle != null) ConfirmModalSubtitle.Text = LocalizationService.T("ConfirmModalSubtitle");
+
+            BuildFeatureCategoryCards();
+            if (_draftPolicy != null)
+            {
+                SyncUiFromState();
+            }
         }
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -55,6 +127,20 @@ namespace AiNetGuard.Gui
                 _autoTelemetryTimer.Tick += AutoTelemetryTimer_Tick;
                 _autoTelemetryTimer.Start();
             }
+            else
+            {
+                // In headless or background runner environments, ContentRendered may not fire.
+                // Trigger smoke test on dispatcher idle after layout completes.
+                Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(async () =>
+                {
+                    await Task.Delay(250);
+                    if (!_smokeTestExecuted)
+                    {
+                        _smokeTestExecuted = true;
+                        await RunAutomatedSmokeTestAsync(_smokeTestOutDir);
+                    }
+                }));
+            }
         }
 
         protected override void OnClosed(EventArgs e)
@@ -65,8 +151,9 @@ namespace AiNetGuard.Gui
 
         private async void MainWindow_ContentRendered(object sender, EventArgs e)
         {
-            if (!string.IsNullOrEmpty(_smokeTestOutDir))
+            if (!string.IsNullOrEmpty(_smokeTestOutDir) && !_smokeTestExecuted)
             {
+                _smokeTestExecuted = true;
                 await RunAutomatedSmokeTestAsync(_smokeTestOutDir);
             }
         }
@@ -79,16 +166,99 @@ namespace AiNetGuard.Gui
             var grouped = FeatureCatalog.All.GroupBy(f => f.Category);
             foreach (var group in grouped)
             {
-                // Apple macOS Section Header (placed outside the grouped inset card)
+                var headerGrid = new Grid { Margin = new Thickness(4, 16, 4, 7) };
+                headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+                string geomKey = "IconShieldCheck";
+                Color iconColor = Color.FromRgb(5, 150, 105);
+                Color iconBg = Color.FromRgb(236, 253, 245);
+                if (group.Key.Contains("流量") || group.Key.Contains("Traffic"))
+                {
+                    geomKey = "IconGlobe";
+                    iconColor = Color.FromRgb(37, 99, 235);
+                    iconBg = Color.FromRgb(239, 246, 255);
+                }
+                else if (group.Key.Contains("DNS"))
+                {
+                    geomKey = "IconLock";
+                    iconColor = Color.FromRgb(8, 145, 178);
+                    iconBg = Color.FromRgb(236, 254, 255);
+                }
+                else if (group.Key.Contains("路由") || group.Key.Contains("Routing"))
+                {
+                    geomKey = "IconZap";
+                    iconColor = Color.FromRgb(217, 119, 6);
+                    iconBg = Color.FromRgb(254, 243, 199);
+                }
+
+                var titleStack = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+
+                var iconBadge = new Border
+                {
+                    Width = 22,
+                    Height = 22,
+                    CornerRadius = new CornerRadius(5),
+                    Background = new SolidColorBrush(iconBg),
+                    Margin = new Thickness(0, 0, 8, 0),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+
+                var catIcon = new System.Windows.Shapes.Path
+                {
+                    Data = (Geometry)FindResource(geomKey),
+                    Stroke = new SolidColorBrush(iconColor),
+                    StrokeThickness = 1.8,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round,
+                    StrokeLineJoin = PenLineJoin.Round,
+                    Width = 12,
+                    Height = 12,
+                    Stretch = Stretch.Uniform,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                iconBadge.Child = catIcon;
+                titleStack.Children.Add(iconBadge);
+
                 var sectionTitle = new TextBlock
                 {
                     Text = group.Key,
-                    FontSize = 12,
+                    FontSize = 12.5,
                     FontWeight = FontWeights.SemiBold,
                     Foreground = (Brush)FindResource("TextSecondaryBrush"),
-                    Margin = new Thickness(4, 14, 4, 6)
+                    VerticalAlignment = VerticalAlignment.Center
                 };
-                CategoriesContainer.Children.Add(sectionTitle);
+                titleStack.Children.Add(sectionTitle);
+                Grid.SetColumn(titleStack, 0);
+                headerGrid.Children.Add(titleStack);
+
+                var items = group.ToList();
+                var countBadge = new Border
+                {
+                    Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)),
+                    BorderBrush = (Brush)FindResource("CardBorderBrush"),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(10),
+                    Padding = new Thickness(8, 2, 8, 2),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                var countText = new TextBlock
+                {
+                    Text = LocalizationService.IsEnglish ? $"{items.Count} items" : $"{items.Count} 项特性",
+                    FontSize = 10.5,
+                    FontWeight = FontWeights.Medium,
+                    Foreground = (Brush)FindResource("TextMutedBrush")
+                };
+                countBadge.Child = countText;
+                Grid.SetColumn(countBadge, 1);
+                headerGrid.Children.Add(countBadge);
+
+                CategoriesContainer.Children.Add(headerGrid);
 
                 var cardBorder = new Border
                 {
@@ -102,7 +272,6 @@ namespace AiNetGuard.Gui
 
                 var cardStack = new StackPanel();
 
-                var items = group.ToList();
                 for (int i = 0; i < items.Count; i++)
                 {
                     FeatureToggleItem item = items[i];
@@ -218,7 +387,7 @@ namespace AiNetGuard.Gui
                     GuardStatusBadge.BorderBrush = (Brush)FindResource("WarnBorderBrush");
                     GuardStatusDot.Fill = new SolidColorBrush(Color.FromRgb(245, 158, 11));
                     GuardStatusText.Foreground = (Brush)FindResource("WarnTextBrush");
-                    GuardStatusText.Text = "严格全局铁桶锁已激活 (零直连)";
+                    GuardStatusText.Text = LocalizationService.T("StatusStrictActive");
                 }
                 else
                 {
@@ -227,8 +396,8 @@ namespace AiNetGuard.Gui
                     GuardStatusDot.Fill = (Brush)FindResource("SuccessBrush");
                     GuardStatusText.Foreground = (Brush)FindResource("SuccessTextBrush");
                     GuardStatusText.Text = _snapshot.PendingTestRollbackTask
-                        ? "防护运行中 (测试保护期)"
-                        : "内核静态防护运行中";
+                        ? LocalizationService.T("StatusTestingPeriod")
+                        : LocalizationService.T("StatusRunning");
                 }
             }
             else
@@ -237,7 +406,7 @@ namespace AiNetGuard.Gui
                 GuardStatusBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(229, 229, 234));
                 GuardStatusDot.Fill = new SolidColorBrush(Color.FromRgb(142, 142, 147));
                 GuardStatusText.Foreground = (Brush)FindResource("TextSecondaryBrush");
-                GuardStatusText.Text = "尚未部署 (系统原始状态)";
+                GuardStatusText.Text = LocalizationService.T("StatusNotDeployed");
             }
         }
 
@@ -245,30 +414,52 @@ namespace AiNetGuard.Gui
         {
             if (_snapshot == null) return;
 
-            CardFirewallMain.Text = _snapshot.ProfilesAllBlock ? "默认出站拦截 (Block)" : "系统默认放行 (未接管)";
+            CardFirewallMain.Text = _snapshot.ProfilesAllBlock
+                ? LocalizationService.T("CardFirewallBlock")
+                : LocalizationService.T("CardFirewallAllow");
             CardFirewallMain.Foreground = _snapshot.ProfilesAllBlock
                 ? (Brush)FindResource("SuccessTextBrush")
                 : (Brush)FindResource("TextPrimaryBrush");
             string cnText = _snapshot.CnRuleActive
-                ? (_snapshot.CnPrefixCount > 0 ? $"大陆白名单 {_snapshot.CnPrefixCount} 段" : "大陆白名单已启用")
-                : (_snapshot.IsDeployed ? "大陆直连已关闭" : "未安装白名单");
-            CardFirewallSub.Text = $"{cnText} · 外部放行 {_snapshot.RogueAllowCount} 条";
+                ? (_snapshot.CnPrefixCount > 0
+                    ? LocalizationService.T("CardFirewallCnPrefixes", _snapshot.CnPrefixCount)
+                    : LocalizationService.T("CardFirewallCnActive"))
+                : (_snapshot.IsDeployed
+                    ? LocalizationService.T("CardFirewallCnOff")
+                    : LocalizationService.T("CardFirewallCnNone"));
+            string aclNotice = _snapshot.AclLocked
+                ? LocalizationService.T("CardDnsAclLocked")
+                : (_snapshot.IsDeployed ? LocalizationService.T("CardDnsAclUnlocked") : LocalizationService.T("CardDnsAclNotice"));
+            CardFirewallSub.Text = $"{cnText} · {LocalizationService.T("CardFirewallRogue", _snapshot.RogueAllowCount)}";
+            CardFirewallSub.ToolTip = aclNotice;
 
-            CardTunMain.Text = _snapshot.TunUp ? $"隧道在线 ({_snapshot.ActiveTunName})" : "TUN 未开启";
+            CardTunMain.Text = _snapshot.TunUp
+                ? LocalizationService.T("CardTunOnline", _snapshot.ActiveTunName)
+                : LocalizationService.T("CardTunOffline");
             CardTunMain.Foreground = _snapshot.TunUp
                 ? (Brush)FindResource("AccentBrush")
                 : (Brush)FindResource("TextPrimaryBrush");
-            CardTunSub.Text = $"内核: {_snapshot.RunningCoreSummary} · 网卡: {_snapshot.PhysicalNicName}";
+            string coreSummary = !string.IsNullOrEmpty(_snapshot.RunningCoreSummary) && _snapshot.RunningCoreSummary != "无" && _snapshot.RunningCoreSummary != "none"
+                ? LocalizationService.T("CardTunCoreOnline", _snapshot.RunningCoreSummary)
+                : LocalizationService.T("CardTunCoreOffline");
+            CardTunSub.Text = $"{coreSummary} · {_snapshot.PhysicalNicName}";
 
             CardNodeMain.Text = FormatNodeDisplay(_snapshot.NodeSummary);
-            CardNodeSub.Text = _snapshot.AclLocked
-                ? "目录 ACL 已防篡改锁定"
-                : (_snapshot.IsDeployed ? "目录 ACL 未锁定" : "部署时自动绑定节点并锁定 ACL");
+            CardNodeMain.ToolTip = LocalizationService.T("CardNodeMaskTip");
+            CardNodeSub.Text = _snapshot.NodeRuleActive
+                ? LocalizationService.T("CardNodeRuleValid")
+                : (_snapshot.IsDeployed ? LocalizationService.T("CardNodeRuleMissing") : LocalizationService.T("CardNodeNone"));
 
-            string dnsMode = _snapshot.NrptActive ? "严格 NRPT (1.1.1.1)" : $"DNS: {_snapshot.PhysicalDnsSummary}";
+            string dnsMode = _snapshot.NrptActive
+                ? LocalizationService.T("CardDnsNrpt")
+                : LocalizationService.T("CardDnsSummary", _snapshot.PhysicalDnsSummary);
             CardDnsMain.Text = dnsMode;
-            string smhnrTxt = _snapshot.SmhnrDisabled ? "SMHNR已禁" : "SMHNR默认";
-            string ramTxt = _snapshot.ZeroResidentTaskReady ? "0 MB 事件自愈" : "无后台任务";
+            string smhnrTxt = _snapshot.SmhnrDisabled
+                ? LocalizationService.T("CardDnsSmhnrOff")
+                : LocalizationService.T("CardDnsSmhnrOn");
+            string ramTxt = _snapshot.ZeroResidentTaskReady
+                ? LocalizationService.T("CardDnsZeroResidentReady")
+                : LocalizationService.T("CardDnsZeroResidentNone");
             CardDnsSub.Text = $"{smhnrTxt} · {ramTxt}";
         }
 
@@ -278,13 +469,39 @@ namespace AiNetGuard.Gui
             SystemProxyBanner.Visibility = Visibility.Visible;
             if (_snapshot.SystemProxyEnabled)
             {
-                SystemProxyText.Text = $"系统代理已自动配置为 {_snapshot.SystemProxyServer}（Xray 原生协同，已正常接入）";
-                ClearSysProxyBtn.Content = "刷新系统代理";
+                // Proxy is enabled (WinINET active, non-recommended state for TUN)
+                SystemProxyBanner.Background = new SolidColorBrush(Color.FromRgb(254, 252, 232)); // #FEFCE8 soft amber tint
+                SystemProxyBanner.BorderBrush = new SolidColorBrush(Color.FromRgb(253, 224, 71));  // #FDE047 amber border
+                if (SystemProxyIconPath != null)
+                {
+                    SystemProxyIconPath.Data = (Geometry)FindResource("IconAlertTriangle");
+                    SystemProxyIconPath.Stroke = new SolidColorBrush(Color.FromRgb(217, 119, 6));
+                }
+                SystemProxyText.Foreground = new SolidColorBrush(Color.FromRgb(133, 77, 14));     // #854D0E dark amber
+                SystemProxyText.Text = LocalizationService.T("SystemProxyOn", _snapshot.SystemProxyServer);
+
+                ClearSysProxyBtn.Content = LocalizationService.T("ClearSysProxyBtnOff");
+                ClearSysProxyBtn.Background = Brushes.White;
+                ClearSysProxyBtn.Foreground = new SolidColorBrush(Color.FromRgb(220, 38, 38));     // #DC2626 danger red
+                ClearSysProxyBtn.BorderBrush = new SolidColorBrush(Color.FromRgb(252, 165, 165));  // #FCA5A5
             }
             else
             {
-                SystemProxyText.Text = "当前未开启系统代理（如果使用 Xray，建议点击右侧一键设为自动配置系统代理）";
-                ClearSysProxyBtn.Content = "一键启用系统代理";
+                // Proxy is cleared (official recommended clean TUN state)
+                SystemProxyBanner.Background = new SolidColorBrush(Color.FromRgb(240, 253, 244)); // #F0FDF4 soft green tint
+                SystemProxyBanner.BorderBrush = new SolidColorBrush(Color.FromRgb(134, 239, 172)); // #86EFAC emerald border
+                if (SystemProxyIconPath != null)
+                {
+                    SystemProxyIconPath.Data = (Geometry)FindResource("IconCheckCircle");
+                    SystemProxyIconPath.Stroke = new SolidColorBrush(Color.FromRgb(22, 163, 74));
+                }
+                SystemProxyText.Foreground = new SolidColorBrush(Color.FromRgb(22, 101, 52));     // #166534 dark forest green
+                SystemProxyText.Text = LocalizationService.T("SystemProxyOff");
+
+                ClearSysProxyBtn.Content = LocalizationService.T("ClearSysProxyBtnOn");
+                ClearSysProxyBtn.Background = Brushes.White;
+                ClearSysProxyBtn.Foreground = new SolidColorBrush(Color.FromRgb(37, 99, 235));     // #2563EB accent blue
+                ClearSysProxyBtn.BorderBrush = new SolidColorBrush(Color.FromRgb(147, 197, 253)); // #93C5FD
             }
         }
 
@@ -355,7 +572,7 @@ namespace AiNetGuard.Gui
 
         private string FormatNodeDisplay(string rawSummary)
         {
-            if (string.IsNullOrEmpty(rawSummary)) return "尚未绑定节点";
+            if (string.IsNullOrEmpty(rawSummary)) return LocalizationService.T("CardNodeNone");
             if (_revealFullNodeIp && string.IsNullOrEmpty(_smokeTestOutDir)) return rawSummary;
 
             // Mask middle two octets of public IPv4 addresses by default to protect screenshots
@@ -384,19 +601,19 @@ namespace AiNetGuard.Gui
             {
                 V2rayNValidBadge.Background = (Brush)FindResource("SuccessBgBrush");
                 V2rayNValidText.Foreground = (Brush)FindResource("SuccessTextBrush");
-                V2rayNValidText.Text = "已就绪 (含 config.json)";
+                V2rayNValidText.Text = LocalizationService.IsEnglish ? "Ready (config.json found)" : "已就绪 (含 config.json)";
             }
             else if (hasExe)
             {
                 V2rayNValidBadge.Background = (Brush)FindResource("WarnBgBrush");
                 V2rayNValidText.Foreground = (Brush)FindResource("WarnTextBrush");
-                V2rayNValidText.Text = "已识别程序 (请先启动一次 v2rayN)";
+                V2rayNValidText.Text = LocalizationService.IsEnglish ? "Exe Detected (Start v2rayN once)" : "已识别程序 (请先启动一次 v2rayN)";
             }
             else
             {
                 V2rayNValidBadge.Background = new SolidColorBrush(Color.FromRgb(254, 226, 226));
                 V2rayNValidText.Foreground = (Brush)FindResource("DangerBrush");
-                V2rayNValidText.Text = "未找到 v2rayN 目录";
+                V2rayNValidText.Text = LocalizationService.IsEnglish ? "v2rayN Directory Not Found" : "未找到 v2rayN 目录";
             }
         }
 
@@ -441,7 +658,29 @@ namespace AiNetGuard.Gui
             ConfirmModalTitle.Text = title;
             ConfirmModalSubtitle.Text = subtitle;
             ConfirmModalMessage.Text = message;
-            ConfirmModalIconText.Text = icon;
+            if (ConfirmModalIconPath != null)
+            {
+                if (isDestructive)
+                {
+                    ConfirmModalIconPath.Data = (Geometry)FindResource("IconTrash");
+                    ConfirmModalIconPath.Stroke = (Brush)FindResource("DangerBrush");
+                }
+                else if (icon == "🛡️")
+                {
+                    ConfirmModalIconPath.Data = (Geometry)FindResource("IconShieldCheck");
+                    ConfirmModalIconPath.Stroke = (Brush)FindResource("AccentBrush");
+                }
+                else if (icon == "🛟")
+                {
+                    ConfirmModalIconPath.Data = (Geometry)FindResource("IconLifebuoy");
+                    ConfirmModalIconPath.Stroke = new SolidColorBrush(Color.FromRgb(217, 119, 6));
+                }
+                else
+                {
+                    ConfirmModalIconPath.Data = (Geometry)FindResource("IconAlertTriangle");
+                    ConfirmModalIconPath.Stroke = new SolidColorBrush(Color.FromRgb(217, 119, 6));
+                }
+            }
             ConfirmModalOkBtn.Content = okText;
             ConfirmModalCancelBtn.Content = cancelText;
             ConfirmModalCancelBtn.Visibility = Visibility.Visible;
@@ -484,7 +723,11 @@ namespace AiNetGuard.Gui
             {
                 ConfirmModalIconBorder.Background = (TryFindResource("SuccessBgBrush") as Brush) ?? new SolidColorBrush(Color.FromRgb(234, 247, 238));
                 ConfirmModalIconBorder.BorderBrush = (TryFindResource("SuccessBorderBrush") as Brush) ?? new SolidColorBrush(Color.FromRgb(210, 242, 218));
-                ConfirmModalIconText.Text = "✅";
+                if (ConfirmModalIconPath != null)
+                {
+                    ConfirmModalIconPath.Data = (Geometry)FindResource("IconCheckCircle");
+                    ConfirmModalIconPath.Stroke = (Brush)FindResource("SuccessTextBrush");
+                }
                 ConfirmModalOkBtn.Background = new SolidColorBrush(Color.FromRgb(22, 163, 74));
                 ConfirmModalOkBtn.BorderBrush = new SolidColorBrush(Color.FromRgb(21, 128, 61));
             }
@@ -492,7 +735,11 @@ namespace AiNetGuard.Gui
             {
                 ConfirmModalIconBorder.Background = (TryFindResource("WarnBgBrush") as Brush) ?? new SolidColorBrush(Color.FromRgb(255, 248, 225));
                 ConfirmModalIconBorder.BorderBrush = (TryFindResource("WarnBorderBrush") as Brush) ?? new SolidColorBrush(Color.FromRgb(255, 224, 130));
-                ConfirmModalIconText.Text = "ℹ️";
+                if (ConfirmModalIconPath != null)
+                {
+                    ConfirmModalIconPath.Data = (Geometry)FindResource("IconAlertTriangle");
+                    ConfirmModalIconPath.Stroke = new SolidColorBrush(Color.FromRgb(217, 119, 6));
+                }
                 ConfirmModalOkBtn.Background = (TryFindResource("AccentBrush") as Brush) ?? new SolidColorBrush(Color.FromRgb(0, 113, 227));
                 ConfirmModalOkBtn.BorderBrush = (TryFindResource("AccentBrush") as Brush) ?? new SolidColorBrush(Color.FromRgb(0, 113, 227));
             }
@@ -646,39 +893,21 @@ namespace AiNetGuard.Gui
 
             if (PresetDescriptionText != null)
             {
-                if (!deployed)
+                if (active == "StrictLock")
                 {
-                    if (active == "Recommended")
-                    {
-                        PresetDescriptionText.Text = "已选择「推荐日常防泄漏」方案（14 项配置已勾选）。点击右侧【首次一键部署防护】即可写入内核。";
-                    }
-                    else if (active == "StrictLock")
-                    {
-                        PresetDescriptionText.Text = "已选择「严格全局铁桶锁」方案（关闭大陆直连白名单与 NCSI 探测）。点击右侧【首次一键部署防护】即可写入内核。";
-                    }
-                    else if (active == "Compatible")
-                    {
-                        PresetDescriptionText.Text = "已选择「兼容 / 开发者」方案（保留大陆白名单，放开 IPv6 与局域网）。点击右侧【首次一键部署防护】即可写入内核。";
-                    }
-                    else
-                    {
-                        PresetDescriptionText.Text = "当前未激活防护（所有防护功能已关闭，系统处于原始默认网络状态）。你可以点击上方任一预设一键勾选，或手动勾选开关后点击右下角【首次一键部署防护】。";
-                    }
+                    PresetDescriptionText.Text = LocalizationService.T("PresetDescStrict");
+                }
+                else if (active == "Compatible")
+                {
+                    PresetDescriptionText.Text = LocalizationService.T("PresetDescCompatible");
+                }
+                else if (active == "Recommended")
+                {
+                    PresetDescriptionText.Text = LocalizationService.T("PresetDescRecommended");
                 }
                 else
                 {
-                    if (active == "StrictLock")
-                    {
-                        PresetDescriptionText.Text = "严格全局铁桶模式运行中：关闭大陆直连白名单与 NCSI 探测。只要 TUN 代理未开启或意外断开，含国内在内的所有外网请求在内核层 100% 阻断，不留任何裸连缝隙。";
-                    }
-                    else if (active == "Compatible")
-                    {
-                        PresetDescriptionText.Text = "开发者 / 兼容模式运行中：保留核心防火墙拦截与大陆白名单，但允许物理网卡 IPv6 与局域网多播发现，兼顾校园网/教育网纯 IPv6 与局域网智能设备调试。";
-                    }
-                    else
-                    {
-                        PresetDescriptionText.Text = "推荐日常防泄漏模式运行中：全开 14 项推荐加固。国内直连白名单与 TUN 代理智能分流，节点自动热同步，后台 0 进程、0 MB 内存占用自愈。";
-                    }
+                    PresetDescriptionText.Text = LocalizationService.T("PresetDescCustom");
                 }
             }
         }
@@ -706,6 +935,57 @@ namespace AiNetGuard.Gui
             }
         }
 
+        private enum StatusTone
+        {
+            Neutral,
+            Success,
+            Warning,
+            Danger,
+            Accent
+        }
+
+        private void SetFooterStatusPill(string shortText, string tooltip, StatusTone tone)
+        {
+            if (FooterHintText == null || FooterStatusBorder == null || FooterStatusDot == null) return;
+
+            FooterHintText.Text = shortText;
+            FooterStatusBorder.ToolTip = string.IsNullOrEmpty(tooltip) ? shortText : tooltip;
+
+            switch (tone)
+            {
+                case StatusTone.Success:
+                    FooterStatusBorder.Background = (Brush)FindResource("SuccessBgBrush");
+                    FooterStatusBorder.BorderBrush = (Brush)FindResource("SuccessBorderBrush");
+                    FooterStatusDot.Fill = (Brush)FindResource("SuccessBrush");
+                    FooterHintText.Foreground = (Brush)FindResource("SuccessTextBrush");
+                    break;
+                case StatusTone.Warning:
+                    FooterStatusBorder.Background = (Brush)FindResource("WarnBgBrush");
+                    FooterStatusBorder.BorderBrush = (Brush)FindResource("WarnBorderBrush");
+                    FooterStatusDot.Fill = (Brush)FindResource("WarnBrush");
+                    FooterHintText.Foreground = (Brush)FindResource("WarnTextBrush");
+                    break;
+                case StatusTone.Danger:
+                    FooterStatusBorder.Background = new SolidColorBrush(Color.FromArgb(28, 220, 38, 38));
+                    FooterStatusBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(90, 239, 68, 68));
+                    FooterStatusDot.Fill = (Brush)FindResource("DangerBrush");
+                    FooterHintText.Foreground = (Brush)FindResource("DangerBrush");
+                    break;
+                case StatusTone.Accent:
+                    FooterStatusBorder.Background = new SolidColorBrush(Color.FromArgb(24, 0, 113, 227));
+                    FooterStatusBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(80, 0, 113, 227));
+                    FooterStatusDot.Fill = (Brush)FindResource("AccentBrush");
+                    FooterHintText.Foreground = (Brush)FindResource("AccentBrush");
+                    break;
+                default:
+                    FooterStatusBorder.Background = new SolidColorBrush(Color.FromRgb(245, 245, 247));
+                    FooterStatusBorder.BorderBrush = (Brush)FindResource("CardBorderBrush");
+                    FooterStatusDot.Fill = (Brush)FindResource("TextMutedBrush");
+                    FooterHintText.Foreground = (Brush)FindResource("TextSecondaryBrush");
+                    break;
+            }
+        }
+
         private void UpdateFooterHintAndButtons()
         {
             if (_isBusy) return;
@@ -717,23 +997,39 @@ namespace AiNetGuard.Gui
             int diffs = _draftPolicy != null ? _draftPolicy.CountDifferences(_appliedPolicy) : 0;
             if (!deployed)
             {
-                ApplyBtn.Content = diffs > 0 ? $"首次一键部署防护 ({diffs} 项)" : "首次一键部署防护";
-                FooterHintText.Text = diffs > 0
-                    ? $"已勾选 {diffs} 项防护，点击右侧按钮立即部署到 Windows 内核"
-                    : "当前未部署防护（所有开关已关闭）· 可选择上方预设或勾选功能后部署";
-                FooterHintText.Foreground = (Brush)FindResource("TextSecondaryBrush");
+                ApplyBtn.Content = diffs > 0
+                    ? (LocalizationService.IsEnglish ? $"Initial Deploy Guard ({diffs} items)" : $"首次一键部署防护 ({diffs} 项)")
+                    : (LocalizationService.IsEnglish ? "Initial Deploy Guard" : "首次一键部署防护");
+                if (diffs > 0)
+                {
+                    SetFooterStatusPill(
+                        LocalizationService.IsEnglish ? $"Ready to deploy ({diffs})" : $"待部署 ({diffs} 项)",
+                        LocalizationService.IsEnglish ? $"{diffs} features selected. Click deploy to write to Windows kernel." : $"已勾选 {diffs} 项防护，点击右侧按钮立即部署到 Windows 内核",
+                        StatusTone.Accent);
+                }
+                else
+                {
+                    SetFooterStatusPill(
+                        LocalizationService.IsEnglish ? "Not deployed" : "未部署防护",
+                        LocalizationService.IsEnglish ? "Not deployed. Choose a preset or toggle features above." : "当前未部署防护（所有开关已关闭）· 可选择上方预设或勾选功能后部署",
+                        StatusTone.Neutral);
+                }
             }
             else if (diffs > 0)
             {
-                ApplyBtn.Content = $"应用配置更改 ({diffs} 项)";
-                FooterHintText.Text = $"已修改 {diffs} 项功能设置，点击右侧按钮立即同步到 Windows 内核与后台自愈策略";
-                FooterHintText.Foreground = (Brush)FindResource("WarnTextBrush");
+                ApplyBtn.Content = LocalizationService.IsEnglish ? $"Apply Changes ({diffs} items)" : $"应用配置更改 ({diffs} 项)";
+                SetFooterStatusPill(
+                    LocalizationService.IsEnglish ? $"{diffs} changes pending" : $"有 {diffs} 项待同步修改",
+                    LocalizationService.IsEnglish ? $"{diffs} changes pending. Click to synchronize with Windows kernel and self-healing policies." : $"已修改 {diffs} 项功能设置，点击右侧按钮立即同步到 Windows 内核与后台自愈策略",
+                    StatusTone.Warning);
             }
             else
             {
-                ApplyBtn.Content = "重新校验并应用配置";
-                FooterHintText.Text = "当前系统已激活所选防护策略 (内核零泄漏保护中)";
-                FooterHintText.Foreground = (Brush)FindResource("SuccessTextBrush");
+                ApplyBtn.Content = LocalizationService.IsEnglish ? "Verify & Re-Apply Policy" : "重新校验并应用配置";
+                SetFooterStatusPill(
+                    LocalizationService.IsEnglish ? "Zero-leak active" : "内核零泄漏防护中",
+                    LocalizationService.IsEnglish ? "System security policy active (Zero-leak kernel protection holding)" : "当前系统已激活所选防护策略 (内核零泄漏保护中)",
+                    StatusTone.Success);
             }
         }
 
@@ -795,8 +1091,8 @@ namespace AiNetGuard.Gui
 
             if (busy && !string.IsNullOrEmpty(statusText))
             {
-                FooterHintText.Text = statusText;
-                FooterHintText.Foreground = (Brush)FindResource("AccentBrush");
+                string shortText = statusText.Length > 20 ? statusText.Substring(0, 18) + "..." : statusText;
+                SetFooterStatusPill(shortText, statusText, StatusTone.Accent);
             }
             else if (!busy)
             {
@@ -855,7 +1151,7 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
 
             ExpandConsole();
             SetBusy(true, "正在释放引擎组件并应用所选策略，请稍候...");
-            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] 开始应用 AI-Net-Guard v5.6.0 防护配置 ==========");
+            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] " + (LocalizationService.IsEnglish ? "Applying AI-Net-Guard v5.7.3 Guard Policy..." : "开始应用 AI-Net-Guard v5.7.3 防护配置...") + " ==========");
 
             try
             {
@@ -880,8 +1176,10 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
                 if (code == 0)
                 {
                     AppendLog($"========== [{DateTime.Now:HH:mm:ss}] 配置应用成功 (exit=0) ==========");
-                    FooterHintText.Text = "配置已成功应用并写入系统内核与持久化策略！";
-                    FooterHintText.Foreground = (Brush)FindResource("SuccessTextBrush");
+                    SetFooterStatusPill(
+                        LocalizationService.IsEnglish ? "Policy applied" : "配置已成功应用",
+                        LocalizationService.IsEnglish ? "Policy applied to Windows kernel and self-healing tasks" : "配置已成功应用并写入系统内核与持久化策略！",
+                        StatusTone.Success);
                 }
                 else
                 {
@@ -951,14 +1249,44 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
             if (!EnsureAdminOrPromptElevate()) return;
 
             ExpandConsole();
-            SetBusy(true, "正在关闭系统代理并刷新 WinINET...");
+            bool enableAction = !_snapshot.SystemProxyEnabled;
+            string busyMsg = enableAction
+                ? (LocalizationService.IsEnglish ? "Configuring Windows system proxy to 127.0.0.1:10809..." : "正在配置 Windows 系统代理为 127.0.0.1:10809 并刷新 WinINET...")
+                : (LocalizationService.IsEnglish ? "Disabling Windows system proxy and refreshing WinINET..." : "正在关闭系统代理并刷新 WinINET...");
+            SetBusy(true, busyMsg);
             try
             {
+                string v2Root = (V2rayNPathBox.Text ?? "").Trim();
                 await Task.Run(() => PayloadAndRunnerService.ExtractEmbeddedPayload(DefaultInstallRoot, null));
                 string applyScript = GetScriptPath("14-apply-policy.ps1");
-                var args = new List<string> { "-Root", DefaultInstallRoot, "-ClearSystemProxy" };
+                var args = new List<string> { "-Root", DefaultInstallRoot };
+                if (enableAction)
+                {
+                    args.Add("-SetSystemProxy");
+                }
+                else
+                {
+                    args.Add("-ClearSystemProxy");
+                }
+                if (!string.IsNullOrWhiteSpace(v2Root))
+                {
+                    args.Add("-V2rayNRoot");
+                    args.Add(v2Root);
+                }
                 await PayloadAndRunnerService.RunPowerShellScriptAsync(applyScript, args, AppendLog);
                 RefreshDashboard(reloadPolicy: false);
+
+                bool v2rayRunning = Process.GetProcessesByName("v2rayN").Length > 0;
+                if (v2rayRunning)
+                {
+                    string targetSettingName = enableAction
+                        ? (LocalizationService.IsEnglish ? "Set system proxy" : "自动配置系统代理")
+                        : (LocalizationService.IsEnglish ? "Clear system proxy" : "清除系统代理");
+                    string warnTitle = LocalizationService.T("V2rayNNoticeTitle");
+                    string warnMsg = LocalizationService.T("V2rayNNoticeMsg", targetSettingName);
+                    AppendLog("[i] " + warnMsg.Replace("\n\n", " "));
+                    await ShowNativeAlertAsync(warnTitle, warnMsg, okText: LocalizationService.IsEnglish ? "Got it" : "我知道了", isSuccess: false);
+                }
             }
             catch (Exception ex)
             {
@@ -996,8 +1324,10 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
 
                 if (code == 0)
                 {
-                    FooterHintText.Text = "健康体检全部通过 (FAIL=0)！系统处于零泄漏健康状态";
-                    FooterHintText.Foreground = (Brush)FindResource("SuccessTextBrush");
+                    SetFooterStatusPill(
+                        LocalizationService.IsEnglish ? "Regression PASS (24/24)" : "24项体检全通 (PASS)",
+                        LocalizationService.IsEnglish ? "All 24 kernel leak-defense checks passed (FAIL=0)" : "健康体检全部通过 (FAIL=0)！系统处于零泄漏健康状态",
+                        StatusTone.Success);
                     await ShowNativeAlertAsync(
                         "健康体检全部通过",
                         "24 项全链路内核防泄漏体检全部通过 (FAIL=0)！\n\nWindows 内核防火墙、WFP 过滤层、DNS 防泄漏与防篡改规则均处于健康状态。",
@@ -1007,8 +1337,10 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
                 }
                 else
                 {
-                    FooterHintText.Text = $"健康体检发现未通过项 (exit={code})，请查看控制台输出";
-                    FooterHintText.Foreground = (Brush)FindResource("DangerBrush");
+                    SetFooterStatusPill(
+                        LocalizationService.IsEnglish ? $"Checks failed (exit={code})" : $"体检有未通过项 ({code})",
+                        LocalizationService.IsEnglish ? $"24-check regression found failures (exit={code}). Check console." : $"健康体检发现未通过项 (exit={code})，请查看控制台输出",
+                        StatusTone.Danger);
                     await ShowNativeAlertAsync(
                         "健康体检报告",
                         $"24 项全链路体检检测到未通过项 (exit={code})。\n\n请在下方实时控制台中查看具体的未通过项目与诊断建议。",
@@ -1047,8 +1379,10 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
 
                 if (code == 0)
                 {
-                    FooterHintText.Text = "极速自测通过：物理网卡海外阻断有效，代理正常";
-                    FooterHintText.Foreground = (Brush)FindResource("SuccessTextBrush");
+                    SetFooterStatusPill(
+                        LocalizationService.IsEnglish ? "Leak check PASS" : "极速自测通过",
+                        LocalizationService.IsEnglish ? "Physical NIC outbound blocked, TUN active, domestic/overseas normal" : "极速自测通过：物理网卡海外阻断有效，代理正常",
+                        StatusTone.Success);
                     await ShowNativeAlertAsync(
                         "极速自测通过",
                         "5 秒极速健康检测全部通过：\n\n• 未检测到越权出站放行规则\n• 活跃 TUN 虚拟网卡正常在线\n• 底层物理网卡 Socket 强绑定直接出站已被内核拦截 (Fail-Closed)\n• 国内外与 AI 核心服务通道通信正常",
@@ -1058,8 +1392,10 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
                 }
                 else
                 {
-                    FooterHintText.Text = $"极速自测发现异常 (exit={code})，请查看控制台";
-                    FooterHintText.Foreground = (Brush)FindResource("DangerBrush");
+                    SetFooterStatusPill(
+                        LocalizationService.IsEnglish ? $"Check anomaly ({code})" : $"极速自测异常 ({code})",
+                        LocalizationService.IsEnglish ? $"Quick check failed (exit={code}). Check console." : $"极速自测发现异常 (exit={code})，请查看控制台",
+                        StatusTone.Danger);
                     await ShowNativeAlertAsync(
                         "极速自测警告",
                         $"极速自测发现潜在异常或连接受阻 (exit={code})。\n\n请在下方实时控制台中查看检测细节并确认代理软件状态。",
@@ -1071,8 +1407,10 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
             catch (Exception ex)
             {
                 AppendLog($"[ERROR] 极速自测执行异常: {ex.Message}");
-                FooterHintText.Text = "极速自测失败";
-                FooterHintText.Foreground = (Brush)FindResource("DangerBrush");
+                SetFooterStatusPill(
+                    LocalizationService.IsEnglish ? "Check failed" : "极速自测失败",
+                    ex.Message,
+                    StatusTone.Danger);
             }
             finally
             {
@@ -1259,7 +1597,10 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
         {
             if (_isBusy) return;
             RefreshDashboard(reloadPolicy: false);
-            FooterHintText.Text = $"已于 {DateTime.Now:HH:mm:ss} 刷新系统实时状态";
+            SetFooterStatusPill(
+                LocalizationService.IsEnglish ? $"Refreshed {DateTime.Now:HH:mm:ss}" : $"已刷新 {DateTime.Now:HH:mm:ss}",
+                LocalizationService.IsEnglish ? $"Refreshed system telemetry at {DateTime.Now:HH:mm:ss}" : $"已于 {DateTime.Now:HH:mm:ss} 刷新系统实时状态",
+                StatusTone.Neutral);
         }
 
         private void OpenDirBtn_Click(object sender, RoutedEventArgs e)
@@ -1297,7 +1638,10 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
                 if (!string.IsNullOrEmpty(LogTextBox.Text))
                 {
                     Clipboard.SetText(LogTextBox.Text);
-                    FooterHintText.Text = "日志已复制到剪贴板";
+                    SetFooterStatusPill(
+                        LocalizationService.IsEnglish ? "Copied" : "日志已复制",
+                        LocalizationService.IsEnglish ? "Console logs copied to clipboard" : "控制台日志已复制到剪贴板",
+                        StatusTone.Neutral);
                 }
             }
             catch { }
@@ -1385,11 +1729,13 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
 
                 File.WriteAllLines(Path.Combine(outDir, "smoke-report.txt"), report);
                 Application.Current.Shutdown(0);
+                Environment.Exit(0);
             }
             catch (Exception ex)
             {
                 File.WriteAllText(Path.Combine(outDir, "smoke-error.txt"), ex.ToString());
                 Application.Current.Shutdown(2);
+                Environment.Exit(2);
             }
         }
     }
