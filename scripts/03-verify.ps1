@@ -322,9 +322,23 @@ Check 'LLMNR & Smart Multi-Homed DNS (SMHNR) hardened' {
 Check 'Windows NTP server domestic-capable' {
     $ntp = [string](Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters' -ErrorAction SilentlyContinue).NtpServer
     if (-not $ntp) { 'default/empty' }
-    elseif ($ntp -match '(?i)(\.cn\b|aliyun|tencent|ntsc|203\.107\.6\.88)') { $ntp }
-    else { throw ('foreign-only NTP (' + $ntp + ') blocked when TUN is off; run 01-dns-hardening.ps1 -Force') }
+    elseif ($ntp -match '(?i)www\.time\.ac\.cn') { throw ('stale NTP peer www.time.ac.cn (no longer answers) in: ' + $ntp + '; run .\07-mode.ps1 to migrate') }
+    elseif ($ntp -match '(?i)(aliyun|tencent|ntsc\.ac\.cn|203\.107\.6\.88)') { $ntp }
+    else { throw ('no known-working domestic NTP peer (' + $ntp + '); foreign peers are blocked when TUN is off; run 01-dns-hardening.ps1 -Force') }
 } 'domestic NTP reachable without TUN'
+
+# A peer name alone proved nothing in practice (a dead peer let the clock drift 27 min),
+# so also measure the real offset. VMess rejects skew > 120 s.
+Check 'system clock offset vs domestic NTP' {
+    $offset = $null; $peer = $null
+    foreach ($p in @('ntp.aliyun.com', 'ntp.tencent.com', 'ntp.ntsc.ac.cn')) {
+        $line = (w32tm /stripchart /computer:$p /samples:1 /dataonly 2>&1 | Select-Object -Last 1) -join ''
+        if ($line -match '([+-]\d+(?:\.\d+)?)s\s*$') { $offset = [double]$Matches[1]; $peer = $p; break }
+    }
+    if ($null -eq $offset) { throw 'no domestic NTP peer answered on UDP 123' }
+    if ([math]::Abs($offset) -gt 60) { throw ('clock off by {0:N1}s vs {1}; run: w32tm /resync /force' -f $offset, $peer) }
+    '{0:+0.000;-0.000}s vs {1}' -f $offset, $peer
+} '|offset| <= 60 s'
 
 Check 'system proxy hygiene' {
     $ie = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction SilentlyContinue

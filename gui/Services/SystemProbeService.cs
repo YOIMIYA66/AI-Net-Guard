@@ -559,7 +559,9 @@ namespace AiNetGuard.Gui.Services
                 using (RegistryKey wk = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\W32Time\Parameters", false))
                 {
                     string ntp = Convert.ToString(wk?.GetValue("NtpServer") ?? "");
-                    snap.DomesticNtpActive = Regex.IsMatch(ntp, @"(?i)(\.cn\b|aliyun|tencent|ntsc|203\.107\.6\.88)");
+                    // Same rule as the scripts: a known-working domestic peer, and not the dead www.time.ac.cn.
+                    snap.DomesticNtpActive = Regex.IsMatch(ntp, @"(?i)(aliyun|tencent|ntsc\.ac\.cn|203\.107\.6\.88)")
+                        && !Regex.IsMatch(ntp, @"(?i)www\.time\.ac\.cn");
                 }
             }
             catch { }

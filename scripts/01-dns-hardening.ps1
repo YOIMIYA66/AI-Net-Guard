@@ -312,15 +312,19 @@ if (-not $SkipNtp) {
     Write-Step 'checking Windows NTP peer list (prevents VLESS+REALITY clock-skew deadlock when TUN is off)'
     try {
         $curNtp = [string]$ntpOrig
-        if ($curNtp -match '(?i)(\.cn\b|aliyun|tencent|ntsc|203\.107\.6\.88)') {
+        # A peer list counts as healthy only if it names a known-working domestic peer.
+        # www.time.ac.cn no longer answers NTP (0x800705B4 timeout), so a list that still
+        # carries it is migrated even when it also contains a working peer.
+        if ($curNtp -match '(?i)(aliyun|tencent|ntsc\.ac\.cn|203\.107\.6\.88)' -and $curNtp -notmatch '(?i)www\.time\.ac\.cn') {
             Write-Host ('    NTP already domestic-capable: ' + $curNtp)
         }
         else {
-            $newNtp = 'ntp.aliyun.com,0x9 ntp.tencent.com,0x9 www.time.ac.cn,0x9'
+            $newNtp = 'ntp.aliyun.com,0x9 ntp.tencent.com,0x9 ntp.ntsc.ac.cn,0x9'
             New-ItemProperty -Path $w32TimeKey -Name 'NtpServer' -Value $newNtp -PropertyType String -Force | Out-Null
             $w32svc = Get-Service -Name w32time -ErrorAction SilentlyContinue
             if ($w32svc -and $w32svc.Status -eq 'Running') {
                 w32tm /config /update 2>$null | Out-Null
+                w32tm /resync /nowait 2>$null | Out-Null
             }
             Write-Host ('    NTP updated: ' + $newNtp)
         }

@@ -781,10 +781,11 @@ else {
     if ($policy.DomesticNtp) {
         if (Test-Path -LiteralPath $w32Key) {
             $curNtp = [string](Get-ItemProperty -LiteralPath $w32Key -ErrorAction SilentlyContinue).NtpServer
-            if ($curNtp -notmatch '(?i)(\.cn\b|aliyun|tencent|ntsc|203\.107\.6\.88)') {
-                New-ItemProperty -Path $w32Key -Name 'NtpServer' -Value 'ntp.aliyun.com,0x9 ntp.tencent.com,0x9 www.time.ac.cn,0x9' -PropertyType String -Force | Out-Null
+            # Healthy = names a known-working domestic peer and no longer carries the dead www.time.ac.cn.
+            if ($curNtp -notmatch '(?i)(aliyun|tencent|ntsc\.ac\.cn|203\.107\.6\.88)' -or $curNtp -match '(?i)www\.time\.ac\.cn') {
+                New-ItemProperty -Path $w32Key -Name 'NtpServer' -Value 'ntp.aliyun.com,0x9 ntp.tencent.com,0x9 ntp.ntsc.ac.cn,0x9' -PropertyType String -Force | Out-Null
                 $w32svc = Get-Service -Name w32time -ErrorAction SilentlyContinue
-                if ($w32svc -and $w32svc.Status -eq 'Running') { w32tm /config /update 2>$null | Out-Null }
+                if ($w32svc -and $w32svc.Status -eq 'Running') { w32tm /config /update 2>$null | Out-Null; w32tm /resync /nowait 2>$null | Out-Null }
             }
         }
         Write-Ok 'DomesticNtp = ON (domestic NTP peers configured)'

@@ -1262,11 +1262,12 @@ function Invoke-UpgradeV54 {
 
     # 3. Ensure domestic-capable NTP for VLESS+REALITY clock stability
     try {
-        if (([string]$curNtp) -notmatch '(?i)(\.cn\b|aliyun|tencent|ntsc|203\.107\.6\.88)') {
-            $newNtp = 'ntp.aliyun.com,0x9 ntp.tencent.com,0x9 www.time.ac.cn,0x9'
+        # Healthy = names a known-working domestic peer and no longer carries the dead www.time.ac.cn.
+        if (([string]$curNtp) -notmatch '(?i)(aliyun|tencent|ntsc\.ac\.cn|203\.107\.6\.88)' -or ([string]$curNtp) -match '(?i)www\.time\.ac\.cn') {
+            $newNtp = 'ntp.aliyun.com,0x9 ntp.tencent.com,0x9 ntp.ntsc.ac.cn,0x9'
             New-ItemProperty -Path $w32Key -Name 'NtpServer' -Value $newNtp -PropertyType String -Force | Out-Null
             $w32svc = Get-Service -Name w32time -ErrorAction SilentlyContinue
-            if ($w32svc -and $w32svc.Status -eq 'Running') { w32tm /config /update 2>$null | Out-Null }
+            if ($w32svc -and $w32svc.Status -eq 'Running') { w32tm /config /update 2>$null | Out-Null; w32tm /resync /nowait 2>$null | Out-Null }
             Say ('    NTP updated to domestic peers: ' + $newNtp)
         }
         else {
