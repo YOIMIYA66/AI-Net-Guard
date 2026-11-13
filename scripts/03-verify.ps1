@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.3 - step 3: comprehensive verification (run as Administrator).
+    AI-Net-Guard v5.7.4 - step 3: comprehensive verification (run as Administrator).
 
 .DESCRIPTION
     Verifies both static configuration invariants and live network behaviour for
-    AI-Net-Guard v5.7.3 (works in both TUN-ON and TUN-OFF states, multi-core aware,
+    AI-Net-Guard v5.7.4 (works in both TUN-ON and TUN-OFF states, multi-core aware,
     bypasses HKCU HTTP proxy to test the real kernel WFP/TUN datapath, and
     auto-cleans temporary WFP XML dumps unless -KeepCaptures is passed).
 
@@ -193,7 +193,7 @@ function Get-FirewallRuleStates {
 
 Assert-Admin
 Write-Host ''
-Write-Host 'AI-Net-Guard v5.7.3 verification' -ForegroundColor Cyan
+Write-Host 'AI-Net-Guard v5.7.4 verification' -ForegroundColor Cyan
 Write-Host ''
 
 $ruleStates = Get-FirewallRuleStates
@@ -331,7 +331,7 @@ Check 'Windows NTP server domestic-capable' {
 # so also measure the real offset. VMess rejects skew > 120 s.
 Check 'system clock offset vs domestic NTP' {
     $offset = $null; $peer = $null
-    foreach ($p in @('ntp.aliyun.com', 'ntp.tencent.com', 'ntp.ntsc.ac.cn')) {
+    foreach ($p in @('ntp.ntsc.ac.cn', 'ntp.aliyun.com', 'ntp.tencent.com')) {
         $line = (w32tm /stripchart /computer:$p /samples:1 /dataonly 2>&1 | Select-Object -Last 1) -join ''
         if ($line -match '([+-]\d+(?:\.\d+)?)s\s*$') { $offset = [double]$Matches[1]; $peer = $p; break }
     }

@@ -84,8 +84,8 @@ namespace AiNetGuard.Gui.Services
 
         private static readonly Dictionary<string, string> StringsZh = new Dictionary<string, string>
         {
-            ["AppTitle"] = "AI-Net-Guard v5.7.3 — Windows 内核级防泄漏与智能分流配置中心",
-            ["HeaderVersionBadge"] = "v5.7.3 原生桌面版",
+            ["AppTitle"] = "AI-Net-Guard v5.7.4 — Windows 内核级防泄漏与智能分流配置中心",
+            ["HeaderVersionBadge"] = "v5.7.4 原生桌面版",
             ["HeaderSubtitle"] = "Windows 内核级 WFP 失败关闭防泄漏 · 国内直连白名单 · 零内存事件自愈配置中心",
             ["RescueBtn"] = "应急脱困",
             ["RescueBtnToolTip"] = "若遇网络异常或急需上网，一键秒级重置 Windows 原生网络并解除所有内核拦截",
@@ -199,8 +199,8 @@ namespace AiNetGuard.Gui.Services
 
         private static readonly Dictionary<string, string> StringsEn = new Dictionary<string, string>
         {
-            ["AppTitle"] = "AI-Net-Guard v5.7.3 — Windows Kernel Leak Shield & Smart Split-Tunneling",
-            ["HeaderVersionBadge"] = "v5.7.3 Native Desktop",
+            ["AppTitle"] = "AI-Net-Guard v5.7.4 — Windows Kernel Leak Shield & Smart Split-Tunneling",
+            ["HeaderVersionBadge"] = "v5.7.4 Native Desktop",
             ["HeaderSubtitle"] = "Windows Kernel WFP Fail-Closed Leak Shield · Domestic Direct Whitelist · Zero-RAM Event-Triggered Center",
             ["RescueBtn"] = "Rescue",
             ["RescueBtnToolTip"] = "Instantly reset Windows native networking and release all kernel intercepts in an emergency",

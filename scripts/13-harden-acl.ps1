@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.3 - lock the install directory ACL (O1) and run the first
+    AI-Net-Guard v5.7.4 - lock the install directory ACL (O1) and run the first
     elevated v5.4 verification (O2).
 
 .DESCRIPTION
@@ -154,7 +154,7 @@ if ($Undo) {
 
 # ---------------------------------------------------------------- 1. ACL lock
 Write-Host ''
-Write-Host '=== AI-Net-Guard v5.7.3: install directory ACL hardening (O1) ===' -ForegroundColor Cyan
+Write-Host '=== AI-Net-Guard v5.7.4: install directory ACL hardening (O1) ===' -ForegroundColor Cyan
 $before = @(Get-InstallAclIssues -Path $Root)
 Write-Host ('    issues before: ' + $before.Count)
 $before | Select-Object -First 6 | ForEach-Object { Write-Host ('      ' + $_) -ForegroundColor DarkGray }

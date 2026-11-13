@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.7.3 · 纯内核静态防线 + 零常驻 + 官方推荐纯净代理 + Fluent 纯矢量微图标）
+# AI-Net-Guard 实现方案与持续审查文档（v5.7.4 · 纯内核静态防线 + 零常驻 + 官方推荐纯净代理 + Fluent 纯矢量微图标）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
-> 节点同步：**v5.7.3 默认开启多内核自动同步**（支持 IP / 域名节点、VLESS / Trojan / VMess / Hysteria2 端口跳跃等）
-> 版本状态：**v5.7.3 正式版**（`24/24` 全量回归 `PASS`，`0` 常驻进程，官方推荐纯净系统代理，Fluent 纯矢量微图标，中英双语即时切换）
+> 节点同步：**v5.7.4 默认开启多内核自动同步**（支持 IP / 域名节点、VLESS / Trojan / VMess / Hysteria2 端口跳跃等）
+> 版本状态：**v5.7.4 正式版**（`24/24` 全量回归 `PASS`，`0` 常驻进程，官方推荐纯净系统代理，Fluent 纯矢量微图标，中英双语即时切换）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -307,3 +307,13 @@ v5.7.3 针对原生桌面 GUI 客户端进行了全链路深度美化与人机�
 4. **特性分类微胶囊徽章与数量统计**：
    - 4 大特性分类标题增加独立色彩的微胶囊矢量徽章；
    - 动态计算并展示分类下特性数量胶囊（`[ 4 项特性 ]` / `[ 3 项特性 ]`）。
+
+---
+## 12. v5.7.4 修复版本：更换失效的默认 NTP 服务器，并实测系统时钟偏差
+
+问题：默认 NTP 列表中的 `www.time.ac.cn` 已不再响应 NTP 请求（`w32tm` 返回 `0x800705B4` 超时）。当它是唯一的 NTP 服务器时，Windows 时间服务开机后从未成功同步，时钟最多慢了 27 分钟，导致 VMess（允许的最大时间差为 120 秒）连接失败。旧的检查只匹配 `.cn` 后缀，因此一直把它判定为正常。
+
+1. **新的默认 NTP 列表**：`ntp.ntsc.ac.cn`（国家授时中心，排在第一位）、`ntp.aliyun.com`、`ntp.tencent.com`。
+2. **新的判定规则**：列表中至少有一个已知可用的国内服务器（`ntsc.ac.cn` / `aliyun` / `tencent` / `203.107.6.88`），并且不能包含 `www.time.ac.cn`。仍带有旧列表的安装会被自动迁移。`07-mode.ps1`、`14-apply-policy.ps1`、`01-dns-hardening.ps1` 与 GUI 状态探测使用同一条规则。
+3. **立即同步**：修改 NTP 列表后执行 `w32tm /resync /nowait`。
+4. **新增验证项**：`03-verify.ps1` 新增「system clock offset vs domestic NTP」，实测本机与国内 NTP 的时间差，超过 60 秒判为失败。

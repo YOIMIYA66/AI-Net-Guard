@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.3 - step 2: static default-deny firewall + CN & TUN allowlist.
+    AI-Net-Guard v5.7.4 - step 2: static default-deny firewall + CN & TUN allowlist.
 
 .DESCRIPTION
     Configures Windows Defender Firewall for the v5.1 zero-switch static guard:

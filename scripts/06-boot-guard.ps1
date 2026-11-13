@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.3 - cross-reboot safety net for the restart drill.
+    AI-Net-Guard v5.7.4 - cross-reboot safety net for the restart drill.
 
 .DESCRIPTION
     After 08-commit.ps1 the normal auto-rollback task is gone, which is what

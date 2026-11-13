@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.3 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.7.4 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 15
@@ -358,7 +358,7 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.7.3 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.7.4 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
 
 if ($isFreshInstall) {
@@ -783,7 +783,7 @@ else {
             $curNtp = [string](Get-ItemProperty -LiteralPath $w32Key -ErrorAction SilentlyContinue).NtpServer
             # Healthy = names a known-working domestic peer and no longer carries the dead www.time.ac.cn.
             if ($curNtp -notmatch '(?i)(aliyun|tencent|ntsc\.ac\.cn|203\.107\.6\.88)' -or $curNtp -match '(?i)www\.time\.ac\.cn') {
-                New-ItemProperty -Path $w32Key -Name 'NtpServer' -Value 'ntp.aliyun.com,0x9 ntp.tencent.com,0x9 ntp.ntsc.ac.cn,0x9' -PropertyType String -Force | Out-Null
+                New-ItemProperty -Path $w32Key -Name 'NtpServer' -Value 'ntp.ntsc.ac.cn,0x9 ntp.aliyun.com,0x9 ntp.tencent.com,0x9' -PropertyType String -Force | Out-Null
                 $w32svc = Get-Service -Name w32time -ErrorAction SilentlyContinue
                 if ($w32svc -and $w32svc.Status -eq 'Running') { w32tm /config /update 2>$null | Out-Null; w32tm /resync /nowait 2>$null | Out-Null }
             }
@@ -899,5 +899,5 @@ if (Test-Path -LiteralPath $aclScript) {
 
 & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Status -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns
 Write-Host ''
-Write-Host '[SUCCESS] AI-Net-Guard v5.7.3 configuration applied successfully.' -ForegroundColor Green
+Write-Host '[SUCCESS] AI-Net-Guard v5.7.4 configuration applied successfully.' -ForegroundColor Green
 exit 0

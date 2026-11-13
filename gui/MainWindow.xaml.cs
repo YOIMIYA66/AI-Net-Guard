@@ -1151,7 +1151,7 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
 
             ExpandConsole();
             SetBusy(true, "正在释放引擎组件并应用所选策略，请稍候...");
-            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] " + (LocalizationService.IsEnglish ? "Applying AI-Net-Guard v5.7.3 Guard Policy..." : "开始应用 AI-Net-Guard v5.7.3 防护配置...") + " ==========");
+            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] " + (LocalizationService.IsEnglish ? "Applying AI-Net-Guard v5.7.4 Guard Policy..." : "开始应用 AI-Net-Guard v5.7.4 防护配置...") + " ==========");
 
             try
             {
