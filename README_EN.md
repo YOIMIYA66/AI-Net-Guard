@@ -312,7 +312,7 @@ All 15 policies can be toggled visually in the GUI or orchestrated programmatica
 | **4. Self-Healing & Security** | `ZeroResidentMonitor` | **Zero-Resident Event Auto-Heal** | 🟢 **ON** `[Rec.]` | **0 daemon processes · 0 MB idle RAM**; wakes via network/sleep/boot events to heal DNS and rules. | Unregisters event tasks; retains static firewall rules only. |
 | **4. Self-Healing & Security** | `AutoNodeSync` | **Multi-Core Dynamic Node Auto-Sync** | 🟢 **ON** `[Rec.]` | Automatically detects and authorizes new proxy node IPs/ports when switching servers in v2rayN. | Freezes node firewall rules; stops tracking `config.json`. |
 | **4. Self-Healing & Security** | `AutoHealStaleProxy` | **Stale Loopback Proxy Cleanup** | 🟢 **ON** `[Rec.]` | Automatically clears orphaned `127.0.0.1` proxies after client crashes to prevent network lockup. | Does not clean orphaned `HKCU` WinINET proxies. |
-| **4. Self-Healing & Security** | `DomesticNtp` | **High-Availability Domestic NTP** | 🟢 **ON** `[Rec.]` | Configures NTSC/Ali/Tencent time servers to avoid VLESS handshake deadlocks from clock skew. | Restores original Windows time server configuration. |
+| **4. Self-Healing & Security** | `DomesticNtp` | **High-Availability Domestic NTP** | 🟢 **ON** `[Rec.]` | Configures Ali/Tencent/NTSC time servers to avoid VLESS handshake deadlocks from clock skew. | Restores original Windows time server configuration. |
 | **4. Self-Healing & Security** | `HardenInstallAcl` | **Install Directory ACL Hardening** | 🟢 **ON** `[Rec.]` | Locks `C:\AI-Net-Guard` to Administrators write-only; stops unprivileged tampering or elevation. | Restores standard directory inheritance (`13-harden-acl.ps1 -Undo`). |
 
 ---

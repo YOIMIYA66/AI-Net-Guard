@@ -331,7 +331,7 @@ Check 'Windows NTP server domestic-capable' {
 # so also measure the real offset. VMess rejects skew > 120 s.
 Check 'system clock offset vs domestic NTP' {
     $offset = $null; $peer = $null
-    foreach ($p in @('ntp.ntsc.ac.cn', 'ntp.aliyun.com', 'ntp.tencent.com')) {
+    foreach ($p in @('ntp.aliyun.com', 'ntp.tencent.com', 'ntp.ntsc.ac.cn')) {
         $line = (w32tm /stripchart /computer:$p /samples:1 /dataonly 2>&1 | Select-Object -Last 1) -join ''
         if ($line -match '([+-]\d+(?:\.\d+)?)s\s*$') { $offset = [double]$Matches[1]; $peer = $p; break }
     }

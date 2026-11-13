@@ -319,7 +319,7 @@ if (-not $SkipNtp) {
             Write-Host ('    NTP already domestic-capable: ' + $curNtp)
         }
         else {
-            $newNtp = 'ntp.ntsc.ac.cn,0x9 ntp.aliyun.com,0x9 ntp.tencent.com,0x9'
+            $newNtp = 'ntp.aliyun.com,0x9 ntp.tencent.com,0x9 ntp.ntsc.ac.cn,0x9'
             New-ItemProperty -Path $w32TimeKey -Name 'NtpServer' -Value $newNtp -PropertyType String -Force | Out-Null
             $w32svc = Get-Service -Name w32time -ErrorAction SilentlyContinue
             if ($w32svc -and $w32svc.Status -eq 'Running') {

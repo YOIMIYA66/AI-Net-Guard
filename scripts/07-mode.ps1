@@ -1264,7 +1264,7 @@ function Invoke-UpgradeV54 {
     try {
         # Healthy = names a known-working domestic peer and no longer carries the dead www.time.ac.cn.
         if (([string]$curNtp) -notmatch '(?i)(aliyun|tencent|ntsc\.ac\.cn|203\.107\.6\.88)' -or ([string]$curNtp) -match '(?i)www\.time\.ac\.cn') {
-            $newNtp = 'ntp.ntsc.ac.cn,0x9 ntp.aliyun.com,0x9 ntp.tencent.com,0x9'
+            $newNtp = 'ntp.aliyun.com,0x9 ntp.tencent.com,0x9 ntp.ntsc.ac.cn,0x9'
             New-ItemProperty -Path $w32Key -Name 'NtpServer' -Value $newNtp -PropertyType String -Force | Out-Null
             $w32svc = Get-Service -Name w32time -ErrorAction SilentlyContinue
             if ($w32svc -and $w32svc.Status -eq 'Running') { w32tm /config /update 2>$null | Out-Null; w32tm /resync /nowait 2>$null | Out-Null }

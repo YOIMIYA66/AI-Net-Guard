@@ -783,7 +783,7 @@ else {
             $curNtp = [string](Get-ItemProperty -LiteralPath $w32Key -ErrorAction SilentlyContinue).NtpServer
             # Healthy = names a known-working domestic peer and no longer carries the dead www.time.ac.cn.
             if ($curNtp -notmatch '(?i)(aliyun|tencent|ntsc\.ac\.cn|203\.107\.6\.88)' -or $curNtp -match '(?i)www\.time\.ac\.cn') {
-                New-ItemProperty -Path $w32Key -Name 'NtpServer' -Value 'ntp.ntsc.ac.cn,0x9 ntp.aliyun.com,0x9 ntp.tencent.com,0x9' -PropertyType String -Force | Out-Null
+                New-ItemProperty -Path $w32Key -Name 'NtpServer' -Value 'ntp.aliyun.com,0x9 ntp.tencent.com,0x9 ntp.ntsc.ac.cn,0x9' -PropertyType String -Force | Out-Null
                 $w32svc = Get-Service -Name w32time -ErrorAction SilentlyContinue
                 if ($w32svc -and $w32svc.Status -eq 'Running') { w32tm /config /update 2>$null | Out-Null; w32tm /resync /nowait 2>$null | Out-Null }
             }
