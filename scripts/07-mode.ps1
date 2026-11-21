@@ -536,40 +536,60 @@ function Parse-ProxyConfigFast($Cfg) {
     }
 
     # 2. sing-box config format (outbounds[].type, e.g. Hysteria2 / TUIC / WireGuard / VLESS / AnyTLS)
-    $sNode = $Cfg.outbounds | Where-Object { $_.type -in @('hysteria2', 'hysteria', 'tuic', 'vless', 'vmess', 'trojan', 'shadowsocks', 'wireguard', 'anytls', 'socks', 'http') } | Select-Object -First 1
-    if ($sNode) {
-        $addr = [string]$sNode.server
+    $sList = @($Cfg.outbounds | Where-Object { $_.type -in @('hysteria2', 'hysteria', 'tuic', 'vless', 'vmess', 'trojan', 'shadowsocks', 'wireguard', 'anytls', 'socks', 'http') })
+    if ($sList.Count -gt 0) {
+        $sNode = $sList[0]
+        $addrs = @()
         $ports = @()
-        if ($sNode.server_port) { $ports += ([string]$sNode.server_port) }
-        if ($sNode.server_ports) {
-            foreach ($sp in @($sNode.server_ports)) {
-                # sing-box uses "20000:30000" for Hysteria2 port-hopping ranges; Windows Firewall uses "20000-30000"
-                $norm = ([string]$sp).Replace(':', '-').Trim()
-                if ($norm) { $ports += $norm }
+        $tPorts = @()
+        $isUdp = $false
+        foreach ($item in $sList) {
+            $ia = [string]$item.server
+            $ipList = @()
+            if ($item.server_port) { $ipList += ([string]$item.server_port) }
+            if ($item.server_ports) {
+                foreach ($sp in @($item.server_ports)) {
+                    # sing-box uses "20000:30000" for Hysteria2 port-hopping ranges; Windows Firewall uses "20000-30000"
+                    $norm = ([string]$sp).Replace(':', '-').Trim()
+                    if ($norm) { $ipList += $norm }
+                }
+            }
+            if (-not $ia -and $item.peers) {
+                $ia = [string]$item.peers[0].server
+                if ($item.peers[0].server_port) { $ipList += ([string]$item.peers[0].server_port) }
+            }
+            if ($ia) { $addrs += $ia }
+            $ipList = @($ipList | Where-Object { $_ } | Select-Object -Unique)
+            if ($ipList.Count -gt 0) {
+                $ports += $ipList
+                $pType = [string]$item.type
+                $pNet = if ($item.transport -and $item.transport.type) { [string]$item.transport.type } else { $pType }
+                $pAlpn = @()
+                try { if ($item.tls -and $item.tls.alpn) { $pAlpn += @($item.tls.alpn) } } catch { }
+                if (($pType -in @('hysteria2', 'hysteria', 'tuic', 'wireguard')) -or ($pNet -match '(?i)quic') -or ($pAlpn -contains 'h3')) {
+                    $isUdp = $true
+                }
+                if ($pType -in @('hysteria2', 'hysteria', 'tuic', 'wireguard')) { $tPorts += $ipList[0] }
+                else { $tPorts += $ipList }
             }
         }
-        if (-not $addr -and $sNode.peers) {
-            $addr = [string]$sNode.peers[0].server
-            if ($sNode.peers[0].server_port) { $ports += ([string]$sNode.peers[0].server_port) }
-        }
+        $addrs = @($addrs | Where-Object { $_ } | Select-Object -Unique)
         $ports = @($ports | Where-Object { $_ } | Select-Object -Unique)
-        if (-not $addr -or $ports.Count -eq 0) { return $null }
+        $tPorts = @($tPorts | Where-Object { $_ } | Select-Object -Unique)
+        if ($addrs.Count -eq 0 -or $ports.Count -eq 0) { return $null }
 
         $proto = [string]$sNode.type
         $net = if ($sNode.transport -and $sNode.transport.type) { [string]$sNode.transport.type } else { $proto }
-        $alpn = @()
-        try { if ($sNode.tls -and $sNode.tls.alpn) { $alpn += @($sNode.tls.alpn) } } catch { }
-        $isUdp = ($proto -in @('hysteria2', 'hysteria', 'tuic', 'wireguard')) -or ($net -match '(?i)quic') -or ($alpn -contains 'h3')
-        $tPorts = if ($proto -in @('hysteria2', 'hysteria', 'tuic', 'wireguard')) { @($ports[0]) } else { $ports }
         $uPorts = if ($isUdp) { $ports } else { @() }
         return [pscustomobject]@{
-            CoreType = 'sing-box'
-            Protocol = $proto
-            Network  = $net
-            Address  = $addr
-            TcpPorts = $tPorts
-            Udp      = $isUdp
-            UdpPorts = $uPorts
+            CoreType  = 'sing-box'
+            Protocol  = $proto
+            Network   = $net
+            Address   = $addrs[0]
+            Addresses = $addrs
+            TcpPorts  = $tPorts
+            Udp       = $isUdp
+            UdpPorts  = $uPorts
         }
     }
 
@@ -596,17 +616,22 @@ function Sync-NodeRuleFast {
     $defaultXrayExe = Join-Path $V2rayNRoot 'bin\xray\xray.exe'
     $stampPrefix = ($cfgItem.Length.ToString() + ':' + $cfgItem.LastWriteTimeUtc.Ticks.ToString() + '|')
     $rawTcp = if ($Analysis.RawByRule.ContainsKey('AI-Guard-Allow-Node-TCP')) { [string]$Analysis.RawByRule['AI-Guard-Allow-Node-TCP'] } else { '' }
+    $rawUdp = if ($Analysis.RawByRule.ContainsKey('AI-Guard-Allow-Node-UDP')) { [string]$Analysis.RawByRule['AI-Guard-Allow-Node-UDP'] } else { '' }
     $tcpActive = ($Analysis.States.ContainsKey('AI-Guard-Allow-Node-TCP') -and $Analysis.States['AI-Guard-Allow-Node-TCP'])
     $udpExists = $Analysis.States.ContainsKey('AI-Guard-Allow-Node-UDP')
     $udpActive = ($udpExists -and $Analysis.States['AI-Guard-Allow-Node-UDP'])
 
     # Fast path (<0.3 ms, 0 CIM): config.json unchanged AND live firewall rule still matches cached node + core metadata
+    # (Skip fast hit if domain-based node cache is older than 15 minutes so CDN/DDNS IP rotations refresh.)
     if ($tcpActive -and $rawTcp -and (Test-Path -LiteralPath $nodeMeta)) {
         try {
+            $metaItem = Get-Item -LiteralPath $nodeMeta -ErrorAction SilentlyContinue
             $cached = (Get-Content -LiteralPath $nodeMeta -Raw -Encoding UTF8).Trim()
             if ($cached.StartsWith($stampPrefix)) {
                 $parts = $cached.Split('|')
-                if ($parts.Count -ge 4) {
+                $hasDomain = ($parts.Count -ge 6 -and $parts[5] -eq 'domain')
+                $domainStale = ($hasDomain -and $metaItem -and (([DateTime]::UtcNow - $metaItem.LastWriteTimeUtc).TotalMinutes -ge 15))
+                if (-not $domainStale -and $parts.Count -ge 4) {
                     $wantIps = @($parts[1].Split(',') | Where-Object { $_ })
                     $wantTcp = @($parts[2].Split(',') | Where-Object { $_ })
                     $wantUdp = @($parts[3].Split(',') | Where-Object { $_ })
@@ -626,8 +651,20 @@ function Sync-NodeRuleFast {
                         }
                     }
                     if ($ok) {
-                        if ($wantUdp.Count -gt 0 -and -not $udpActive) { $ok = $false }
-                        elseif ($wantUdp.Count -eq 0 -and $udpExists) { $ok = $false }
+                        if ($wantUdp.Count -gt 0) {
+                            if (-not $udpActive -or -not $rawUdp -or ($rawUdp -notmatch ('(?i)(^|\|)App=' + [regex]::Escape($wantExe) + '(\||$)'))) { $ok = $false }
+                            if ($ok) {
+                                foreach ($wip in $wantIps) {
+                                    if ($rawUdp -notmatch ('(^|\|)RA4=' + [regex]::Escape($wip) + '(\||$)')) { $ok = $false; break }
+                                }
+                            }
+                            if ($ok) {
+                                foreach ($wup in $wantUdp) {
+                                    if ($rawUdp -notmatch ('(^|\|)RPort=' + [regex]::Escape($wup) + '(\||$)')) { $ok = $false; break }
+                                }
+                            }
+                        }
+                        elseif ($udpExists) { $ok = $false }
                     }
                     if ($ok) { return }
                 }
@@ -643,21 +680,26 @@ function Sync-NodeRuleFast {
         if (-not $parsed) { return }
 
         $coreExe = Resolve-CoreExecutablePath -PreferredCore $parsed.CoreType
-        $address = $parsed.Address
+        $rawAddrs = if ($parsed.PSObject.Properties.Name -contains 'Addresses' -and $parsed.Addresses) { @($parsed.Addresses) } else { @($parsed.Address) }
 
         $ips = @()
-        if ($address -match '^\d{1,3}(\.\d{1,3}){3}$') {
-            $ips = @($address)
-        }
-        else {
-            $ips = @(Resolve-DomainIpsSafe -Domain $address)
+        $usedDomain = $false
+        foreach ($raItem in $rawAddrs) {
+            if (-not $raItem) { continue }
+            if ($raItem -match '^\d{1,3}(\.\d{1,3}){3}$') {
+                $ips += @($raItem)
+            }
+            else {
+                $usedDomain = $true
+                $ips += @(Resolve-DomainIpsSafe -Domain $raItem)
+            }
         }
         if ($ips.Count -eq 0) { return }
 
         $udp = [bool]$parsed.Udp
         $udpPorts = @($parsed.UdpPorts)
 
-        # Scan test configs in binConfigs (e.g. Reality port 443 while active config is Hysteria2 25000)
+        # Scan test configs in binConfigs (e.g. Reality port 443 or Hysteria2 server_ports while active config differs)
         $binCfgDir = Join-Path $V2rayNRoot 'binConfigs'
         if (Test-Path -LiteralPath $binCfgDir) {
             foreach ($testFile in (Get-ChildItem -LiteralPath $binCfgDir -Filter 'configTest*.json' -ErrorAction SilentlyContinue)) {
@@ -665,17 +707,31 @@ function Sync-NodeRuleFast {
                     $tCfg = Get-Content -LiteralPath $testFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
                     if ($tCfg.outbounds) {
                         foreach ($ob in $tCfg.outbounds) {
-                            $tAddr = [string]$(if ($ob.server) { $ob.server } else { $ob.settings.address })
-                            $tPort = [string]$(if ($ob.server_port) { $ob.server_port } else { $ob.settings.port })
+                            $tAddr = [string]$(if ($ob.server) { $ob.server } elseif ($ob.settings.address) { $ob.settings.address } elseif ($ob.settings.vnext) { $ob.settings.vnext[0].address } elseif ($ob.settings.servers) { $ob.settings.servers[0].address } else { '' })
+                            $tPortsList = @()
+                            if ($ob.server_port) { $tPortsList += ([string]$ob.server_port) }
+                            elseif ($ob.settings.port) { $tPortsList += ([string]$ob.settings.port) }
+                            elseif ($ob.settings.vnext -and $ob.settings.vnext[0].port) { $tPortsList += ([string]$ob.settings.vnext[0].port) }
+                            elseif ($ob.settings.servers -and $ob.settings.servers[0].port) { $tPortsList += ([string]$ob.settings.servers[0].port) }
+                            if ($ob.server_ports) {
+                                foreach ($sp in @($ob.server_ports)) {
+                                    $norm = ([string]$sp).Replace(':', '-').Trim()
+                                    if ($norm) { $tPortsList += $norm }
+                                }
+                            }
                             if ($tAddr) {
                                 if ($tAddr -match '^\d{1,3}(\.\d{1,3}){3}$') { $ips += @($tAddr) }
-                                else { $ips += @(Resolve-DomainIpsSafe -Domain $tAddr) }
+                                else { $usedDomain = $true; $ips += @(Resolve-DomainIpsSafe -Domain $tAddr) }
                             }
-                            if ($tPort) {
-                                $parsed.TcpPorts += @($tPort)
+                            if ($tPortsList.Count -gt 0) {
+                                $tPortsList = @($tPortsList | Where-Object { $_ } | Select-Object -Unique)
                                 if ($ob.type -match 'hysteria|tuic|wireguard' -or $ob.protocol -match 'hysteria|wireguard') {
-                                    $udpPorts += @($tPort)
+                                    $parsed.TcpPorts += @($tPortsList[0])
+                                    $udpPorts += $tPortsList
                                     $udp = $true
+                                }
+                                else {
+                                    $parsed.TcpPorts += $tPortsList
                                 }
                             }
                         }
@@ -699,13 +755,28 @@ function Sync-NodeRuleFast {
         }
         $tcpPorts = @($tcpPorts | Where-Object { $_ } | Select-Object -Unique)
 
+        # Also validate AI-Guard-Allow-Node-UDP (e.g. hy2 port-hopping ranges) before taking fast skip
+        $oldUdpIps = @([regex]::Matches($rawUdp, '(?:^|\|)RA4=([^|]+)') | ForEach-Object { $_.Groups[1].Value })
+        $oldUdpPorts = @([regex]::Matches($rawUdp, '(?:^|\|)RPort=([^|]+)') | ForEach-Object { $_.Groups[1].Value })
+        $sameUdpApp = ($rawUdp -match ('(?i)(^|\|)App=' + [regex]::Escape($coreExe) + '(\||$)'))
+        $udpExact = if ($udp) {
+            $udpActive -and
+            $sameUdpApp -and
+            ($rawUdp -notmatch '\|IF=') -and
+            (((($oldUdpIps | Sort-Object) -join ',') -eq (($ips | Sort-Object) -join ','))) -and
+            (((($oldUdpPorts | Sort-Object) -join ',') -eq (($udpPorts | Sort-Object) -join ',')))
+        }
+        else {
+            -not $udpExists
+        }
+
         # Check if raw registry rule already satisfies everything (avoids loading NetSecurity CIM on first meta write)
         $alreadyExact = $tcpActive -and
             $sameApp -and
             ($rawTcp -notmatch '\|IF=') -and
             (((($oldIps | Sort-Object) -join ',') -eq (($ips | Sort-Object) -join ','))) -and
             (((($oldPorts | Sort-Object) -join ',') -eq (($tcpPorts | Sort-Object) -join ','))) -and
-            (($udp -and $udpActive) -or (-not $udp -and -not $udpExists))
+            $udpExact
 
         if (-not $alreadyExact) {
             $tcpRule = Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-Node-TCP' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -747,7 +818,7 @@ function Sync-NodeRuleFast {
                 }
             }
 
-            # Keep companion rules for all installed proxy cores synchronized
+            # Keep companion rules (TCP/UDP node + AliDNS DoH) for all installed proxy cores synchronized
             foreach ($candRel in @('bin\xray\xray.exe', 'bin\sing_box\sing-box.exe', 'v2rayN.exe')) {
                 $compExe = Join-Path $V2rayNRoot $candRel
                 if ((Test-Path -LiteralPath $compExe) -and ($compExe -ine $coreExe)) {
@@ -761,8 +832,8 @@ function Sync-NodeRuleFast {
                             -Direction Outbound -Action Allow -Program $compExe -Protocol TCP `
                             -RemoteAddress $ips -RemotePort $tcpPorts -Profile Any -Enabled True -ErrorAction SilentlyContinue | Out-Null
                     }
+                    $cRuleUdp = Get-NetFirewallRule -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-UDP') -ErrorAction SilentlyContinue | Select-Object -First 1
                     if ($udp) {
-                        $cRuleUdp = Get-NetFirewallRule -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-UDP') -ErrorAction SilentlyContinue | Select-Object -First 1
                         if ($cRuleUdp) {
                             Set-NetFirewallRule -InputObject $cRuleUdp -Program $compExe -RemoteAddress $ips -RemotePort $udpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction SilentlyContinue
                         }
@@ -772,11 +843,33 @@ function Sync-NodeRuleFast {
                                 -RemoteAddress $ips -RemotePort $udpPorts -Profile Any -Enabled True -ErrorAction SilentlyContinue | Out-Null
                         }
                     }
+                    elseif ($cRuleUdp) {
+                        $cRuleUdp | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+                    }
+                    $cRuleDoh = Get-NetFirewallRule -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-DoH') -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($cRuleDoh) {
+                        Set-NetFirewallRule -InputObject $cRuleDoh -Program $compExe -RemoteAddress @('223.5.5.5', '223.6.6.6') -RemotePort @('443') -InterfaceAlias 'Any' -Enabled True -ErrorAction SilentlyContinue
+                    }
+                    else {
+                        New-NetFirewallRule -Name ('AI-Guard-Allow-Core-' + $cName + '-DoH') -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-DoH') `
+                            -Direction Outbound -Action Allow -Program $compExe -Protocol TCP `
+                            -RemoteAddress @('223.5.5.5', '223.6.6.6') -RemotePort @('443') -Profile Any -Enabled True -ErrorAction SilentlyContinue | Out-Null
+                    }
                 }
             }
 
-            # Ensure /32 physical host route for proxy node IPs so Xray connects directly on physical NIC (avoids TUN double-hop relay)
+            # Ensure /32 physical host route for proxy node IPs and prune stale old node /32 host routes
             try {
+                if (Test-Path -LiteralPath $nodeMeta) {
+                    $oldMetaRaw = Get-Content -LiteralPath $nodeMeta -Raw -ErrorAction SilentlyContinue
+                    if ($oldMetaRaw -match '\|([\d\.,]+)\|') {
+                        foreach ($prevIp in ($Matches[1].Split(','))) {
+                            if ($prevIp -match '^\d{1,3}(\.\d{1,3}){3}$' -and ($ips -notcontains $prevIp)) {
+                                Remove-NetRoute -DestinationPrefix ($prevIp + '/32') -Confirm:$false -ErrorAction SilentlyContinue
+                            }
+                        }
+                    }
+                }
                 $physRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
                     Where-Object { $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback' -and $_.NextHop -ne '0.0.0.0' } |
                     Select-Object -First 1
@@ -803,7 +896,8 @@ function Sync-NodeRuleFast {
         }
 
         New-Item -ItemType Directory -Path (Split-Path $nodeMeta) -Force | Out-Null
-        $metaLine = $stampPrefix + ($ips -join ',') + '|' + ($tcpPorts -join ',') + '|' + ($udpPorts -join ',') + '|' + $coreExe
+        $domainTag = if ($usedDomain) { '|domain' } else { '|ip' }
+        $metaLine = $stampPrefix + ($ips -join ',') + '|' + ($tcpPorts -join ',') + '|' + ($udpPorts -join ',') + '|' + $coreExe + $domainTag
         Set-Content -LiteralPath $nodeMeta -Value $metaLine -Encoding ASCII
     }
     catch { }

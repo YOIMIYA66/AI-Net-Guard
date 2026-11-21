@@ -654,6 +654,22 @@ if (Test-Path -LiteralPath $wfpFile) {
     else {
         Check 'Xray dynamic WFP filters absent while TUN off' { if ($pCnt -ne 0) { throw ('count=' + $pCnt) }; 'count=0' }
     }
+
+    # Report non-standard third-party ALE_AUTH_CONNECT_V4 PERMIT filters if any exist (helps diagnose DefaultOutboundAction bypass)
+    try {
+        [xml]$wfpXml = $wf
+        $thirdPartyPermits = @($wfpXml.filters.item | Where-Object {
+            $_.layerKey -match 'ALE_AUTH_CONNECT_V4' -and
+            $_.action.type -eq 'FWP_ACTION_PERMIT' -and
+            $_.displayData.name -and
+            ($_.displayData.name -notmatch '^(?:WSH Default|Boot Time|Stealth|Edge Traversal|Query User|Teredo)') -and
+            ($_.displayData.name -notmatch '(?i)Windows Defender Firewall|Microsoft|MpsSvc|permit Xray|permit DNS|permit DHCP')
+        })
+        if ($thirdPartyPermits.Count -gt 0) {
+            $names = @($thirdPartyPermits | ForEach-Object { [string]$_.displayData.name } | Select-Object -Unique | Select-Object -First 8)
+            W ('  [WARN] Non-standard ALE_AUTH_CONNECT_V4 PERMIT filters present: ' + ($names -join '; '))
+        }
+    } catch { }
 }
 if (($script:fail -eq $failBeforeWfp) -and (-not $KeepCaptures)) {
     Remove-Item -LiteralPath $wfpDir -Recurse -Force -ErrorAction SilentlyContinue

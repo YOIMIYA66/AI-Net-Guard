@@ -120,39 +120,59 @@ function Get-NodeEndpoint {
         }
     }
 
-    # 2. sing-box schema (outbounds[].type, e.g. Hysteria2 / TUIC / VLESS / AnyTLS)
-    $s = $Cfg.outbounds | Where-Object { $_.type -in @('hysteria2', 'hysteria', 'tuic', 'vless', 'vmess', 'trojan', 'shadowsocks', 'wireguard', 'anytls', 'socks', 'http') } | Select-Object -First 1
-    if ($s) {
-        $addr = [string]$s.server
+    # 2. sing-box schema (outbounds[].type, e.g. Hysteria2 / TUIC / WireGuard / VLESS / AnyTLS)
+    $sList = @($Cfg.outbounds | Where-Object { $_.type -in @('hysteria2', 'hysteria', 'tuic', 'vless', 'vmess', 'trojan', 'shadowsocks', 'wireguard', 'anytls', 'socks', 'http') })
+    if ($sList.Count -gt 0) {
+        $s = $sList[0]
+        $addrs = @()
         $ports = @()
-        if ($s.server_port) { $ports += ([string]$s.server_port) }
-        if ($s.server_ports) {
-            foreach ($sp in @($s.server_ports)) {
-                $norm = ([string]$sp).Replace(':', '-').Trim()
-                if ($norm) { $ports += $norm }
+        $tPorts = @()
+        $isUdp = $false
+        foreach ($item in $sList) {
+            $ia = [string]$item.server
+            $ipList = @()
+            if ($item.server_port) { $ipList += ([string]$item.server_port) }
+            if ($item.server_ports) {
+                foreach ($sp in @($item.server_ports)) {
+                    $norm = ([string]$sp).Replace(':', '-').Trim()
+                    if ($norm) { $ipList += $norm }
+                }
+            }
+            if (-not $ia -and $item.peers) {
+                $ia = [string]$item.peers[0].server
+                if ($item.peers[0].server_port) { $ipList += ([string]$item.peers[0].server_port) }
+            }
+            if ($ia) { $addrs += $ia }
+            $ipList = @($ipList | Where-Object { $_ } | Select-Object -Unique)
+            if ($ipList.Count -gt 0) {
+                $ports += $ipList
+                $pType = [string]$item.type
+                $pNet = if ($item.transport -and $item.transport.type) { [string]$item.transport.type } else { $pType }
+                $pAlpn = @()
+                try { if ($item.tls -and $item.tls.alpn) { $pAlpn += @($item.tls.alpn) } } catch { }
+                if (($pType -in @('hysteria2', 'hysteria', 'tuic', 'wireguard')) -or ($pNet -match '(?i)quic') -or ($pAlpn -contains 'h3')) {
+                    $isUdp = $true
+                }
+                if ($pType -in @('hysteria2', 'hysteria', 'tuic', 'wireguard')) { $tPorts += $ipList[0] }
+                else { $tPorts += $ipList }
             }
         }
-        if (-not $addr -and $s.peers) {
-            $addr = [string]$s.peers[0].server
-            if ($s.peers[0].server_port) { $ports += ([string]$s.peers[0].server_port) }
-        }
+        $addrs = @($addrs | Where-Object { $_ } | Select-Object -Unique)
         $ports = @($ports | Where-Object { $_ } | Select-Object -Unique)
-        if (-not $addr -or $ports.Count -eq 0) { throw ('cannot find node address/port in sing-box outbound "' + $s.tag + '"') }
+        $tPorts = @($tPorts | Where-Object { $_ } | Select-Object -Unique)
+        if ($addrs.Count -eq 0 -or $ports.Count -eq 0) { throw ('cannot find node address/port in sing-box outbound "' + $s.tag + '"') }
         $proto = [string]$s.type
         $net = if ($s.transport -and $s.transport.type) { [string]$s.transport.type } else { $proto }
-        $alpn = @()
-        try { if ($s.tls -and $s.tls.alpn) { $alpn += @($s.tls.alpn) } } catch { }
-        $isUdp = ($proto -in @('hysteria2', 'hysteria', 'tuic', 'wireguard')) -or ($net -match '(?i)quic') -or ($alpn -contains 'h3')
-        $tPorts = if ($proto -in @('hysteria2', 'hysteria', 'tuic', 'wireguard')) { @($ports[0]) } else { $ports }
         $uPorts = if ($isUdp) { $ports } else { @() }
         return [pscustomobject]@{
-            CoreType = 'sing-box'
-            Address  = $addr
-            Port     = $tPorts[0]
-            TcpPorts = $tPorts
-            UdpPorts = $uPorts
-            Network  = $net
-            Protocol = $proto
+            CoreType  = 'sing-box'
+            Address   = $addrs[0]
+            Addresses = $addrs
+            Port      = $tPorts[0]
+            TcpPorts  = $tPorts
+            UdpPorts  = $uPorts
+            Network   = $net
+            Protocol  = $proto
         }
     }
 
@@ -222,7 +242,7 @@ $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $node = Get-NodeEndpoint -Cfg $cfg
 
 # Collect all configured node endpoints (active config + test configs in binConfigs)
-$allNodeAddresses = @($node.Address)
+$allNodeAddresses = if ($node.PSObject.Properties.Name -contains 'Addresses' -and $node.Addresses) { @($node.Addresses) } else { @($node.Address) }
 $allTcpPorts = @($node.TcpPorts)
 $allUdpPorts = @($node.UdpPorts)
 
@@ -233,7 +253,8 @@ if (Test-Path -LiteralPath $binCfgDir) {
             $tCfg = Get-Content -LiteralPath $testFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
             $tNode = Get-NodeEndpoint -Cfg $tCfg
             if ($tNode -and $tNode.Address) {
-                $allNodeAddresses += $tNode.Address
+                $tAddrs = if ($tNode.PSObject.Properties.Name -contains 'Addresses' -and $tNode.Addresses) { @($tNode.Addresses) } else { @($tNode.Address) }
+                $allNodeAddresses += $tAddrs
                 $allTcpPorts += $tNode.TcpPorts
                 $allUdpPorts += $tNode.UdpPorts
             }
@@ -565,15 +586,31 @@ foreach ($ck in @('xray', 'singbox', 'v2rayn')) {
     }
 }
 
-# 3. Proxy cores domestic DoH (v2rayN DirectDNS to AliDNS)
+# 3. Proxy cores domestic DoH (v2rayN DirectDNS to AliDNS; active core + companion cores for dual-core / fast core-switch)
 New-AiRule @{
     DisplayName   = 'AI-Guard-Allow-DoH-Ali'
     Direction     = 'Outbound'
     Action        = 'Allow'
+    Program       = $xrayExe
     Protocol      = 'TCP'
     RemoteAddress = @('223.5.5.5', '223.6.6.6')
     RemotePort    = @('443')
-    Description   = 'Domestic AliDNS DoH (all proxy cores & system).'
+    Description   = 'Active proxy core -> Domestic AliDNS DoH.'
+}
+foreach ($ck in @('xray', 'singbox', 'v2rayn')) {
+    if ($allCores.ContainsKey($ck) -and $allCores[$ck] -ine $xrayExe) {
+        $cName = if ($ck -eq 'xray') { 'Xray' } elseif ($ck -eq 'singbox') { 'SingBox' } else { 'V2rayN' }
+        New-AiRule @{
+            DisplayName   = ('AI-Guard-Allow-Core-' + $cName + '-DoH')
+            Direction     = 'Outbound'
+            Action        = 'Allow'
+            Program       = $allCores[$ck]
+            Protocol      = 'TCP'
+            RemoteAddress = @('223.5.5.5', '223.6.6.6')
+            RemotePort    = @('443')
+            Description   = ($cName + ' -> Domestic AliDNS DoH (dual-core safe).')
+        }
+    }
 }
 
 # 4. DHCP lease renewal (works on any hot-plugged Ethernet / USB tethering NIC)

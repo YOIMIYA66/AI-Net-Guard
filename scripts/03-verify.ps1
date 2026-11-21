@@ -406,10 +406,12 @@ if ($tunUp) {
         else { throw ('egress=' + $ip + ' expected ' + ($node.Ips -join ',')) }
     } 'traffic leaves through the node'
 
-    Check 'xray.exe owns connections to the proxy node' {
+    Check 'proxy core owns connections to the proxy node' {
         $node = Get-NodeInfo
         $bad = @()
         $hits = 0
+        $udpHits = 0
+        $coreNames = @('xray', 'sing-box', 'mihomo', 'mihomo-windows-amd64-v1')
         $conns = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)
         foreach ($c in $conns) {
             $ra = [string]$c.RemoteAddress
@@ -417,26 +419,51 @@ if ($tunUp) {
             $hits++
             $procName = ''
             try { $procName = (Get-Process -Id $c.OwningProcess -ErrorAction Stop).ProcessName } catch { }
-            if ($procName -notin @('xray', 'sing-box', 'mihomo', 'mihomo-windows-amd64-v1')) { $bad += ($procName + ' -> ' + $ra + ':' + $c.RemotePort) }
+            if ($procName -notin $coreNames) { $bad += ($procName + ' -> ' + $ra + ':' + $c.RemotePort) }
+        }
+        $udpEps = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue)
+        foreach ($u in $udpEps) {
+            $procName = ''
+            try { $procName = (Get-Process -Id $u.OwningProcess -ErrorAction SilentlyContinue).ProcessName } catch { }
+            if ($procName -in $coreNames) { $udpHits++ }
         }
         if ($bad.Count -gt 0) { throw ('unexpected owner of node connections: ' + ($bad -join '; ')) }
-        'node connections=' + $hits + ', all owned by proxy core'
+        'tcp_node_conns=' + $hits + ', core_udp_sockets=' + $udpHits + ', all owned by proxy core'
     } 'node connections owned by proxy core'
 
     Check 'proxy core physical egress alignment (no TUN double-hop relay)' {
         $node = Get-NodeInfo
-        $xrayCons = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | Where-Object {
+        $coreNames = @('xray', 'sing-box', 'mihomo', 'mihomo-windows-amd64-v1')
+        $coreCons = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | Where-Object {
             ($node.Ips -contains [string]$_.RemoteAddress -or [string]$_.RemoteAddress -eq $node.Address) -and
-            $(try { (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName -eq 'xray' } catch { $false })
+            $(try { (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName -in $coreNames } catch { $false })
         })
-        if ($xrayCons.Count -eq 0) { 'no established xray node connections at test time' }
-        else {
-            $tunIps = @('172.18.0.1', '198.18.0.1', '10.0.0.1')
-            $relayed = @($xrayCons | Where-Object { $_.LocalAddress -in $tunIps })
+        if ($coreCons.Count -gt 0) {
+            $tunIps = @('172.18.0.1', '172.19.0.1', '198.18.0.1', '10.0.0.1')
+            $relayed = @($coreCons | Where-Object { $_.LocalAddress -in $tunIps })
             if ($relayed.Count -gt 0) {
-                throw ('double-hop relay detected: xray.exe socket bound to TUN (' + (($relayed.LocalAddress | Select-Object -Unique) -join ',') + ') instead of physical NIC')
+                throw ('double-hop relay detected: core socket bound to TUN (' + (($relayed.LocalAddress | Select-Object -Unique) -join ',') + ') instead of physical NIC')
             }
-            'xray physical socket aligned: ' + (($xrayCons.LocalAddress | Select-Object -Unique) -join ',')
+            'core TCP physical socket aligned: ' + (($coreCons.LocalAddress | Select-Object -Unique) -join ',')
+        }
+        else {
+            # For UDP-based protocols (Hysteria2 / TUIC / WireGuard), verify /32 host route points to physical NIC
+            $routeBad = @()
+            $routeOk = @()
+            foreach ($nip in @($node.Ips | Select-Object -Unique)) {
+                if ($nip -match '^\d{1,3}(\.\d{1,3}){3}$') {
+                    $rt = Find-NetRoute -RemoteIPAddress $nip -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($rt -and $rt.InterfaceAlias -match '(?i)tun|wintun|sing|xray|meta|mihomo') {
+                        $routeBad += ($nip + '->' + $rt.InterfaceAlias)
+                    }
+                    elseif ($rt) {
+                        $routeOk += ($nip + '->' + $rt.InterfaceAlias)
+                    }
+                }
+            }
+            if ($routeBad.Count -gt 0) { throw ('double-hop route detected for UDP/node IP: ' + ($routeBad -join ',')) }
+            if ($routeOk.Count -gt 0) { 'UDP/node physical route aligned: ' + ($routeOk -join ',') }
+            else { 'no established TCP node connections at test time (UDP/idle)' }
         }
     } 'physical socket alignment'
 

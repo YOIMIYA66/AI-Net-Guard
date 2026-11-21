@@ -122,6 +122,29 @@ else {
 
 Write-Host ''
 Write-Host ('  sublayer/text hits for "Xray TUN": ' + $subLayerCount)
+
+# Also inspect non-Windows-Firewall ALE_AUTH_CONNECT_V4 PERMIT filters (e.g. third-party security/accelerator drivers)
+try {
+    [xml]$wfpXml = $text
+    $alePermits = @($wfpXml.filters.item | Where-Object {
+        $_.layerKey -match 'ALE_AUTH_CONNECT_V4' -and
+        $_.action.type -eq 'FWP_ACTION_PERMIT' -and
+        $_.displayData.name -notmatch '^(?:WSH Default|Boot Time|Stealth|Edge Traversal|Query User|Teredo)' -and
+        $_.providerKey -ne '{10000000-0000-0000-0000-000000000000}'
+    })
+    $thirdPartyPermits = @($alePermits | Where-Object {
+        $n = [string]$_.displayData.name
+        $n -and ($n -notmatch '(?i)Windows Defender Firewall|Microsoft|MpsSvc|permit Xray|permit DNS|permit DHCP')
+    })
+    if ($thirdPartyPermits.Count -gt 0) {
+        Write-Host ''
+        Write-Host '--- Non-standard ALE_AUTH_CONNECT_V4 PERMIT filters (potential DefaultOutboundAction bypass) ---' -ForegroundColor Yellow
+        $thirdPartyPermits | Select-Object -First 15 | ForEach-Object {
+            Write-Host ('  [!] ' + $_.displayData.name + ' (subLayer=' + $_.subLayerKey + ', weight=' + $_.effectiveWeight.uint64 + ')') -ForegroundColor Yellow
+        }
+    }
+} catch { }
+
 Write-Host ('  files: ' + $dir) -ForegroundColor DarkGray
 
 # ---------------------------------------------------------------- firewall state
