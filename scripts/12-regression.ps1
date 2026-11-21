@@ -655,19 +655,20 @@ if (Test-Path -LiteralPath $wfpFile) {
         Check 'Xray dynamic WFP filters absent while TUN off' { if ($pCnt -ne 0) { throw ('count=' + $pCnt) }; 'count=0' }
     }
 
-    # Report non-standard third-party ALE_AUTH_CONNECT_V4 PERMIT filters if any exist (helps diagnose DefaultOutboundAction bypass)
+    # Report non-AI-Guard ALE_AUTH_CONNECT_V4 PERMIT filters (helps diagnose DefaultOutboundAction bypass)
     try {
         [xml]$wfpXml = $wf
-        $thirdPartyPermits = @($wfpXml.filters.item | Where-Object {
-            $_.layerKey -match 'ALE_AUTH_CONNECT_V4' -and
-            $_.action.type -eq 'FWP_ACTION_PERMIT' -and
+        $allItems = $wfpXml.SelectNodes('//filters/item')
+        $nonAiPermits = @($allItems | Where-Object {
+            $_.layerKey -eq 'FWPM_LAYER_ALE_AUTH_CONNECT_V4' -and
+            ($_.action.type -in @('FWP_ACTION_PERMIT', 'FWP_ACTION_CALLOUT_TERMINATING')) -and
             $_.displayData.name -and
-            ($_.displayData.name -notmatch '^(?:WSH Default|Boot Time|Stealth|Edge Traversal|Query User|Teredo)') -and
-            ($_.displayData.name -notmatch '(?i)Windows Defender Firewall|Microsoft|MpsSvc|permit Xray|permit DNS|permit DHCP')
+            ($_.displayData.name -notlike 'AI-Guard-*') -and
+            ($_.displayData.name -notmatch '^(?:Query User|Teredo|Edge Traversal|WSH Default)')
         })
-        if ($thirdPartyPermits.Count -gt 0) {
-            $names = @($thirdPartyPermits | ForEach-Object { [string]$_.displayData.name } | Select-Object -Unique | Select-Object -First 8)
-            W ('  [WARN] Non-standard ALE_AUTH_CONNECT_V4 PERMIT filters present: ' + ($names -join '; '))
+        if ($nonAiPermits.Count -gt 0) {
+            $names = @($nonAiPermits | ForEach-Object { ([string]$_.displayData.name + '(' + [string]$_.action.type + ')[' + [string]$_.subLayerKey + ']') } | Select-Object -Unique | Select-Object -First 12)
+            W ('  [INFO] Other ALE_AUTH_CONNECT_V4 PERMIT/CALLOUT filters: ' + ($names -join '; '))
         }
     } catch { }
 }
