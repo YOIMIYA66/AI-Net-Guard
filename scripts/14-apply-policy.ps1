@@ -527,6 +527,20 @@ else {
                 Set-NetFirewallRule -InputObject $trObj -LocalAddress $tunScope -ErrorAction SilentlyContinue
             }
         }
+        $tunNamesActive = @($tunAdaptersAll | Select-Object -ExpandProperty Name -Unique)
+        if ($tunNamesActive.Count -gt 0 -and $physIpList.Count -gt 0) {
+            $blkPhysTun = Get-NetFirewallRule -Name 'AI-Guard-Block-PhysicalIP-On-TUN' -ErrorAction SilentlyContinue
+            if ($blkPhysTun) {
+                $curIfs = @(($blkPhysTun | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                $mergedIfs = @($curIfs + $tunNamesActive | Select-Object -Unique)
+                Set-NetFirewallRule -InputObject $blkPhysTun -InterfaceAlias $mergedIfs -LocalAddress $physIpList -Enabled True -ErrorAction SilentlyContinue
+            }
+            else {
+                New-NetFirewallRule -Name 'AI-Guard-Block-PhysicalIP-On-TUN' -DisplayName 'AI-Guard-Block-PhysicalIP-On-TUN' `
+                    -Direction Outbound -Action Block -InterfaceAlias $tunNamesActive -LocalAddress $physIpList -Protocol Any -Profile Any -Enabled True `
+                    -Description 'Explicitly block sockets bound to physical NIC IPs from matching Xray TUN soft-permit on TUN interface.' | Out-Null
+            }
+        }
     }
     catch { }
 

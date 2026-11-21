@@ -437,7 +437,7 @@ function Get-FirewallRuleAnalysis {
                                    ($v -notmatch '(^|\|)RA[46]=') -and ($v -notmatch '(^|\|)IF=') -and ($v -notmatch '(^|\|)App='))
             $ruleIdent = if ($dn) { $dn } else { $pr.Name }
             $isAuthorizedAiGuard = $isAiGuard -and (-not $isDangerousBlanket) -and
-                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$')
+                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|PhysicalIP-On-TUN|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$')
 
             if ($isAuthorizedAiGuard) {
                 if (-not $rawByRule.ContainsKey($pr.Name) -or $active) { $rawByRule[$pr.Name] = $v }
@@ -1626,14 +1626,30 @@ function Ensure-Guard {
     Sync-NodeRuleFast -Analysis $analysis
 
     # 3d. multi-core dynamic TUN interface rule (e.g. singbox_tun / mihomo_tun / xray_tun)
-    # Also enforce TUN-only LocalAddress scope (0-CIM fast check) so physical-IP-bound sockets cannot piggyback.
+    # Also enforce TUN-only LocalAddress scope AND explicit AI-Guard-Block-PhysicalIP-On-TUN
+    # (overrides Xray TUN's "permit through the TUN" WFP soft-permit when a socket binds a physical NIC IP).
     $rawMainTun = if ($analysis.RawByRule.ContainsKey('AI-Guard-Allow-TUN')) { [string]$analysis.RawByRule['AI-Guard-Allow-TUN'] } else { '' }
     $rawAltTun = if ($analysis.RawByRule.ContainsKey('AI-Guard-Allow-TUN-Alt')) { [string]$analysis.RawByRule['AI-Guard-Allow-TUN-Alt'] } else { '' }
+    $rawBlkPhysTun = if ($analysis.RawByRule.ContainsKey('AI-Guard-Block-PhysicalIP-On-TUN')) { [string]$analysis.RawByRule['AI-Guard-Block-PhysicalIP-On-TUN'] } else { '' }
+    $blkPhysTunActive = ($ruleStates.ContainsKey('AI-Guard-Block-PhysicalIP-On-TUN') -and $ruleStates['AI-Guard-Block-PhysicalIP-On-TUN'])
     $activeTunObjs = New-Object System.Collections.Generic.List[object]
+    $physIpsForTunBlock = New-Object System.Collections.Generic.List[string]
     try {
         foreach ($ni in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
-            if ($ni.OperationalStatus -eq 'Up' -and (Test-IsTunInterface $ni)) {
-                $activeTunObjs.Add($ni)
+            if ($ni.OperationalStatus -eq 'Up') {
+                if (Test-IsTunInterface $ni) {
+                    $activeTunObjs.Add($ni)
+                }
+                elseif ($ni.Description -notmatch 'Loopback|WAN Miniport' -and $ni.NetworkInterfaceType -ne 'Loopback') {
+                    foreach ($ua in $ni.GetIPProperties().UnicastAddresses) {
+                        if ($ua.Address -and $ua.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                            $ipS = $ua.Address.IPAddressToString
+                            if ($ipS -and $ipS -notlike '127.*' -and $ipS -notlike '169.254.*' -and -not $physIpsForTunBlock.Contains($ipS)) {
+                                $physIpsForTunBlock.Add($ipS)
+                            }
+                        }
+                    }
+                }
             }
         }
     } catch { }
@@ -1641,15 +1657,27 @@ function Ensure-Guard {
     $needMainScope = ($rawMainTun -and ($rawMainTun -notmatch '(^|\|)LA4='))
     $needAltScope = ($rawAltTun -and ($rawAltTun -notmatch '(^|\|)LA4='))
     $needTunAdd = $false
+    $needBlkPhysTun = ($activeTunObjs.Count -gt 0 -and $physIpsForTunBlock.Count -gt 0 -and (-not $blkPhysTunActive -or -not $rawBlkPhysTun))
     foreach ($tObj in $activeTunObjs) {
         $ifPat = '(?i)(^|\|)IF=' + [regex]::Escape($tObj.Id) + '(\||$)'
         if (($rawMainTun -notmatch $ifPat) -and ($rawAltTun -notmatch $ifPat)) {
             $needTunAdd = $true
-            break
+        }
+        if (-not $needBlkPhysTun -and $physIpsForTunBlock.Count -gt 0 -and ($rawBlkPhysTun -notmatch $ifPat)) {
+            $needBlkPhysTun = $true
+        }
+    }
+    if (-not $needBlkPhysTun -and $activeTunObjs.Count -gt 0) {
+        foreach ($pip in $physIpsForTunBlock) {
+            $laPat = '(?:^|\|)LA4=' + [regex]::Escape($pip) + '(?:/32)?(?:/255\.255\.255\.255)?(?:\||$)'
+            if ($rawBlkPhysTun -notmatch $laPat) {
+                $needBlkPhysTun = $true
+                break
+            }
         }
     }
 
-    if ($needMainScope -or $needAltScope -or $needTunAdd) {
+    if ($needMainScope -or $needAltScope -or $needTunAdd -or $needBlkPhysTun) {
         $tunLocalAddrs = Get-TunAllowedLocalAddressesFast
         $mainTunRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
         $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
@@ -1669,7 +1697,8 @@ function Ensure-Guard {
             } catch { }
         }
 
-        foreach ($activeTun in (Get-ActiveTunNamesFast)) {
+        $activeTunNamesNow = @(Get-ActiveTunNamesFast)
+        foreach ($activeTun in $activeTunNamesNow) {
             if (Test-FirewallRuleHasTun $mainTunRule $activeTun) { continue }
             if (Test-FirewallRuleHasTun $altRule $activeTun) { continue }
             try {
@@ -1699,6 +1728,26 @@ function Ensure-Guard {
                 }
             }
             catch { }
+        }
+
+        if ($needBlkPhysTun -and $activeTunNamesNow.Count -gt 0 -and $physIpsForTunBlock.Count -gt 0) {
+            try {
+                $blkRule = Get-NetFirewallRule -Name 'AI-Guard-Block-PhysicalIP-On-TUN' -ErrorAction SilentlyContinue
+                $physIpArr = @($physIpsForTunBlock.ToArray())
+                if ($blkRule) {
+                    $curBlkIf = @(($blkRule | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                    $mergedBlkIf = @($curBlkIf + $activeTunNamesNow | Select-Object -Unique)
+                    Set-NetFirewallRule -InputObject $blkRule -InterfaceAlias $mergedBlkIf -LocalAddress $physIpArr -Enabled True -ErrorAction Stop
+                    $script:repairedItems += 'Block-PhysicalIP-On-TUN-updated'
+                }
+                else {
+                    New-NetFirewallRule -Name 'AI-Guard-Block-PhysicalIP-On-TUN' -DisplayName 'AI-Guard-Block-PhysicalIP-On-TUN' `
+                        -Direction Outbound -Action Block -InterfaceAlias $activeTunNamesNow -LocalAddress $physIpArr -Protocol Any -Profile Any -Enabled True `
+                        -Description 'Explicitly block sockets bound to physical NIC IPs from matching Xray TUN soft-permit on TUN interface.' | Out-Null
+                    $script:repairedItems += 'Block-PhysicalIP-On-TUN-created'
+                }
+                Say ('    enforced AI-Guard-Block-PhysicalIP-On-TUN (LA=' + ($physIpArr -join ',') + ' on ' + ($activeTunNamesNow -join ',') + ')')
+            } catch { }
         }
     }
 

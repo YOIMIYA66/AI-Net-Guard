@@ -654,23 +654,6 @@ if (Test-Path -LiteralPath $wfpFile) {
     else {
         Check 'Xray dynamic WFP filters absent while TUN off' { if ($pCnt -ne 0) { throw ('count=' + $pCnt) }; 'count=0' }
     }
-
-    # Report non-AI-Guard ALE_AUTH_CONNECT_V4 PERMIT filters (helps diagnose DefaultOutboundAction bypass)
-    try {
-        [xml]$wfpXml = $wf
-        $allItems = $wfpXml.SelectNodes('//filters/item')
-        $nonAiPermits = @($allItems | Where-Object {
-            $_.layerKey -eq 'FWPM_LAYER_ALE_AUTH_CONNECT_V4' -and
-            ($_.action.type -in @('FWP_ACTION_PERMIT', 'FWP_ACTION_CALLOUT_TERMINATING')) -and
-            $_.displayData.name -and
-            ($_.displayData.name -notlike 'AI-Guard-*') -and
-            ($_.displayData.name -notmatch '^(?:Query User|Teredo|Edge Traversal|WSH Default)')
-        })
-        if ($nonAiPermits.Count -gt 0) {
-            $names = @($nonAiPermits | ForEach-Object { ([string]$_.displayData.name + '(' + [string]$_.action.type + ')[' + [string]$_.subLayerKey + ']') } | Select-Object -Unique | Select-Object -First 12)
-            W ('  [INFO] Other ALE_AUTH_CONNECT_V4 PERMIT/CALLOUT filters: ' + ($names -join '; '))
-        }
-    } catch { }
 }
 if (($script:fail -eq $failBeforeWfp) -and (-not $KeepCaptures)) {
     Remove-Item -LiteralPath $wfpDir -Recurse -Force -ErrorAction SilentlyContinue

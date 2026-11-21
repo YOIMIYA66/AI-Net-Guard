@@ -532,6 +532,17 @@ New-AiRule @{
     Protocol       = 'Any'
     Description    = 'Traffic routed into TUN interface (TUN-scoped LocalAddress prevents physical-IP bypass).'
 }
+if ($physIpSet.Count -gt 0 -and $allTunAliases.Count -gt 0) {
+    New-AiRule @{
+        DisplayName    = 'AI-Guard-Block-PhysicalIP-On-TUN'
+        Direction      = 'Outbound'
+        Action         = 'Block'
+        InterfaceAlias = $allTunAliases
+        LocalAddress   = $physIpSet
+        Protocol       = 'Any'
+        Description    = 'Explicitly block sockets bound to physical NIC IPs from matching Xray TUN soft-permit on TUN interface.'
+    }
+}
 
 # 2. authorized proxy cores may talk to the proxy nodes across all configured ports
 New-AiRule @{
