@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.7.4 · 纯内核静态防线 + 零常驻 + 官方推荐纯净代理 + Fluent 纯矢量微图标）
+# AI-Net-Guard 实现方案与持续审查文档（v5.7.5 · 纯内核静态防线 + 零常驻 + WebRTC 双层盾 + Fluent 纯矢量微图标）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
-> 节点同步：**v5.7.4 默认开启多内核自动同步**（支持 IP / 域名节点、VLESS / Trojan / VMess / Hysteria2 端口跳跃等）
-> 版本状态：**v5.7.4 正式版**（`24/24` 全量回归 `PASS`，`0` 常驻进程，官方推荐纯净系统代理，Fluent 纯矢量微图标，中英双语即时切换）
+> 节点同步：**v5.7.5 默认开启多内核自动同步**（支持 IP / 域名节点、VLESS / Trojan / VMess / Hysteria2 端口跳跃等）
+> 版本状态：**v5.7.5 正式版**（新增 `BlockWebRtcLeak` 第 16 项特性：物理网卡 + 源 IP 级 STUN/TURN 阻断 + Chromium 企业策略，修复全协议 WebRTC 泄漏）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
