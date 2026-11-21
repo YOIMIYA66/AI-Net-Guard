@@ -473,17 +473,43 @@ function New-AiRule {
 }
 
 # 1. everything routed into TUN interfaces is allowed (support all cores: xray_tun, singbox_tun, mihomo_tun, Meta)
+# Scope LocalAddress to TUN subnets + active TUN IPs (never physical NIC IPs) so sockets
+# explicitly bound to a physical IP cannot match AI-Guard-Allow-TUN via 0.0.0.0/0 metric 0.
 $existingAdapterNames = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Not Present' } | Select-Object -ExpandProperty Name)
 $tunCandidates = @($TunName, 'xray_tun', 'singbox_tun', 'mihomo_tun', 'Meta', 'Mihomo', 'wintun') | Select-Object -Unique
 $allTunAliases = @($tunCandidates | Where-Object { $existingAdapterNames -contains $_ })
 if ($allTunAliases.Count -eq 0) { $allTunAliases = if ($TunName) { @($TunName) } else { @('singbox_tun') } }
+$physIpSet = @(Get-NetIPAddress -InterfaceAlias $physicalAll -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+    Select-Object -ExpandProperty IPAddress -Unique)
+$tunActualIps = @(Get-NetIPAddress -InterfaceAlias $allTunAliases -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -notlike 'fe80::*' -and ($physIpSet -notcontains $_.IPAddress) } |
+    ForEach-Object { ($_.IPAddress -split '%')[0] } | Select-Object -Unique)
+$tunLocalAddrs = @($tunActualIps)
+foreach ($cidr in @('172.18.0.0/16', '172.19.0.0/16', '172.20.0.0/16', '198.18.0.0/15', '100.64.0.0/10')) {
+    $overlap = $false
+    $cp = $cidr -split '/'
+    $nb = ([System.Net.IPAddress]::Parse($cp[0])).GetAddressBytes()
+    $plen = [int]$cp[1]
+    $mask = if ($plen -eq 0) { [uint32]0 } else { [uint32]::MaxValue -shl (32 - $plen) }
+    $nhost = ([uint32]$nb[0] -shl 24) -bor ([uint32]$nb[1] -shl 16) -bor ([uint32]$nb[2] -shl 8) -bor [uint32]$nb[3]
+    foreach ($pip in $physIpSet) {
+        $pb = ([System.Net.IPAddress]::Parse($pip)).GetAddressBytes()
+        $ph = ([uint32]$pb[0] -shl 24) -bor ([uint32]$pb[1] -shl 16) -bor ([uint32]$pb[2] -shl 8) -bor [uint32]$pb[3]
+        if (($ph -band $mask) -eq ($nhost -band $mask)) { $overlap = $true; break }
+    }
+    if (-not $overlap -and ($tunLocalAddrs -notcontains $cidr)) { $tunLocalAddrs += $cidr }
+}
+$tunLocalAddrs += @('fc00::/7', 'fe80::/10')
+$tunLocalAddrs = @($tunLocalAddrs | Select-Object -Unique)
 New-AiRule @{
     DisplayName    = 'AI-Guard-Allow-TUN'
     Direction      = 'Outbound'
     Action         = 'Allow'
     InterfaceAlias = $allTunAliases
+    LocalAddress   = $tunLocalAddrs
     Protocol       = 'Any'
-    Description    = 'Traffic routed into TUN interface (all applications).'
+    Description    = 'Traffic routed into TUN interface (TUN-scoped LocalAddress prevents physical-IP bypass).'
 }
 
 # 2. authorized proxy cores may talk to the proxy nodes across all configured ports

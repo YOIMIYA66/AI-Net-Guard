@@ -325,7 +325,8 @@ v5.7.3 针对原生桌面 GUI 客户端进行了全链路深度美化与人机�
    - 在 Windows TUN 模式下，无论使用 `sing-box`（如 Hysteria2 节点）还是 `Xray`（如 VLESS 节点），物理网卡默认路由仍与虚拟 TUN 网卡并存。
    - 当浏览器 WebRTC ICE 显式将 UDP Socket 绑定至物理网卡本地 IP（如 `192.168.1.165`）向公网 STUN 服务器（如 `74.125.250.129:19302`）发包时，即使 `Xray` 开启了 `autoSystemWfpBlockLeak=["dns","misconfigtun"]`，该机制仅覆盖 53 端口及 `0.0.0.0` 未绑定流，仍无法拦截绑定物理网卡 IP 的 STUN 出站包，导致 STUN 响应直接暴露真实运营商公网 IP。
 2. **双层防御实现**：
-   - **内核/防火墙层 (`AI-Guard-Block-WebRTC-UDP/TCP` & `AI-Guard-Block-WebRTC-LocalIP-UDP/TCP`)**：不仅按物理网卡接口别名绑定阻断规则（排除 `xray_tun`、`singbox_tun`、`mihomo_tun`、`Meta`、`Mihomo`、Wintun 与 Loopback），还同步按物理网卡当前 IPv4 地址（`LocalAddress`）创建显式出站 `Block` 规则——从而即使在 TUN `0.0.0.0/0` 路由诱导 WFP `ALE_AUTH_CONNECT_V4` 将绑死物理 IP 的 Socket 误判为走 `xray_tun` 接口时，仍能通过源 IP 显式阻断 STUN/TURN 常见端口（`3478, 3479, 5349, 5350, 19302-19309`）出站；走 TUN 的代理流量不受影响。
+   - **内核/防火墙层 (`AI-Guard-Block-WebRTC-UDP/TCP` & `AI-Guard-Block-WebRTC-LocalIP-UDP/TCP` & `AI-Guard-Allow-TUN` 源 IP 隔离)**：
+     - 除物理网卡别名与物理源 IP 的 STUN/TURN 显式阻断规则（`3478, 3479, 5349, 5350, 19302-19309`）外，还将 `AI-Guard-Allow-TUN` 与 `AI-Guard-Allow-TUN-Alt` 的 `LocalAddress` 收窄为实际 TUN 地址与私网 TUN 网段（排除任何物理网卡子网），从根源彻底阻断“绑定物理 IP 借道 `0.0.0.0/0` TUN 规则绕过 `DefaultOutboundAction=Block`”的任意端口直连旁路泄漏（含 `13.107.246.51:443` 探针与 TURN-over-TLS/443）。
    - **另附发现并修复验证假阴性**：`03-verify.ps1` 与 `12-regression.ps1` 原先的物理网卡绑定直连探针存在 `try { throw 'leak detected' } catch { return 'blocked' }` 的异常自吞 bug，本次一并修复为在 `finally` 之后再判定抛出。
    - **浏览器策略层**：写入 Chrome / Edge 组策略 `WebRtcIPHandlingPolicy = disable_non_proxied_udp`（及 Edge `WebRtcLocalhostIpHandling = disable_non_proxied_udp`），并在安装前捕获原始注册表值到 DNS 备份 JSON（v5.5 格式），`09-rollback.ps1` 或关闭开关时完整恢复。
 3. **全链路集成与验证**：

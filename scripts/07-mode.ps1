@@ -244,6 +244,54 @@ function Get-ActivePhysicalNicsFast {
     return ,$list
 }
 
+function Get-TunAllowedLocalAddressesFast {
+    # Scope AI-Guard-Allow-TUN(-Alt) to TUN IPs and standard TUN subnets (excluding any physical NIC subnet)
+    # so sockets explicitly bound to a physical IP cannot match IF=xray_tun at ALE_AUTH_CONNECT_V4.
+    $physIps = New-Object System.Collections.Generic.List[string]
+    $tunIps = New-Object System.Collections.Generic.List[string]
+    try {
+        foreach ($ni in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            $isTun = Test-IsTunInterface $ni
+            foreach ($ua in $ni.GetIPProperties().UnicastAddresses) {
+                $ip = $ua.Address
+                if (-not $ip) { continue }
+                $s = ($ip.IPAddressToString -split '%')[0]
+                if (-not $s -or $s -like '127.*' -or $s -eq '::1' -or $s -like '169.254.*' -or $s -like 'fe80::*') { continue }
+                if ($isTun) {
+                    if (-not $tunIps.Contains($s)) { $tunIps.Add($s) }
+                }
+                elseif ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                    if (-not $physIps.Contains($s)) { $physIps.Add($s) }
+                }
+            }
+        }
+    }
+    catch { }
+
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($ti in $tunIps) {
+        if (-not $physIps.Contains($ti) -and -not $out.Contains($ti)) { $out.Add($ti) }
+    }
+    foreach ($cidr in @('172.18.0.0/16', '172.19.0.0/16', '172.20.0.0/16', '198.18.0.0/15', '100.64.0.0/10')) {
+        $overlap = $false
+        $cp = $cidr -split '/'
+        $nb = ([System.Net.IPAddress]::Parse($cp[0])).GetAddressBytes()
+        $plen = [int]$cp[1]
+        $mask = if ($plen -eq 0) { [uint32]0 } else { [uint32]::MaxValue -shl (32 - $plen) }
+        $nhost = ([uint32]$nb[0] -shl 24) -bor ([uint32]$nb[1] -shl 16) -bor ([uint32]$nb[2] -shl 8) -bor [uint32]$nb[3]
+        foreach ($pip in $physIps) {
+            $pb = ([System.Net.IPAddress]::Parse($pip)).GetAddressBytes()
+            $ph = ([uint32]$pb[0] -shl 24) -bor ([uint32]$pb[1] -shl 16) -bor ([uint32]$pb[2] -shl 8) -bor [uint32]$pb[3]
+            if (($ph -band $mask) -eq ($nhost -band $mask)) { $overlap = $true; break }
+        }
+        if (-not $overlap -and -not $out.Contains($cidr)) { $out.Add($cidr) }
+    }
+    foreach ($v6cidr in @('fc00::/7', 'fe80::/10')) {
+        if (-not $out.Contains($v6cidr)) { $out.Add($v6cidr) }
+    }
+    return ,$out.ToArray()
+}
+
 function Get-RunningCoreProcessesFast {
     $found = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
     foreach ($pn in @('xray', 'sing-box', 'mihomo', 'mihomo-windows-amd64-v1')) {
@@ -1484,39 +1532,80 @@ function Ensure-Guard {
     Sync-NodeRuleFast -Analysis $analysis
 
     # 3d. multi-core dynamic TUN interface rule (e.g. singbox_tun / mihomo_tun / xray_tun)
-    $mainTunRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
-    $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
-
-    foreach ($activeTun in (Get-ActiveTunNamesFast)) {
-        if (Test-FirewallRuleHasTun $mainTunRule $activeTun) { continue }
-        if (Test-FirewallRuleHasTun $altRule $activeTun) { continue }
-        try {
-            if (-not $mainTunRule) {
-                New-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -DisplayName 'AI-Guard-Allow-TUN' `
-                    -Direction Outbound -Action Allow -InterfaceAlias $activeTun -Profile Any -Enabled True `
-                    -Description ('Allow outbound traffic routed into TUN (' + $activeTun + ').') | Out-Null
-                $mainTunRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
-                $script:repairedItems += ('TUN(' + $activeTun + ')')
-                Say ('    created AI-Guard-Allow-TUN for ' + $activeTun)
-                continue
-            }
-            if ($altRule) {
-                $curAliases = @(($altRule | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
-                $mergedAliases = @($curAliases + @($activeTun) | Select-Object -Unique)
-                Set-NetFirewallRule -InputObject $altRule -InterfaceAlias $mergedAliases -Enabled True -ErrorAction Stop
-                $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
-                Say ('    authorized alternate TUN interface: ' + $activeTun)
-            }
-            else {
-                New-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -DisplayName 'AI-Guard-Allow-TUN-Alt' `
-                    -Direction Outbound -Action Allow -InterfaceAlias $activeTun -Profile Any -Enabled True `
-                    -Description ('Allow outbound traffic routed into alternate TUN (' + $activeTun + ').') | Out-Null
-                $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
-                $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
-                Say ('    created AI-Guard-Allow-TUN-Alt for ' + $activeTun)
+    # Also enforce TUN-only LocalAddress scope (0-CIM fast check) so physical-IP-bound sockets cannot piggyback.
+    $rawMainTun = if ($analysis.RawByRule.ContainsKey('AI-Guard-Allow-TUN')) { [string]$analysis.RawByRule['AI-Guard-Allow-TUN'] } else { '' }
+    $rawAltTun = if ($analysis.RawByRule.ContainsKey('AI-Guard-Allow-TUN-Alt')) { [string]$analysis.RawByRule['AI-Guard-Allow-TUN-Alt'] } else { '' }
+    $activeTunObjs = New-Object System.Collections.Generic.List[object]
+    try {
+        foreach ($ni in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            if ($ni.OperationalStatus -eq 'Up' -and (Test-IsTunInterface $ni)) {
+                $activeTunObjs.Add($ni)
             }
         }
-        catch { }
+    } catch { }
+
+    $needMainScope = ($rawMainTun -and ($rawMainTun -notmatch '(^|\|)LA4='))
+    $needAltScope = ($rawAltTun -and ($rawAltTun -notmatch '(^|\|)LA4='))
+    $needTunAdd = $false
+    foreach ($tObj in $activeTunObjs) {
+        $ifPat = '(?i)(^|\|)IF=' + [regex]::Escape($tObj.Id) + '(\||$)'
+        if (($rawMainTun -notmatch $ifPat) -and ($rawAltTun -notmatch $ifPat)) {
+            $needTunAdd = $true
+            break
+        }
+    }
+
+    if ($needMainScope -or $needAltScope -or $needTunAdd) {
+        $tunLocalAddrs = Get-TunAllowedLocalAddressesFast
+        $mainTunRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
+        $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
+
+        if ($needMainScope -and $mainTunRule -and $tunLocalAddrs.Count -gt 0) {
+            try {
+                Set-NetFirewallRule -InputObject $mainTunRule -LocalAddress $tunLocalAddrs -ErrorAction Stop
+                $script:repairedItems += 'TUN-LocalScope'
+                Say '    tightened AI-Guard-Allow-TUN LocalAddress scope (anti physical-IP bypass)'
+            } catch { }
+        }
+        if ($needAltScope -and $altRule -and $tunLocalAddrs.Count -gt 0) {
+            try {
+                Set-NetFirewallRule -InputObject $altRule -LocalAddress $tunLocalAddrs -ErrorAction Stop
+                $script:repairedItems += 'TUN-Alt-LocalScope'
+                Say '    tightened AI-Guard-Allow-TUN-Alt LocalAddress scope (anti physical-IP bypass)'
+            } catch { }
+        }
+
+        foreach ($activeTun in (Get-ActiveTunNamesFast)) {
+            if (Test-FirewallRuleHasTun $mainTunRule $activeTun) { continue }
+            if (Test-FirewallRuleHasTun $altRule $activeTun) { continue }
+            try {
+                if (-not $mainTunRule) {
+                    New-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -DisplayName 'AI-Guard-Allow-TUN' `
+                        -Direction Outbound -Action Allow -InterfaceAlias $activeTun -LocalAddress $tunLocalAddrs -Profile Any -Enabled True `
+                        -Description ('Allow outbound traffic routed into TUN (' + $activeTun + ').') | Out-Null
+                    $mainTunRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
+                    $script:repairedItems += ('TUN(' + $activeTun + ')')
+                    Say ('    created AI-Guard-Allow-TUN for ' + $activeTun)
+                    continue
+                }
+                if ($altRule) {
+                    $curAliases = @(($altRule | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                    $mergedAliases = @($curAliases + @($activeTun) | Select-Object -Unique)
+                    Set-NetFirewallRule -InputObject $altRule -InterfaceAlias $mergedAliases -LocalAddress $tunLocalAddrs -Enabled True -ErrorAction Stop
+                    $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
+                    Say ('    authorized alternate TUN interface: ' + $activeTun)
+                }
+                else {
+                    New-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -DisplayName 'AI-Guard-Allow-TUN-Alt' `
+                        -Direction Outbound -Action Allow -InterfaceAlias $activeTun -LocalAddress $tunLocalAddrs -Profile Any -Enabled True `
+                        -Description ('Allow outbound traffic routed into alternate TUN (' + $activeTun + ').') | Out-Null
+                    $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
+                    $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
+                    Say ('    created AI-Guard-Allow-TUN-Alt for ' + $activeTun)
+                }
+            }
+            catch { }
+        }
     }
 
     # 4. CN allow rule (file-stamp cache avoids parsing 6,516 lines when unchanged)
@@ -1971,6 +2060,7 @@ else {
         }
 
         if ($tunFlipped) {
+            $tunLocalAddrsLate = Get-TunAllowedLocalAddressesFast
             $mainTunRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
             $altRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
             foreach ($activeTun in (Get-ActiveTunNamesFast)) {
@@ -1980,12 +2070,12 @@ else {
                     if ($altRuleLate) {
                         $curAliasesLate = @(($altRuleLate | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
                         $mergedAliasesLate = @($curAliasesLate + @($activeTun) | Select-Object -Unique)
-                        Set-NetFirewallRule -InputObject $altRuleLate -InterfaceAlias $mergedAliasesLate -Enabled True -ErrorAction Stop
+                        Set-NetFirewallRule -InputObject $altRuleLate -InterfaceAlias $mergedAliasesLate -LocalAddress $tunLocalAddrsLate -Enabled True -ErrorAction Stop
                         $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
                     }
                     else {
                         New-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -DisplayName 'AI-Guard-Allow-TUN-Alt' `
-                            -Direction Outbound -Action Allow -InterfaceAlias $activeTun -Profile Any -Enabled True `
+                            -Direction Outbound -Action Allow -InterfaceAlias $activeTun -LocalAddress $tunLocalAddrsLate -Profile Any -Enabled True `
                             -Description ('Allow outbound traffic routed into alternate TUN (' + $activeTun + ').') | Out-Null
                         $altRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
                         $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')

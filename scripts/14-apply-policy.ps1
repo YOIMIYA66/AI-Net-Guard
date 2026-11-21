@@ -492,6 +492,44 @@ else {
 
     Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Block -Enabled True
 
+    # Ensure AI-Guard-Allow-TUN(-Alt) only allows TUN IPs/subnets (prevents physical-IP bound sockets bypassing WFP)
+    try {
+        $physIpList = @(Get-NetIPAddress -InterfaceAlias @(Get-PhysicalAdaptersAll | Select-Object -ExpandProperty Name) -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+            Select-Object -ExpandProperty IPAddress -Unique)
+        $tunAdaptersAll = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { ($knownTuns -contains $_.Name) -or $_.InterfaceDescription -match '(?i)Wintun|sing-tun|Mihomo' })
+        $tunIpList = @()
+        if ($tunAdaptersAll.Count -gt 0) {
+            $tunIpList = @(Get-NetIPAddress -InterfaceIndex @($tunAdaptersAll | Select-Object -ExpandProperty ifIndex) -ErrorAction SilentlyContinue |
+                Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.IPAddress -notlike 'fe80::*' -and ($physIpList -notcontains $_.IPAddress) } |
+                ForEach-Object { ($_.IPAddress -split '%')[0] } | Select-Object -Unique)
+        }
+        $tunScope = @($tunIpList)
+        foreach ($cidr in @('172.18.0.0/16', '172.19.0.0/16', '172.20.0.0/16', '198.18.0.0/15', '100.64.0.0/10')) {
+            $overlap = $false
+            $cp = $cidr -split '/'
+            $nb = ([System.Net.IPAddress]::Parse($cp[0])).GetAddressBytes()
+            $plen = [int]$cp[1]
+            $mask = if ($plen -eq 0) { [uint32]0 } else { [uint32]::MaxValue -shl (32 - $plen) }
+            $nhost = ([uint32]$nb[0] -shl 24) -bor ([uint32]$nb[1] -shl 16) -bor ([uint32]$nb[2] -shl 8) -bor [uint32]$nb[3]
+            foreach ($pip in $physIpList) {
+                $pb = ([System.Net.IPAddress]::Parse($pip)).GetAddressBytes()
+                $ph = ([uint32]$pb[0] -shl 24) -bor ([uint32]$pb[1] -shl 16) -bor ([uint32]$pb[2] -shl 8) -bor [uint32]$pb[3]
+                if (($ph -band $mask) -eq ($nhost -band $mask)) { $overlap = $true; break }
+            }
+            if (-not $overlap -and ($tunScope -notcontains $cidr)) { $tunScope += $cidr }
+        }
+        $tunScope += @('fc00::/7', 'fe80::/10')
+        $tunScope = @($tunScope | Select-Object -Unique)
+        foreach ($trName in @('AI-Guard-Allow-TUN', 'AI-Guard-Allow-TUN-Alt')) {
+            $trObj = Get-NetFirewallRule -Name $trName -ErrorAction SilentlyContinue
+            if ($trObj -and $tunScope.Count -gt 0) {
+                Set-NetFirewallRule -InputObject $trObj -LocalAddress $tunScope -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    catch { }
+
     # 1. Traffic Routing & Firewall Boundary toggles
     Write-Step 'applying firewall & routing boundary policy'
 
