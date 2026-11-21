@@ -41,6 +41,7 @@ param(
     [switch]$SkipLlmnrNetbios,
     [switch]$SkipSmhnr,
     [switch]$SkipNtp,
+    [switch]$SkipWebRtcPolicy,
     [switch]$UseNrpt,
     [switch]$Force
 )
@@ -172,8 +173,24 @@ if (Test-Path -LiteralPath $w32TimeKey) {
     $ntpOrig = (Get-ItemProperty -LiteralPath $w32TimeKey -ErrorAction SilentlyContinue).NtpServer
 }
 
+$chromePolicyKey = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
+$edgePolicyKey   = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+$chromeWebRtcBackup = $null
+$edgeWebRtcBackup = $null
+$edgeLocalhostBackup = $null
+if (Test-Path -LiteralPath $chromePolicyKey) {
+    $chromeWebRtcBackup = (Get-ItemProperty -LiteralPath $chromePolicyKey -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
+}
+if (Test-Path -LiteralPath $edgePolicyKey) {
+    $epProps = Get-ItemProperty -LiteralPath $edgePolicyKey -ErrorAction SilentlyContinue
+    if ($epProps) {
+        $edgeWebRtcBackup = $epProps.WebRtcIPHandlingPolicy
+        $edgeLocalhostBackup = $epProps.WebRtcLocalhostIpHandling
+    }
+}
+
 $backup = [pscustomobject]@{
-    Version                    = '5.4'
+    Version                    = '5.5'
     Created                    = (Get-Date).ToString('o')
     Dns                        = $dnsBackup
     Nrpt                       = $nrptBackup
@@ -186,6 +203,9 @@ $backup = [pscustomobject]@{
     Tcpip6DisabledComponents   = $disabledComp
     Ipv4PrefixPolicy           = $v4PrefixBackup
     NtpServer                  = $ntpOrig
+    ChromeWebRtcPolicy         = $chromeWebRtcBackup
+    EdgeWebRtcPolicy           = $edgeWebRtcBackup
+    EdgeWebRtcLocalhost        = $edgeLocalhostBackup
 }
 $backup | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $BackupFile -Encoding UTF8
 Write-Host ('    backup: ' + $BackupFile) -ForegroundColor DarkGray
@@ -331,6 +351,22 @@ if (-not $SkipNtp) {
     }
     catch {
         Write-Host ('    NTP check warning: ' + $_.Exception.Message) -ForegroundColor Yellow
+    }
+}
+
+# ------------------------------------------------------------------ 6.5 Chromium WebRTC leak shield (all proxy cores: Xray/VLESS, sing-box/hy2, Mihomo)
+if (-not $SkipWebRtcPolicy) {
+    Write-Step 'hardening Chromium WebRTC enterprise policy (disable_non_proxied_udp)'
+    try {
+        if (-not (Test-Path -LiteralPath $chromePolicyKey)) { New-Item -Path $chromePolicyKey -Force | Out-Null }
+        New-ItemProperty -Path $chromePolicyKey -Name 'WebRtcIPHandlingPolicy' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $edgePolicyKey)) { New-Item -Path $edgePolicyKey -Force | Out-Null }
+        New-ItemProperty -Path $edgePolicyKey -Name 'WebRtcIPHandlingPolicy' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $edgePolicyKey -Name 'WebRtcLocalhostIpHandling' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+        Write-Host '    Chrome & Edge WebRtcIPHandlingPolicy = disable_non_proxied_udp'
+    }
+    catch {
+        Write-Host ('    WebRTC policy warning: ' + $_.Exception.Message) -ForegroundColor Yellow
     }
 }
 

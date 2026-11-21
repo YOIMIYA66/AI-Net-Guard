@@ -27,6 +27,7 @@ namespace AiNetGuard.Gui.Models
         private bool _disableSmhnr = true;
         private bool _disableLlmnrNetbios = true;
         private bool _strictNrptDoh = false;
+        private bool _blockWebRtcLeak = true;
         private bool _disablePhysicalIpv6 = true;
         private bool _preferIpv4Prefix = true;
         private bool _zeroResidentMonitor = true;
@@ -83,6 +84,9 @@ namespace AiNetGuard.Gui.Models
             }
         }
 
+        [DataMember(Name = "BlockWebRtcLeak", Order = 24)]
+        public bool BlockWebRtcLeak { get => _blockWebRtcLeak; set => SetToggle(ref _blockWebRtcLeak, value); }
+
         [DataMember(Name = "DisablePhysicalIpv6", Order = 30)]
         public bool DisablePhysicalIpv6 { get => _disablePhysicalIpv6; set => SetToggle(ref _disablePhysicalIpv6, value); }
 
@@ -123,6 +127,7 @@ namespace AiNetGuard.Gui.Models
                 DisableSmhnr = false,
                 DisableLlmnrNetbios = false,
                 StrictNrptDoh = false,
+                BlockWebRtcLeak = false,
                 DisablePhysicalIpv6 = false,
                 PreferIpv4Prefix = false,
                 ZeroResidentMonitor = false,
@@ -150,6 +155,7 @@ namespace AiNetGuard.Gui.Models
                 DisableSmhnr = true,
                 DisableLlmnrNetbios = true,
                 StrictNrptDoh = false,
+                BlockWebRtcLeak = true,
                 DisablePhysicalIpv6 = true,
                 PreferIpv4Prefix = true,
                 ZeroResidentMonitor = true,
@@ -171,6 +177,7 @@ namespace AiNetGuard.Gui.Models
             DisableSmhnr = false;
             DisableLlmnrNetbios = false;
             StrictNrptDoh = false;
+            BlockWebRtcLeak = false;
             DisablePhysicalIpv6 = false;
             PreferIpv4Prefix = false;
             ZeroResidentMonitor = false;
@@ -194,6 +201,7 @@ namespace AiNetGuard.Gui.Models
                 DisableSmhnr = true;
                 DisableLlmnrNetbios = true;
                 StrictNrptDoh = false;
+                BlockWebRtcLeak = true;
                 DisablePhysicalIpv6 = true;
                 PreferIpv4Prefix = true;
                 ZeroResidentMonitor = true;
@@ -213,6 +221,7 @@ namespace AiNetGuard.Gui.Models
                 DisableSmhnr = true;
                 DisableLlmnrNetbios = false;
                 StrictNrptDoh = false;
+                BlockWebRtcLeak = true;
                 DisablePhysicalIpv6 = false;
                 PreferIpv4Prefix = true;
                 ZeroResidentMonitor = true;
@@ -232,6 +241,7 @@ namespace AiNetGuard.Gui.Models
                 DisableSmhnr = true;
                 DisableLlmnrNetbios = true;
                 StrictNrptDoh = false;
+                BlockWebRtcLeak = true;
                 DisablePhysicalIpv6 = true;
                 PreferIpv4Prefix = true;
                 ZeroResidentMonitor = true;
@@ -246,7 +256,7 @@ namespace AiNetGuard.Gui.Models
         public string ComputePresetKey()
         {
             if (AllowCnDirect && AllowLan && AllowNcsi && QuarantineRogueAllow &&
-                LockPhysicalDns && DisableSmhnr && DisableLlmnrNetbios && !StrictNrptDoh &&
+                LockPhysicalDns && DisableSmhnr && DisableLlmnrNetbios && !StrictNrptDoh && BlockWebRtcLeak &&
                 DisablePhysicalIpv6 && PreferIpv4Prefix && ZeroResidentMonitor &&
                 AutoNodeSync && AutoHealStaleProxy && DomesticNtp && HardenInstallAcl)
             {
@@ -254,7 +264,7 @@ namespace AiNetGuard.Gui.Models
             }
 
             if (!AllowCnDirect && AllowLan && !AllowNcsi && QuarantineRogueAllow &&
-                LockPhysicalDns && DisableSmhnr && DisableLlmnrNetbios &&
+                LockPhysicalDns && DisableSmhnr && DisableLlmnrNetbios && BlockWebRtcLeak &&
                 DisablePhysicalIpv6 && PreferIpv4Prefix && ZeroResidentMonitor &&
                 AutoNodeSync && AutoHealStaleProxy && DomesticNtp && HardenInstallAcl)
             {
@@ -262,7 +272,7 @@ namespace AiNetGuard.Gui.Models
             }
 
             if (AllowCnDirect && AllowLan && AllowNcsi && QuarantineRogueAllow &&
-                LockPhysicalDns && DisableSmhnr && !DisableLlmnrNetbios && !StrictNrptDoh &&
+                LockPhysicalDns && DisableSmhnr && !DisableLlmnrNetbios && !StrictNrptDoh && BlockWebRtcLeak &&
                 !DisablePhysicalIpv6 && PreferIpv4Prefix && ZeroResidentMonitor &&
                 AutoNodeSync && AutoHealStaleProxy && DomesticNtp && HardenInstallAcl)
             {
@@ -288,6 +298,7 @@ namespace AiNetGuard.Gui.Models
                 DisableSmhnr = DisableSmhnr,
                 DisableLlmnrNetbios = DisableLlmnrNetbios,
                 StrictNrptDoh = StrictNrptDoh,
+                BlockWebRtcLeak = BlockWebRtcLeak,
                 DisablePhysicalIpv6 = DisablePhysicalIpv6,
                 PreferIpv4Prefix = PreferIpv4Prefix,
                 ZeroResidentMonitor = ZeroResidentMonitor,
@@ -301,7 +312,7 @@ namespace AiNetGuard.Gui.Models
 
         public int CountDifferences(GuardPolicy other)
         {
-            if (other == null) return 15;
+            if (other == null) return 16;
             int diffs = 0;
             if (AllowCnDirect != other.AllowCnDirect) diffs++;
             if (AllowLan != other.AllowLan) diffs++;
@@ -311,6 +322,7 @@ namespace AiNetGuard.Gui.Models
             if (DisableSmhnr != other.DisableSmhnr) diffs++;
             if (DisableLlmnrNetbios != other.DisableLlmnrNetbios) diffs++;
             if (StrictNrptDoh != other.StrictNrptDoh) diffs++;
+            if (BlockWebRtcLeak != other.BlockWebRtcLeak) diffs++;
             if (DisablePhysicalIpv6 != other.DisablePhysicalIpv6) diffs++;
             if (PreferIpv4Prefix != other.PreferIpv4Prefix) diffs++;
             if (ZeroResidentMonitor != other.ZeroResidentMonitor) diffs++;
@@ -334,6 +346,7 @@ namespace AiNetGuard.Gui.Models
                 case "DisableSmhnr": return DisableSmhnr;
                 case "DisableLlmnrNetbios": return DisableLlmnrNetbios;
                 case "StrictNrptDoh": return StrictNrptDoh;
+                case "BlockWebRtcLeak": return BlockWebRtcLeak;
                 case "DisablePhysicalIpv6": return DisablePhysicalIpv6;
                 case "PreferIpv4Prefix": return PreferIpv4Prefix;
                 case "ZeroResidentMonitor": return ZeroResidentMonitor;
@@ -357,6 +370,7 @@ namespace AiNetGuard.Gui.Models
                 case "DisableSmhnr": DisableSmhnr = value; break;
                 case "DisableLlmnrNetbios": DisableLlmnrNetbios = value; break;
                 case "StrictNrptDoh": StrictNrptDoh = value; break;
+                case "BlockWebRtcLeak": BlockWebRtcLeak = value; break;
                 case "DisablePhysicalIpv6": DisablePhysicalIpv6 = value; break;
                 case "PreferIpv4Prefix": PreferIpv4Prefix = value; break;
                 case "ZeroResidentMonitor": ZeroResidentMonitor = value; break;
@@ -567,6 +581,19 @@ namespace AiNetGuard.Gui.Models
                 IsRecommended = false,
                 SummaryZh = "强制全系统所有域名仅通过 1.1.1.1 DoH 解析；注意：开启后一旦关闭 TUN 代理，国内网页也将无法解析域名（仅建议 24 小时常开 TUN 的用户开启）。",
                 SummaryEn = "Forces all system DNS queries exclusively through 1.1.1.1 encrypted DoH. Note: If TUN is OFF, domain resolution will fail entirely (recommended for 24/7 TUN users)."
+            },
+            new FeatureToggleItem
+            {
+                CategoryZh = "二、DNS 防污染与防泄漏护盾 (DNS & Leak-Shield Hardening)",
+                CategoryEn = "2. DNS Leak Protection & Protocol Hardening",
+                Key = "BlockWebRtcLeak",
+                TitleZh = "WebRTC STUN/TURN 防泄漏双重盾 (物理网卡封锁 + Chromium 策略)",
+                TitleEn = "WebRTC STUN/TURN Dual-Layer Leak Shield (Physical NIC Block + Chromium Policy)",
+                BadgeTextZh = "推荐开启",
+                BadgeTextEn = "Recommended",
+                IsRecommended = true,
+                SummaryZh = "在物理网卡出站方向封锁 STUN/TURN 常见端口（UDP/TCP 3478/5349/19302-19309）并锁定 Chrome/Edge WebRtcIPHandlingPolicy=disable_non_proxied_udp，同时防护 VLESS 与 Hysteria2/sing-box 下真实公网 IP 泄漏。",
+                SummaryEn = "Blocks outbound STUN/TURN ports (3478/5349/19302-19309) on physical adapters and enforces Chrome/Edge WebRtcIPHandlingPolicy=disable_non_proxied_udp, stopping real IP leaks across both VLESS and Hysteria2."
             },
 
             new FeatureToggleItem

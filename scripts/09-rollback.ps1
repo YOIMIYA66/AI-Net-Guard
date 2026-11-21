@@ -273,6 +273,47 @@ try {
 }
 catch { }
 
+# ------------------------------------------------------------------ 6.5. WebRTC browser enterprise policy cleanup
+try {
+    $cPolKey = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
+    $ePolKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+    $dnsBackupWrtc = $null
+    if ($baseline.Dns -and (Test-Path -LiteralPath $baseline.Dns)) {
+        try {
+            $rawW = [System.IO.File]::ReadAllText($baseline.Dns, [System.Text.Encoding]::UTF8)
+            $dnsBackupWrtc = $rawW | ConvertFrom-Json
+        } catch { }
+    }
+    if (Test-Path -LiteralPath $cPolKey) {
+        $origChrome = if ($dnsBackupWrtc -and $dnsBackupWrtc.PSObject.Properties.Name -contains 'ChromeWebRtcPolicy') { $dnsBackupWrtc.ChromeWebRtcPolicy } else { $null }
+        if ($null -ne $origChrome) {
+            New-ItemProperty -Path $cPolKey -Name 'WebRtcIPHandlingPolicy' -Value ([string]$origChrome) -PropertyType String -Force | Out-Null
+            Log ('restored Chrome WebRtcIPHandlingPolicy: ' + $origChrome)
+        } else {
+            Remove-ItemProperty -Path $cPolKey -Name 'WebRtcIPHandlingPolicy' -ErrorAction SilentlyContinue
+            Log 'removed Chrome WebRtcIPHandlingPolicy (restore to default)'
+        }
+    }
+    if (Test-Path -LiteralPath $ePolKey) {
+        $origEdge = if ($dnsBackupWrtc -and $dnsBackupWrtc.PSObject.Properties.Name -contains 'EdgeWebRtcPolicy') { $dnsBackupWrtc.EdgeWebRtcPolicy } else { $null }
+        $origEdgeLo = if ($dnsBackupWrtc -and $dnsBackupWrtc.PSObject.Properties.Name -contains 'EdgeWebRtcLocalhost') { $dnsBackupWrtc.EdgeWebRtcLocalhost } else { $null }
+        if ($null -ne $origEdge) {
+            New-ItemProperty -Path $ePolKey -Name 'WebRtcIPHandlingPolicy' -Value ([string]$origEdge) -PropertyType String -Force | Out-Null
+            Log ('restored Edge WebRtcIPHandlingPolicy: ' + $origEdge)
+        } else {
+            Remove-ItemProperty -Path $ePolKey -Name 'WebRtcIPHandlingPolicy' -ErrorAction SilentlyContinue
+            Log 'removed Edge WebRtcIPHandlingPolicy (restore to default)'
+        }
+        if ($null -ne $origEdgeLo) {
+            New-ItemProperty -Path $ePolKey -Name 'WebRtcLocalhostIpHandling' -Value ([string]$origEdgeLo) -PropertyType String -Force | Out-Null
+        } else {
+            Remove-ItemProperty -Path $ePolKey -Name 'WebRtcLocalhostIpHandling' -ErrorAction SilentlyContinue
+            Log 'removed Edge WebRtcLocalhostIpHandling (restore to default)'
+        }
+    }
+}
+catch { Log ('warning removing WebRTC browser policy: ' + $_.Exception.Message) }
+
 # ------------------------------------------------------------------ 7. WinINET system proxy cleanup
 try {
     $inetKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'

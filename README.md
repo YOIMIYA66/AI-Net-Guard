@@ -24,7 +24,7 @@
   <a href="#-快速上手-quick-start-推荐-gui-桌面端">🚀 快速上手</a> •
   <a href="#-核心设计与痛点对比-why-ai-net-guard">💡 核心痛点与对比</a> •
   <a href="#-系统全景架构与数据流-architecture--data-path">📐 全景架构图解</a> •
-  <a href="#-15-项可配置防护策略与特性矩阵-feature-matrix">🎛️ 15项防护策略</a> •
+  <a href="#-16-项可配置防护策略与特性矩阵-feature-matrix">🎛️ 16项防护策略</a> •
   <a href="#-核心特性深度解析-key-features">⚡ 核心技术特性</a> •
   <a href="#-日常维护与常用命令">🛠️ 常用运维命令</a> •
   <a href="#-工程源码与脚本索引">📚 全工程脚本索引</a>
@@ -46,7 +46,7 @@
 | :--- | :--- | :--- | :--- |
 | **代理崩溃 / TUN 断开** | 瞬间降级物理网卡直连，**真实 IP 暴露，API 访问漏球** | **0 ms 硬件级内核硬阻断**，仅保留国内与局域网直通 | Windows 内核 WFP ALE 丢弃一切非白名单物理出站 |
 | **DNS 泄漏与抢答** | 物理网卡与 TUN 并发广播明文 DNS，运营商完全可见 | **物理明文 DNS 绝对归零**，锁定 `223.5.5.5` + 禁用 SMHNR | 禁用并行 DNS、禁用 LLMNR/NetBIOS、DoH 加密解析 |
-| **IPv6 绕过漏洞** | 运营商 IPv6 绕过 IPv4 TUN 直出公网，真实 IPv6 暴露 | **物理网卡 IPv6 绑定彻底切断**，IPv4 前缀优先级提权 | 禁用物理 `ms_tcpip6`，前缀权重提升（50 > 40） |
+| **IPv6 与 WebRTC 防泄漏** | 运营商 IPv6 / WebRTC STUN 绕过 TUN 暴露真实 IP | **物理 IPv6 切断 + STUN/TURN 物理网卡封锁** | 禁用物理 `ms_tcpip6`，拦截物理 STUN + 锁定 Chromium 策略 |
 | **后台资源开销** | 依赖第三方常驻 Guard 守护进程，占用 50~150 MB 内存 | **0 个常驻后台进程 · 0 MB 待机内存 · 0% 待机 CPU** | 纳秒级 Windows Event Log 原生事件驱动，跑完即退 |
 | **双核心架构延迟** | TUN 与后端内核产生内部回环中继，增加 CPU 与延时 | **端到端物理直出**，消除二跳回环中继 | 动态注入物理网卡高优先级 `/32` 主机路由（LPM 机制） |
 | **防冒名伪装穿透** | 任何软件均可添加 `interfacetype=any` 规则绕过防御 | **结构体白名单强校验**，无约束规则立即隔离 | 注册表单遍深度审计，识别并隔离伪装 Allow 规则 |
@@ -232,7 +232,7 @@ flowchart TD
 2. **启动配置中心**：双击运行 `AI-Net-Guard.exe`（触发一次 UAC 管理员授权）。
 3. **环境全自动探测**：GUI 会自动识别系统的 `v2rayN` 安装路径、正在运行的代理内核（`Xray` / `sing-box` / `Mihomo`）以及当前活跃的 TUN 虚拟网卡。
 4. **一键部署 / 应用配置**：
-   - 默认采用 **🌟 推荐日常防御预设**（14 项推荐防护全部开启，严格全局 NRPT DoH 保持关闭）。
+   - 默认采用 **🌟 推荐日常防御预设**（15 项推荐防护全部开启，严格全局 NRPT DoH 保持关闭）。
    - 点击 **「🚀 一键部署 / 应用当前配置」**，程序将在 1~2 秒内自动捕获网络基线、安全部署规则引擎至 `C:\AI-Net-Guard`、注入高韧性 ACL 并激活系统事件监控。
 5. **GUI 便捷维运与现代化体验 (v5.7.3+)**：
    - **纯矢量 Fluent / Lucide 渲染体系**：全面淘汰低保真 Emoji，升级为 13 组原生 XAML `StreamGeometry` 矢量 Path 图标（盾牌、网络拓扑网关、全球地球仪、锁、校验圈、报警三角、闪电、求生圈、文件夹、刷新、垃圾桶、中英双语），任意 DPI 缩放像素级清晰锐利。
@@ -293,9 +293,9 @@ flowchart TD
 
 ---
 
-## 🎛️ 15 项可配置防护策略与特性矩阵 (Feature Matrix)
+## 🎛️ 16 项可配置防护策略与特性矩阵 (Feature Matrix)
 
-在 GUI 配置中心中，所有 15 项功能均支持可视化勾选，并在点击「一键部署」时幂等生效；用户亦可随时通过 `backup\guard-policy.json` 进行自动化编排：
+在 GUI 配置中心中，所有 16 项功能均支持可视化勾选，并在点击「一键部署」时幂等生效；用户亦可随时通过 `backup\guard-policy.json` 进行自动化编排：
 
 | 策略分类 | 策略键值 (Key) | 功能名称 | 默认状态 | 业务与安全白话释义 | 关闭时的行为 |
 | :--- | :--- | :--- | :---: | :--- | :--- |
@@ -307,6 +307,7 @@ flowchart TD
 | **2. DNS 泄漏防护** | `DisableSmhnr` | **禁用智能多宿主并行 DNS (`SMHNR`)** | 🟢 **ON** `[推荐]` | 阻止 Win11 在开启代理时向物理网卡和虚拟网卡并发抢答 DNS，物理明文查询归零。 | 恢复 Windows 默认并行 DNS 抢答行为。 |
 | **2. DNS 泄漏防护** | `DisableLlmnrNetbios` | **禁用局域网多播/广播解析 (LLMNR)** | 🟢 **ON** `[推荐]` | 防止域名查询泄漏到局域网，免疫局域网同名欺骗劫持攻击。 | 恢复默认局域网多播与 NetBIOS 设置。 |
 | **2. DNS 泄漏防护** | `StrictNrptDoh` | **严格全局 DoH 强制加密 (`NRPT`)** | ⚪ **OFF** `[高级]` | 强制全系统所有域名仅走 `1.1.1.1` DoH；**注意：关代理后国内也将无法解析域名**。 | 移除 `AI-Guard*` NRPT 策略规则，恢复标准解析。 |
+| **2. DNS 泄漏防护** | `BlockWebRtcLeak` | **WebRTC STUN/TURN 防泄漏双重盾** | 🟢 **ON** `[推荐]` | 在物理网卡出站封锁 STUN/TURN 端口（3478/5349/19302-19309）并锁定 Chrome/Edge `disable_non_proxied_udp`，全面防护 VLESS 与 Hysteria2。 | 禁用 `AI-Guard-Block-WebRTC-*` 规则并从备份恢复浏览器策略。 |
 | **3. IPv6 与双栈** | `DisablePhysicalIpv6` | **禁用物理网卡 IPv6 协议栈绑定** | 🟢 **ON** `[推荐]` | 彻底堵死应用通过运营商原生 IPv6 绕过 IPv4 TUN 直连海外的漏洞（含热插拔网卡）。 | 恢复物理网卡 `ms_tcpip6` 绑定。 |
 | **3. IPv6 与双栈** | `PreferIpv4Prefix` | **提升 IPv4 寻址优先级高于 IPv6** | 🟢 **ON** `[推荐]` | 优先请求 IPv4，彻底消除 Python / Git / CLI 每次请求前等待 IPv6 超时的 2~5 秒卡顿。 | 恢复原始 `DisabledComponents` 注册表值与路由前缀表权重。 |
 | **4. 自愈与安全基座** | `ZeroResidentMonitor` | **零内存事件触发与睡眠唤醒自愈** | 🟢 **ON** `[推荐]` | 平时 **0 进程、0 MB 内存**；仅在网络切换、开机、睡眠唤醒时毫秒级自检并清空污染 DNS。 | 注销计划任务，仅保留静态防火墙规则。 |
@@ -393,7 +394,7 @@ cd C:\AI-Net-Guard
 | [`scripts/11-geo-cn.ps1`](./scripts/11-geo-cn.ps1) | 零内存分配 Protobuf 流式解析器：解析 `geoip.dat`，完成 CIDR 归一化聚合为包含 6,516 行的 [`cn-ipv4.txt`](./cn-ipv4.txt) |
 | [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) | **24 项自动化回归测试套件**：覆盖静态规则、ACL 权限、0 MB 内存特征、TUN 启闭熔断、WFP 注入、10 秒真实 `pktmon` DNS 抓包 |
 | [`scripts/13-harden-acl.ps1`](./scripts/13-harden-acl.ps1) | 生产目录 ACL 权限防篡改锁定（支持 `-Undo` 权限还原与 `-SyncWorkspace` 源码目录热同步） |
-| [`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) | **声明式策略编排器**：读取 `backup\guard-policy.json` 实现 15 项特性的增量幂等应用 |
+| [`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) | **声明式策略编排器**：读取 `backup\guard-policy.json` 实现 16 项特性的增量幂等应用 |
 | [`Emergency-Rescue.bat`](./Emergency-Rescue.bat) | 纯原生、无依赖、自带提权的离线一键网络应急脱困批处理脚本 |
 | [`scripts/align-xray-egress.bat`](./scripts/align-xray-egress.bat) | 自动注入物理网卡高优先级 `/32` 主机路由，消除双核架构下的二跳中继开销 |
 | [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | 一键关闭 Windows 11 遥测服务与遥测组策略，杜绝海外遥测 IP 拦截产生的 `connectex 10013` 报错 |

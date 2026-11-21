@@ -78,6 +78,7 @@ function Get-GuardPolicy {
         AutoHealStaleProxy   = (-not [bool]$SkipStaleProxyHeal)
         DomesticNtp          = $true
         HardenInstallAcl     = $true
+        BlockWebRtcLeak      = $true
     }
     if (Test-Path -LiteralPath $policyFile) {
         try {
@@ -85,7 +86,7 @@ function Get-GuardPolicy {
             if ($raw) {
                 foreach ($k in @('AllowCnDirect', 'AllowLan', 'AllowNcsi', 'QuarantineRogueAllow', 'LockPhysicalDns',
                         'DisableSmhnr', 'DisableLlmnrNetbios', 'StrictNrptDoh', 'DisablePhysicalIpv6', 'PreferIpv4Prefix',
-                        'ZeroResidentMonitor', 'AutoNodeSync', 'AutoHealStaleProxy', 'DomesticNtp', 'HardenInstallAcl')) {
+                        'ZeroResidentMonitor', 'AutoNodeSync', 'AutoHealStaleProxy', 'DomesticNtp', 'HardenInstallAcl', 'BlockWebRtcLeak')) {
                     if ($raw.PSObject.Properties.Name -contains $k -and $null -ne $raw.$k) {
                         $pol[$k] = [bool]$raw.$k
                     }
@@ -388,7 +389,7 @@ function Get-FirewallRuleAnalysis {
                                    ($v -notmatch '(^|\|)RA[46]=') -and ($v -notmatch '(^|\|)IF=') -and ($v -notmatch '(^|\|)App='))
             $ruleIdent = if ($dn) { $dn } else { $pr.Name }
             $isAuthorizedAiGuard = $isAiGuard -and (-not $isDangerousBlanket) -and
-                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*)$')
+                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$')
 
             if ($isAuthorizedAiGuard) {
                 if (-not $rawByRule.ContainsKey($pr.Name) -or $active) { $rawByRule[$pr.Name] = $v }
@@ -866,6 +867,49 @@ function Set-SmhnrHardening {
     catch { }
 }
 
+function Set-WebRtcPolicy {
+    param([bool]$Enable = $true)
+    $changed = $false
+    try {
+        $cPol = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
+        $ePol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+        if ($Enable) {
+            $curC = (Get-ItemProperty -LiteralPath $cPol -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
+            if ($curC -ne 'disable_non_proxied_udp') {
+                if (-not (Test-Path -LiteralPath $cPol)) { New-Item -Path $cPol -Force | Out-Null }
+                New-ItemProperty -Path $cPol -Name 'WebRtcIPHandlingPolicy' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+                $changed = $true
+            }
+            $ep = Get-ItemProperty -LiteralPath $ePol -ErrorAction SilentlyContinue
+            if (-not $ep -or $ep.WebRtcIPHandlingPolicy -ne 'disable_non_proxied_udp' -or $ep.WebRtcLocalhostIpHandling -ne 'disable_non_proxied_udp') {
+                if (-not (Test-Path -LiteralPath $ePol)) { New-Item -Path $ePol -Force | Out-Null }
+                New-ItemProperty -Path $ePol -Name 'WebRtcIPHandlingPolicy' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+                New-ItemProperty -Path $ePol -Name 'WebRtcLocalhostIpHandling' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+                $changed = $true
+            }
+        }
+        else {
+            if (Test-Path -LiteralPath $cPol) {
+                $curC = (Get-ItemProperty -LiteralPath $cPol -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
+                if ($null -ne $curC) {
+                    Remove-ItemProperty -Path $cPol -Name 'WebRtcIPHandlingPolicy' -ErrorAction SilentlyContinue
+                    $changed = $true
+                }
+            }
+            if (Test-Path -LiteralPath $ePol) {
+                $ep = Get-ItemProperty -LiteralPath $ePol -ErrorAction SilentlyContinue
+                if ($ep -and ($null -ne $ep.WebRtcIPHandlingPolicy -or $null -ne $ep.WebRtcLocalhostIpHandling)) {
+                    Remove-ItemProperty -Path $ePol -Name 'WebRtcIPHandlingPolicy' -ErrorAction SilentlyContinue
+                    Remove-ItemProperty -Path $ePol -Name 'WebRtcLocalhostIpHandling' -ErrorAction SilentlyContinue
+                    $changed = $true
+                }
+            }
+        }
+    }
+    catch { }
+    return $changed
+}
+
 function Get-CnPrefixes {
     if (-not (Test-Path -LiteralPath $cnList)) { return @() }
     $rawLines = [System.IO.File]::ReadAllLines($cnList)
@@ -1160,6 +1204,15 @@ function Show-Status {
     $llmnrOff = ($dnsPol -and $dnsPol.EnableMulticast -eq 0)
     $smhnrOff = ($dnsPol -and $dnsPol.DisableSmartNameResolution -eq 1)
     Write-Host ('  DNS leak-shield   : LLMNR={0}  SMHNR={1}' -f $(if ($llmnrOff) { 'off' } else { 'ON' }), $(if ($smhnrOff) { 'off' } else { 'pending (auto-applies on next event or .\07-mode.ps1)' }))
+    $wrtcUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue
+    $wrtcTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -ErrorAction SilentlyContinue
+    $cPol = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Google\Chrome' -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
+    $ePol = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
+    $wrtcFwOk = ($wrtcUdp -and $wrtcUdp.Enabled -eq 'True' -and $wrtcTcp -and $wrtcTcp.Enabled -eq 'True')
+    $wrtcPolOk = ($cPol -eq 'disable_non_proxied_udp' -and $ePol -eq 'disable_non_proxied_udp')
+    $wrtcStatus = if ($wrtcFwOk -and $wrtcPolOk) { 'ACTIVE (FW+browser policy)' } elseif ($wrtcFwOk) { 'FW only (browser policy missing)' } elseif ($wrtcPolOk) { 'browser policy only (FW rules missing)' } else { 'MISSING - run 02-killswitch.ps1' }
+    $wrtcColor = if ($wrtcFwOk -and $wrtcPolOk) { 'Green' } elseif ($wrtcFwOk -or $wrtcPolOk) { 'Yellow' } else { 'Red' }
+    Write-Host ('  WebRTC leak-shield: {0}' -f $wrtcStatus) -ForegroundColor $wrtcColor
 
     $v4pol = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::ffff:0:0/96' } | Select-Object -First 1
     $v6pol = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::/0' } | Select-Object -First 1
@@ -1657,6 +1710,190 @@ function Ensure-Guard {
 
     # 8. cross-session dead loopback proxy auto-heal (<1 ms registry check when idle/healthy)
     Heal-StaleLoopbackProxyFast
+
+    # 9. WebRTC STUN/TURN leak shield (dual-layer: WFP firewall + Chromium enterprise policy)
+    try {
+        $wrtcEnabled = if ($guardPolicy.PSObject.Properties.Name -contains 'BlockWebRtcLeak') { [bool]$guardPolicy.BlockWebRtcLeak } else { $true }
+        $webrtcPorts = @('3478', '3479', '5349', '5350', '19302', '19303', '19304', '19305', '19306', '19307', '19308', '19309')
+        $udpActive = $ruleStates.ContainsKey('AI-Guard-Block-WebRTC-UDP') -and $ruleStates['AI-Guard-Block-WebRTC-UDP']
+        $tcpActive = $ruleStates.ContainsKey('AI-Guard-Block-WebRTC-TCP') -and $ruleStates['AI-Guard-Block-WebRTC-TCP']
+        $localUdpActive = $ruleStates.ContainsKey('AI-Guard-Block-WebRTC-LocalIP-UDP') -and $ruleStates['AI-Guard-Block-WebRTC-LocalIP-UDP']
+        $localTcpActive = $ruleStates.ContainsKey('AI-Guard-Block-WebRTC-LocalIP-TCP') -and $ruleStates['AI-Guard-Block-WebRTC-LocalIP-TCP']
+
+        if ($wrtcEnabled) {
+            $physFast = @(Get-ActivePhysicalNicsFast)
+            $physFastIps = @()
+            foreach ($pni in $physFast) {
+                try {
+                    foreach ($ua in $pni.GetIPProperties().UnicastAddresses) {
+                        if ($ua.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                            $ipStr = $ua.Address.IPAddressToString
+                            if ($ipStr -and $ipStr -notlike '127.*' -and $ipStr -notlike '169.254.*') {
+                                $physFastIps += $ipStr
+                            }
+                        }
+                    }
+                } catch { }
+            }
+            $physFastIps = @($physFastIps | Select-Object -Unique)
+
+            $rawUdp = if ($analysis.RawByRule.ContainsKey('AI-Guard-Block-WebRTC-UDP')) { [string]$analysis.RawByRule['AI-Guard-Block-WebRTC-UDP'] } else { '' }
+            $rawTcp = if ($analysis.RawByRule.ContainsKey('AI-Guard-Block-WebRTC-TCP')) { [string]$analysis.RawByRule['AI-Guard-Block-WebRTC-TCP'] } else { '' }
+            $rawLocalUdp = if ($analysis.RawByRule.ContainsKey('AI-Guard-Block-WebRTC-LocalIP-UDP')) { [string]$analysis.RawByRule['AI-Guard-Block-WebRTC-LocalIP-UDP'] } else { '' }
+            $rawLocalTcp = if ($analysis.RawByRule.ContainsKey('AI-Guard-Block-WebRTC-LocalIP-TCP')) { [string]$analysis.RawByRule['AI-Guard-Block-WebRTC-LocalIP-TCP'] } else { '' }
+
+            $needsFwSync = (-not $udpActive) -or (-not $tcpActive) -or (-not $rawUdp) -or (-not $rawTcp)
+            if (-not $needsFwSync) {
+                foreach ($pni in $physFast) {
+                    $ifPat = '(?i)(^|\|)IF=' + [regex]::Escape($pni.Id) + '(\||$)'
+                    if (($rawUdp -notmatch $ifPat) -or ($rawTcp -notmatch $ifPat)) {
+                        $needsFwSync = $true
+                        break
+                    }
+                }
+            }
+            if (-not $needsFwSync -and $physFastIps.Count -gt 0) {
+                if ((-not $localUdpActive) -or (-not $localTcpActive) -or (-not $rawLocalUdp) -or (-not $rawLocalTcp)) {
+                    $needsFwSync = $true
+                }
+                else {
+                    foreach ($pip in $physFastIps) {
+                        $laPat = '(?:^|\|)LA4=' + [regex]::Escape($pip) + '(?:/32)?(?:/255\.255\.255\.255)?(?:\||$)'
+                        if (($rawLocalUdp -notmatch $laPat) -or ($rawLocalTcp -notmatch $laPat)) {
+                            $needsFwSync = $true
+                            break
+                        }
+                    }
+                }
+            }
+
+            if ($needsFwSync) {
+                $activeTunsNow = @(Get-ActiveTunNamesFast)
+                $physNames = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Status -ne 'Not Present' -and
+                    $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|Loopback' -and
+                    $_.Name -notmatch '(?i)loopback' -and
+                    ($knownTunNames -notcontains $_.Name) -and
+                    ($activeTunsNow -notcontains $_.Name)
+                } | Select-Object -ExpandProperty Name)
+                if ($physNames.Count -eq 0 -and $physFast.Count -gt 0) {
+                    $physNames = @($physFast | Select-Object -ExpandProperty Name)
+                }
+
+                if ($physNames.Count -gt 0) {
+                    $ruleUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue
+                    if (-not $ruleUdp) {
+                        New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -DisplayName 'AI-Guard-Block-WebRTC-UDP' `
+                            -Direction Outbound -Action Block -Protocol UDP -RemotePort $webrtcPorts `
+                            -InterfaceAlias $physNames -Profile Any -Enabled True `
+                            -Description 'Block WebRTC STUN/TURN UDP on physical NICs (anti-leak for all proxy cores).' | Out-Null
+                        $script:repairedItems += 'WebRTC-UDP-created'
+                        Say '    created AI-Guard-Block-WebRTC-UDP (physical NICs)'
+                    }
+                    else {
+                        $curIf = @(($ruleUdp | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                        $missing = @($physNames | Where-Object { $curIf -notcontains $_ })
+                        if ($missing.Count -gt 0 -or $ruleUdp.Enabled -ne 'True') {
+                            $merged = @($curIf + $missing | Where-Object { $_ -and ($knownTunNames -notcontains $_) -and ($activeTunsNow -notcontains $_) } | Select-Object -Unique)
+                            Set-NetFirewallRule -InputObject $ruleUdp -InterfaceAlias $merged -Enabled True -ErrorAction SilentlyContinue
+                            $script:repairedItems += 'WebRTC-UDP-updated'
+                            Say ('    updated AI-Guard-Block-WebRTC-UDP (physical NICs: ' + ($merged -join ',') + ')')
+                        }
+                    }
+
+                    $ruleTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -ErrorAction SilentlyContinue
+                    if (-not $ruleTcp) {
+                        New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -DisplayName 'AI-Guard-Block-WebRTC-TCP' `
+                            -Direction Outbound -Action Block -Protocol TCP -RemotePort $webrtcPorts `
+                            -InterfaceAlias $physNames -Profile Any -Enabled True `
+                            -Description 'Block WebRTC STUN/TURN TCP on physical NICs (anti-leak for all proxy cores).' | Out-Null
+                        $script:repairedItems += 'WebRTC-TCP-created'
+                        Say '    created AI-Guard-Block-WebRTC-TCP (physical NICs)'
+                    }
+                    else {
+                        $curIf = @(($ruleTcp | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                        $missing = @($physNames | Where-Object { $curIf -notcontains $_ })
+                        if ($missing.Count -gt 0 -or $ruleTcp.Enabled -ne 'True') {
+                            $merged = @($curIf + $missing | Where-Object { $_ -and ($knownTunNames -notcontains $_) -and ($activeTunsNow -notcontains $_) } | Select-Object -Unique)
+                            Set-NetFirewallRule -InputObject $ruleTcp -InterfaceAlias $merged -Enabled True -ErrorAction SilentlyContinue
+                            $script:repairedItems += 'WebRTC-TCP-updated'
+                            Say ('    updated AI-Guard-Block-WebRTC-TCP (physical NICs: ' + ($merged -join ',') + ')')
+                        }
+                    }
+                }
+
+                if ($physFastIps.Count -gt 0) {
+                    $ruleLocalUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -ErrorAction SilentlyContinue
+                    if (-not $ruleLocalUdp) {
+                        New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -DisplayName 'AI-Guard-Block-WebRTC-LocalIP-UDP' `
+                            -Direction Outbound -Action Block -Protocol UDP -LocalAddress $physFastIps -RemotePort $webrtcPorts `
+                            -Profile Any -Enabled True `
+                            -Description 'Block WebRTC STUN/TURN UDP bound to physical NIC IPs even when TUN metric 0 captures ALE routing.' | Out-Null
+                        $script:repairedItems += 'WebRTC-LocalIP-UDP-created'
+                        Say ('    created AI-Guard-Block-WebRTC-LocalIP-UDP (' + ($physFastIps -join ',') + ')')
+                    }
+                    else {
+                        $curLa = @(($ruleLocalUdp | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).LocalAddress | Where-Object { $_ -and $_ -ne 'Any' })
+                        $missingIp = @($physFastIps | Where-Object { $curLa -notcontains $_ })
+                        if ($missingIp.Count -gt 0 -or $ruleLocalUdp.Enabled -ne 'True') {
+                            Set-NetFirewallRule -InputObject $ruleLocalUdp -LocalAddress $physFastIps -Enabled True -ErrorAction SilentlyContinue
+                            $script:repairedItems += 'WebRTC-LocalIP-UDP-updated'
+                            Say ('    updated AI-Guard-Block-WebRTC-LocalIP-UDP (' + ($physFastIps -join ',') + ')')
+                        }
+                    }
+
+                    $ruleLocalTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -ErrorAction SilentlyContinue
+                    if (-not $ruleLocalTcp) {
+                        New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -DisplayName 'AI-Guard-Block-WebRTC-LocalIP-TCP' `
+                            -Direction Outbound -Action Block -Protocol TCP -LocalAddress $physFastIps -RemotePort $webrtcPorts `
+                            -Profile Any -Enabled True `
+                            -Description 'Block WebRTC STUN/TURN TCP bound to physical NIC IPs even when TUN metric 0 captures ALE routing.' | Out-Null
+                        $script:repairedItems += 'WebRTC-LocalIP-TCP-created'
+                        Say ('    created AI-Guard-Block-WebRTC-LocalIP-TCP (' + ($physFastIps -join ',') + ')')
+                    }
+                    else {
+                        $curLa = @(($ruleLocalTcp | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).LocalAddress | Where-Object { $_ -and $_ -ne 'Any' })
+                        $missingIp = @($physFastIps | Where-Object { $curLa -notcontains $_ })
+                        if ($missingIp.Count -gt 0 -or $ruleLocalTcp.Enabled -ne 'True') {
+                            Set-NetFirewallRule -InputObject $ruleLocalTcp -LocalAddress $physFastIps -Enabled True -ErrorAction SilentlyContinue
+                            $script:repairedItems += 'WebRTC-LocalIP-TCP-updated'
+                            Say ('    updated AI-Guard-Block-WebRTC-LocalIP-TCP (' + ($physFastIps -join ',') + ')')
+                        }
+                    }
+                }
+            }
+
+            if (Set-WebRtcPolicy -Enable $true) {
+                $script:repairedItems += 'WebRTC-policy'
+                Say '    repaired: Chromium WebRtcIPHandlingPolicy = disable_non_proxied_udp'
+            }
+        }
+        else {
+            if ($udpActive) {
+                Disable-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue
+                $script:repairedItems += 'WebRTC-UDP-disabled(policy)'
+                Say '    enforced policy: WebRTC UDP block disabled (BlockWebRtcLeak=false)'
+            }
+            if ($tcpActive) {
+                Disable-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -ErrorAction SilentlyContinue
+                $script:repairedItems += 'WebRTC-TCP-disabled(policy)'
+                Say '    enforced policy: WebRTC TCP block disabled (BlockWebRtcLeak=false)'
+            }
+            if ($localUdpActive) {
+                Disable-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -ErrorAction SilentlyContinue
+                $script:repairedItems += 'WebRTC-LocalIP-UDP-disabled(policy)'
+            }
+            if ($localTcpActive) {
+                Disable-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -ErrorAction SilentlyContinue
+                $script:repairedItems += 'WebRTC-LocalIP-TCP-disabled(policy)'
+            }
+            if (Set-WebRtcPolicy -Enable $false) {
+                $script:repairedItems += 'WebRTC-policy-removed(policy)'
+                Say '    enforced policy: Chromium WebRtcIPHandlingPolicy removed (BlockWebRtcLeak=false)'
+            }
+        }
+    }
+    catch { }
 
     return $sig
 }

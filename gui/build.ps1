@@ -10,7 +10,7 @@
     4. Compiles gui\AI-Net-Guard.Gui.csproj (net48 native Windows WPF, zero external DLLs)
        into dist\AI-Net-Guard.exe and writes dist\AI-Net-Guard.exe.sha256.
     5. Optional -RunSmokeTest builds an isolated asInvoker test binary, renders the
-       live WPF UI, exercises all 15 toggles & presets, and verifies payload extraction.
+       live WPF UI, exercises all 16 toggles & presets, and verifies payload extraction.
 #>
 
 [CmdletBinding()]

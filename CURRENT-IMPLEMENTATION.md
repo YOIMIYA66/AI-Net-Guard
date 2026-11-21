@@ -317,3 +317,18 @@ v5.7.3 针对原生桌面 GUI 客户端进行了全链路深度美化与人机�
 2. **新的判定规则**：列表中至少有一个已知可用的国内服务器（`ntsc.ac.cn` / `aliyun` / `tencent` / `203.107.6.88`），并且不能包含 `www.time.ac.cn`。仍带有旧列表的安装会被自动迁移。`07-mode.ps1`、`14-apply-policy.ps1`、`01-dns-hardening.ps1` 与 GUI 状态探测使用同一条规则。
 3. **立即同步**：修改 NTP 列表后执行 `w32tm /resync /nowait`。
 4. **新增验证项**：`03-verify.ps1` 新增「system clock offset vs domestic NTP」，实测本机与国内 NTP 的时间差，超过 60 秒判为失败。
+
+---
+## 13. v5.7.5 修复版本：WebRTC STUN/TURN 物理网卡旁路泄漏双层防护 (`BlockWebRtcLeak`)
+
+1. **根因实测**：
+   - 在 Windows TUN 模式下，无论使用 `sing-box`（如 Hysteria2 节点）还是 `Xray`（如 VLESS 节点），物理网卡默认路由仍与虚拟 TUN 网卡并存。
+   - 当浏览器 WebRTC ICE 显式将 UDP Socket 绑定至物理网卡本地 IP（如 `192.168.1.165`）向公网 STUN 服务器（如 `74.125.250.129:19302`）发包时，即使 `Xray` 开启了 `autoSystemWfpBlockLeak=["dns","misconfigtun"]`，该机制仅覆盖 53 端口及 `0.0.0.0` 未绑定流，仍无法拦截绑定物理网卡 IP 的 STUN 出站包，导致 STUN 响应直接暴露真实运营商公网 IP。
+2. **双层防御实现**：
+   - **内核/防火墙层 (`AI-Guard-Block-WebRTC-UDP/TCP` & `AI-Guard-Block-WebRTC-LocalIP-UDP/TCP`)**：不仅按物理网卡接口别名绑定阻断规则（排除 `xray_tun`、`singbox_tun`、`mihomo_tun`、`Meta`、`Mihomo`、Wintun 与 Loopback），还同步按物理网卡当前 IPv4 地址（`LocalAddress`）创建显式出站 `Block` 规则——从而即使在 TUN `0.0.0.0/0` 路由诱导 WFP `ALE_AUTH_CONNECT_V4` 将绑死物理 IP 的 Socket 误判为走 `xray_tun` 接口时，仍能通过源 IP 显式阻断 STUN/TURN 常见端口（`3478, 3479, 5349, 5350, 19302-19309`）出站；走 TUN 的代理流量不受影响。
+   - **另附发现并修复验证假阴性**：`03-verify.ps1` 与 `12-regression.ps1` 原先的物理网卡绑定直连探针存在 `try { throw 'leak detected' } catch { return 'blocked' }` 的异常自吞 bug，本次一并修复为在 `finally` 之后再判定抛出。
+   - **浏览器策略层**：写入 Chrome / Edge 组策略 `WebRtcIPHandlingPolicy = disable_non_proxied_udp`（及 Edge `WebRtcLocalhostIpHandling = disable_non_proxied_udp`），并在安装前捕获原始注册表值到 DNS 备份 JSON（v5.5 格式），`09-rollback.ps1` 或关闭开关时完整恢复。
+3. **全链路集成与验证**：
+   - 新增策略开关 `BlockWebRtcLeak`（第 16 项策略，默认开启），同步集成于 `01-dns-hardening.ps1`、`02-killswitch.ps1`、`07-mode.ps1`（0-CIM 快路径审计与新接入物理网卡自动纳管）、`09-rollback.ps1`、`14-apply-policy.ps1` 及 WPF GUI（`GuardPolicy.cs`、`MainWindow.xaml.cs`）。
+   - `03-verify.ps1`、`12-regression.ps1`、`verify-leak-test.ps1` 均新增规则/策略检查及物理网卡绑定真实 STUN UDP（`74.125.250.129:19302`）阻断实测探针。
+

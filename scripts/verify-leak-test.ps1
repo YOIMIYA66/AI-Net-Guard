@@ -1,4 +1,4 @@
-# AI-Net-Guard Leak & Connectivity Verification Test (v5.7.4)
+# AI-Net-Guard Leak & Connectivity Verification Test (v5.7.5)
 $ErrorActionPreference = 'Continue'
 Write-Host '===============================================================================' -ForegroundColor Cyan
 Write-Host '               AI-Net-Guard Post-Optimization Leak & Health Test               ' -ForegroundColor Cyan
@@ -11,6 +11,26 @@ if ($rogueRule) {
     Write-Host '[FAIL] Dangerous rogue blanket rule AI-Guard-Allow-TUN-Xray is STILL PRESENT in firewall!' -ForegroundColor Red
 } else {
     Write-Host '[PASS] Rogue blanket rule AI-Guard-Allow-TUN-Xray is ABSENT (Firewall secured)' -ForegroundColor Green
+}
+
+# 1b. Check WebRTC STUN/TURN firewall rules and Chromium enterprise policies
+$wrtcUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue
+$wrtcTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -ErrorAction SilentlyContinue
+$wrtcLocalUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -ErrorAction SilentlyContinue
+$wrtcLocalTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -ErrorAction SilentlyContinue
+if ($wrtcUdp -and $wrtcUdp.Enabled -eq 'True' -and $wrtcTcp -and $wrtcTcp.Enabled -eq 'True' -and
+    $wrtcLocalUdp -and $wrtcLocalUdp.Enabled -eq 'True' -and $wrtcLocalTcp -and $wrtcLocalTcp.Enabled -eq 'True') {
+    Write-Host '[PASS] WebRTC physical NIC + LocalIP block rules (UDP+TCP STUN/TURN) are ACTIVE' -ForegroundColor Green
+} else {
+    Write-Host '[FAIL] WebRTC block rules AI-Guard-Block-WebRTC-(LocalIP-)UDP/TCP missing or disabled!' -ForegroundColor Red
+}
+
+$cWrtc = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Google\Chrome' -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
+$eWrtc = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
+if ($cWrtc -eq 'disable_non_proxied_udp' -and $eWrtc -eq 'disable_non_proxied_udp') {
+    Write-Host '[PASS] Chromium WebRTC policy active (Chrome+Edge: disable_non_proxied_udp)' -ForegroundColor Green
+} else {
+    Write-Host ('[WARN] Chromium WebRtcIPHandlingPolicy incomplete (Chrome=' + $cWrtc + ', Edge=' + $eWrtc + ')') -ForegroundColor Yellow
 }
 
 # 2. Check TUN adapter status
@@ -44,6 +64,25 @@ if ($physNics.Count -gt 0) {
             Write-Host ('[PASS] Physical ' + $pNic.Name + ' (' + $pIp + ') connection to ' + $targetForeignIp + ':443 BLOCKED: ' + $_.Exception.Message) -ForegroundColor Green
         } finally {
             $sock.Close()
+        }
+
+        # 3b. Direct Physical NIC WebRTC STUN UDP Leak Probe (74.125.250.129:19302)
+        $stunReq = [byte[]]@(0x00,0x01,0x00,0x00,0x21,0x12,0xA4,0x42,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA,0xBB,0xCC)
+        $udp = New-Object System.Net.Sockets.UdpClient($localEp)
+        $udp.Client.ReceiveTimeout = 2000
+        try {
+            [void]$udp.Send($stunReq, $stunReq.Length, '74.125.250.129', 19302)
+            $rem = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+            $resp = $udp.Receive([ref]$rem)
+            if ($resp -and $resp.Length -gt 0) {
+                Write-Host ('[LEAK DETECTED!] Physical ' + $pNic.Name + ' (' + $pIp + ') WebRTC STUN UDP to 74.125.250.129:19302 SUCCEEDED (' + $resp.Length + ' bytes)!') -ForegroundColor Red
+            } else {
+                Write-Host ('[PASS] Physical ' + $pNic.Name + ' (' + $pIp + ') WebRTC STUN UDP to 74.125.250.129:19302 BLOCKED / empty.') -ForegroundColor Green
+            }
+        } catch {
+            Write-Host ('[PASS] Physical ' + $pNic.Name + ' (' + $pIp + ') WebRTC STUN UDP to 74.125.250.129:19302 BLOCKED / TIMED OUT.') -ForegroundColor Green
+        } finally {
+            $udp.Close()
         }
     }
 } else {

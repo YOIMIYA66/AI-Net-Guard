@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.4 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.7.5 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
-    Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 15
+    Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 16
     configurable AI-Net-Guard feature switches deterministically:
 
       * On a clean machine (no baseline.json yet): runs preflight checks,
@@ -205,6 +205,7 @@ $policy = [ordered]@{
     DisableSmhnr         = $true
     DisableLlmnrNetbios  = $true
     StrictNrptDoh        = $false
+    BlockWebRtcLeak      = $true
     DisablePhysicalIpv6  = $true
     PreferIpv4Prefix     = $true
     ZeroResidentMonitor  = $true
@@ -219,7 +220,7 @@ if (Test-Path -LiteralPath $PolicyPath) {
     $raw = Get-Content -LiteralPath $PolicyPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($raw) {
         foreach ($k in @('AllowCnDirect', 'AllowLan', 'AllowNcsi', 'QuarantineRogueAllow', 'LockPhysicalDns',
-                'DisableSmhnr', 'DisableLlmnrNetbios', 'StrictNrptDoh', 'DisablePhysicalIpv6', 'PreferIpv4Prefix',
+                'DisableSmhnr', 'DisableLlmnrNetbios', 'StrictNrptDoh', 'BlockWebRtcLeak', 'DisablePhysicalIpv6', 'PreferIpv4Prefix',
                 'ZeroResidentMonitor', 'AutoNodeSync', 'AutoHealStaleProxy', 'DomesticNtp', 'HardenInstallAcl')) {
             if ($raw.PSObject.Properties.Name -contains $k -and $null -ne $raw.$k) {
                 $policy[$k] = [bool]$raw.$k
@@ -399,6 +400,7 @@ if ($isFreshInstall) {
         if (-not $policy.DisableLlmnrNetbios) { $dnsArgs += '-SkipLlmnrNetbios' }
         if (-not $policy.DisableSmhnr)        { $dnsArgs += '-SkipSmhnr' }
         if (-not $policy.DomesticNtp)         { $dnsArgs += '-SkipNtp' }
+        if (-not $policy.BlockWebRtcLeak)     { $dnsArgs += '-SkipWebRtcPolicy' }
         if ($policy.StrictNrptDoh)            { $dnsArgs += '-UseNrpt' }
         & $psExe @dnsArgs
         if ($LASTEXITCODE -ne 0) { throw ('01-dns-hardening.ps1 exited with code ' + $LASTEXITCODE) }
@@ -432,6 +434,7 @@ if ($isFreshInstall) {
         if (-not $policy.AllowCnDirect)        { $ksArgs += '-StrictKillSwitchOnly' }
         if (-not $policy.AllowLan)             { $ksArgs += '-SkipLanRule' }
         if (-not $policy.AllowNcsi)            { $ksArgs += '-SkipNcsiRule' }
+        if (-not $policy.BlockWebRtcLeak)      { $ksArgs += '-SkipWebRtcBlock' }
         if (-not $policy.QuarantineRogueAllow) { $ksArgs += '-KeepExistingAllowRules' }
         & $psExe @ksArgs
         if ($LASTEXITCODE -ne 0) { throw ('02-killswitch.ps1 exited with code ' + $LASTEXITCODE) }
@@ -482,6 +485,7 @@ else {
         if (-not $policy.AllowCnDirect)        { $ksArgs += '-StrictKillSwitchOnly' }
         if (-not $policy.AllowLan)             { $ksArgs += '-SkipLanRule' }
         if (-not $policy.AllowNcsi)            { $ksArgs += '-SkipNcsiRule' }
+        if (-not $policy.BlockWebRtcLeak)      { $ksArgs += '-SkipWebRtcBlock' }
         if (-not $policy.QuarantineRogueAllow) { $ksArgs += '-KeepExistingAllowRules' }
         & $psExe @ksArgs
     }
@@ -710,6 +714,101 @@ else {
             Set-ItemProperty -LiteralPath $dcKey -Name 'MaxTelemetryAllowed' -Value 0 -Type DWord -ErrorAction SilentlyContinue
             Write-Ok 'WindowsTelemetry = OFF (DiagTrack disabled, AllowTelemetry=0)'
         } catch { }
+    }
+
+    # 2c. BlockWebRtcLeak (physical NIC STUN/TURN firewall rules + LocalIP rules + Chrome/Edge policy)
+    $wrtcPorts = @('3478', '3479', '5349', '5350', '19302', '19303', '19304', '19305', '19306', '19307', '19308', '19309')
+    $cPolKey = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
+    $ePolKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+    $ruleWrtcUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue
+    $ruleWrtcTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -ErrorAction SilentlyContinue
+    $ruleWrtcLocalUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -ErrorAction SilentlyContinue
+    $ruleWrtcLocalTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -ErrorAction SilentlyContinue
+    if ($policy.BlockWebRtcLeak) {
+        $physAliasList = @(Get-PhysicalAdaptersAll | Select-Object -ExpandProperty Name)
+        if ($physAliasList.Count -gt 0) {
+            if ($ruleWrtcUdp) {
+                Set-NetFirewallRule -InputObject $ruleWrtcUdp -InterfaceAlias $physAliasList -Enabled True -ErrorAction SilentlyContinue
+            }
+            else {
+                New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -DisplayName 'AI-Guard-Block-WebRTC-UDP' `
+                    -Direction Outbound -Action Block -Protocol UDP -RemotePort $wrtcPorts `
+                    -InterfaceAlias $physAliasList -Profile Any -Enabled True `
+                    -Description 'Block WebRTC STUN/TURN outbound UDP on physical NICs (anti-leak for all proxy cores).' | Out-Null
+            }
+            if ($ruleWrtcTcp) {
+                Set-NetFirewallRule -InputObject $ruleWrtcTcp -InterfaceAlias $physAliasList -Enabled True -ErrorAction SilentlyContinue
+            }
+            else {
+                New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -DisplayName 'AI-Guard-Block-WebRTC-TCP' `
+                    -Direction Outbound -Action Block -Protocol TCP -RemotePort $wrtcPorts `
+                    -InterfaceAlias $physAliasList -Profile Any -Enabled True `
+                    -Description 'Block WebRTC STUN/TURN outbound TCP on physical NICs (anti-leak for all proxy cores).' | Out-Null
+            }
+            $physIpv4s = @(Get-NetIPAddress -InterfaceAlias $physAliasList -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+                Select-Object -ExpandProperty IPAddress -Unique)
+            if ($physIpv4s.Count -gt 0) {
+                if ($ruleWrtcLocalUdp) {
+                    Set-NetFirewallRule -InputObject $ruleWrtcLocalUdp -LocalAddress $physIpv4s -Enabled True -ErrorAction SilentlyContinue
+                }
+                else {
+                    New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -DisplayName 'AI-Guard-Block-WebRTC-LocalIP-UDP' `
+                        -Direction Outbound -Action Block -Protocol UDP -LocalAddress $physIpv4s -RemotePort $wrtcPorts `
+                        -Profile Any -Enabled True `
+                        -Description 'Block WebRTC STUN/TURN UDP bound to physical NIC IPs even when TUN metric 0 captures ALE routing.' | Out-Null
+                }
+                if ($ruleWrtcLocalTcp) {
+                    Set-NetFirewallRule -InputObject $ruleWrtcLocalTcp -LocalAddress $physIpv4s -Enabled True -ErrorAction SilentlyContinue
+                }
+                else {
+                    New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -DisplayName 'AI-Guard-Block-WebRTC-LocalIP-TCP' `
+                        -Direction Outbound -Action Block -Protocol TCP -LocalAddress $physIpv4s -RemotePort $wrtcPorts `
+                        -Profile Any -Enabled True `
+                        -Description 'Block WebRTC STUN/TURN TCP bound to physical NIC IPs even when TUN metric 0 captures ALE routing.' | Out-Null
+                }
+            }
+        }
+        try {
+            if (-not (Test-Path -LiteralPath $cPolKey)) { New-Item -Path $cPolKey -Force | Out-Null }
+            New-ItemProperty -Path $cPolKey -Name 'WebRtcIPHandlingPolicy' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+            if (-not (Test-Path -LiteralPath $ePolKey)) { New-Item -Path $ePolKey -Force | Out-Null }
+            New-ItemProperty -Path $ePolKey -Name 'WebRtcIPHandlingPolicy' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+            New-ItemProperty -Path $ePolKey -Name 'WebRtcLocalhostIpHandling' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+        } catch { }
+        Write-Ok 'BlockWebRtcLeak = ON (physical NIC + LocalIP STUN/TURN blocked + Chrome/Edge disable_non_proxied_udp)'
+    }
+    else {
+        foreach ($wr in @($ruleWrtcUdp, $ruleWrtcTcp, $ruleWrtcLocalUdp, $ruleWrtcLocalTcp)) {
+            if ($wr -and $wr.Enabled -eq 'True') {
+                Disable-NetFirewallRule -InputObject $wr -ErrorAction SilentlyContinue
+            }
+        }
+        try {
+            if (Test-Path -LiteralPath $cPolKey) {
+                if ($dnsBackup -and ($dnsBackup.PSObject.Properties.Name -contains 'ChromeWebRtcPolicy') -and $null -ne $dnsBackup.ChromeWebRtcPolicy) {
+                    New-ItemProperty -Path $cPolKey -Name 'WebRtcIPHandlingPolicy' -Value ([string]$dnsBackup.ChromeWebRtcPolicy) -PropertyType String -Force | Out-Null
+                }
+                else {
+                    Remove-ItemProperty -Path $cPolKey -Name 'WebRtcIPHandlingPolicy' -ErrorAction SilentlyContinue
+                }
+            }
+            if (Test-Path -LiteralPath $ePolKey) {
+                if ($dnsBackup -and ($dnsBackup.PSObject.Properties.Name -contains 'EdgeWebRtcPolicy') -and $null -ne $dnsBackup.EdgeWebRtcPolicy) {
+                    New-ItemProperty -Path $ePolKey -Name 'WebRtcIPHandlingPolicy' -Value ([string]$dnsBackup.EdgeWebRtcPolicy) -PropertyType String -Force | Out-Null
+                }
+                else {
+                    Remove-ItemProperty -Path $ePolKey -Name 'WebRtcIPHandlingPolicy' -ErrorAction SilentlyContinue
+                }
+                if ($dnsBackup -and ($dnsBackup.PSObject.Properties.Name -contains 'EdgeWebRtcLocalhost') -and $null -ne $dnsBackup.EdgeWebRtcLocalhost) {
+                    New-ItemProperty -Path $ePolKey -Name 'WebRtcLocalhostIpHandling' -Value ([string]$dnsBackup.EdgeWebRtcLocalhost) -PropertyType String -Force | Out-Null
+                }
+                else {
+                    Remove-ItemProperty -Path $ePolKey -Name 'WebRtcLocalhostIpHandling' -ErrorAction SilentlyContinue
+                }
+            }
+        } catch { }
+        Write-Ok 'BlockWebRtcLeak = OFF (WebRTC STUN block rules disabled & browser policies restored)'
     }
 
     # 3. IPv6 & Dual-Stack Precedence toggles

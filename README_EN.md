@@ -24,7 +24,7 @@
   <a href="#-quick-start-recommended-gui">🚀 Quick Start</a> •
   <a href="#-why-ai-net-guard-pain-points-solved">💡 Why AI-Net-Guard?</a> •
   <a href="#-architecture--data-path">📐 Architecture</a> •
-  <a href="#-15-configurable-feature-switches--policy-matrix">🎛️ Feature Matrix</a> •
+  <a href="#-16-configurable-feature-switches--policy-matrix">🎛️ Feature Matrix</a> •
   <a href="#-key-technical-features">⚡ Key Features</a> •
   <a href="#-daily-usage--maintenance-commands">🛠️ Maintenance</a> •
   <a href="#-complete-repository-script-reference">📚 Script Index</a>
@@ -46,7 +46,7 @@ When pairing AI coding assistants and CLI agents (`Claude Code`, `Cursor`, `Code
 | :--- | :--- | :--- | :--- |
 | **Proxy Crash / TUN Drop** | Instant downgrade to physical ISP connection; **Real IP & API requests leak** | **0 ms hardware-level kernel fail-closed drop**; domestic and LAN remain intact | Windows Kernel WFP ALE drops all non-whitelisted physical outbound flows |
 | **DNS Leak & Race** | Physical NIC and TUN concurrently broadcast plaintext DNS; ISP sees everything | **Zero plaintext DNS leakage**; locked to `223.5.5.5` + SMHNR disabled | Parallel DNS disabled, LLMNR/NetBIOS off, encrypted DoH in TUN |
-| **IPv6 Bypass Hole** | ISP IPv6 bypasses IPv4 TUN directly onto the public internet; IPv6 exposed | **Physical IPv6 stack detached**; IPv4 precedence elevated (50 > 40) | Unbinds physical `ms_tcpip6`, disables parallel AAAA queries |
+| **IPv6 & WebRTC Bypass** | ISP IPv6 / WebRTC STUN sockets bypass TUN directly | **Physical IPv6 detached + STUN/TURN blocked** | Unbinds physical `ms_tcpip6`, blocks physical STUN + sets Chromium policy |
 | **Background Overhead** | Requires third-party resident daemons consuming 50~150 MB RAM | **0 resident processes · 0 MB idle RAM · 0% idle CPU** | Nanosecond Windows Event Log OS hooks; runs and exits immediately |
 | **Dual-Core Relay Lag** | TUN frontend and core backend produce internal loopback double-hops | **End-to-end direct physical egress**; 0 double-hop overhead | Injects `/32` LPM host routes directly to physical NIC |
 | **Rogue Rule Drift** | Any installer can add `interfacetype=any` rules to punch holes | **Structural whitelist enforcement**; unconstrained rules quarantined | Single-pass registry audit detects and isolates rogue Allow rules |
@@ -232,13 +232,13 @@ Zero installation, zero runtime dependencies, single-click executable:
 2. **Launch**: Double-click `AI-Net-Guard.exe` (prompts once for Administrator UAC).
 3. **Automatic Detection**: Automatically identifies `v2rayN` root path, active proxy core (`Xray` / `sing-box` / `Mihomo`), and current active TUN adapter.
 4. **Deploy**:
-   - Comes preloaded with the **🌟 Recommended Daily Shield** preset (14 recommended protections ON, strict global NRPT DoH OFF).
+   - Comes preloaded with the **🌟 Recommended Daily Shield** preset (15 recommended protections ON, strict global NRPT DoH OFF).
    - Click **「🚀 一键部署 / 应用当前配置」** (Deploy Settings) to capture baselines, deploy the kernel engine to `C:\AI-Net-Guard`, lock down ACLs, and register system event monitors within seconds.
 5. **Key GUI Utilities & Modernized UX (v5.7.3+)**:
    - **Vector-First Fluent / Lucide Icon System**: Fully phased out low-fidelity emojis in favor of 13 native XAML `StreamGeometry` vector paths (Shield, Network Gateway, Globe, Lock, Check Circle, Alert Triangle, Zap, Rescue Lifebuoy, Folder, Refresh, Trash, Bilingual Languages) for pixel-crisp rendering across all DPI scalings.
    - **Elastic Zero-Truncation Layout**: Elastic bottom status pills and adaptive layouts eliminate text clipping and label overflows on any window resolution or DPI setting.
    - **Official Recommended Clean TUN Mode (ProxyEnable=0)**: Explicitly guides users to keep WinINET proxy cleared (`ProxyEnable = 0`) in TUN mode so network traffic is filtered strictly at kernel level by `xray_tun`, preventing loopback proxy conflicts. Includes 1-click dynamic switching between Clean TUN and System Proxy.
-   - **🌐 Instant Bilingual Switching**: Full English and Chinese localization across all 15 policies, presets, telemetry cards, and modals with persistent preference saving.
+   - **🌐 Instant Bilingual Switching**: Full English and Chinese localization across all 16 policies, presets, telemetry cards, and modals with persistent preference saving.
    - **🛟 应急脱困 (Emergency Rescue)**: Instantly unlocks all firewall outbound blocks, resets NIC DNS to DHCP, clears stale loopback proxies, and flushes Winsock within 5 seconds.
    - **一键健康体检 (Health Check)**: Runs the full 24-check regression suite (including live 10-second `pktmon` DNS capture).
    - **立即同步 (Sync Nodes)**: Dynamically extracts and authorizes new proxy node IPs/ports when switching servers in `v2rayN`.
@@ -293,9 +293,9 @@ Provides an integrated 45-minute automatic rollback safety net:
 
 ---
 
-## 🎛️ 15 Configurable Feature Switches & Policy Matrix
+## 🎛️ 16 Configurable Feature Switches & Policy Matrix
 
-All 15 policies can be toggled visually in the GUI or orchestrated programmatically via `backup\guard-policy.json`:
+All 16 policies can be toggled visually in the GUI or orchestrated programmatically via `backup\guard-policy.json`:
 
 | Category | Policy Key | Feature Name | Default | Plain Explanation | Behavior When Turned OFF |
 | :--- | :--- | :--- | :---: | :--- | :--- |
@@ -307,6 +307,7 @@ All 15 policies can be toggled visually in the GUI or orchestrated programmatica
 | **2. DNS Leak Shield** | `DisableSmhnr` | **Disable Parallel Multi-Homed DNS** | 🟢 **ON** `[Rec.]` | Stops Windows from racing queries across physical and virtual adapters simultaneously. | Restores default Windows parallel DNS racing behavior. |
 | **2. DNS Leak Shield** | `DisableLlmnrNetbios` | **Disable Multicast Resolution (LLMNR)** | 🟢 **ON** `[Rec.]` | Prevents domain queries from leaking onto LAN; protects against spoofing attacks. | Restores default LLMNR and NetBIOS settings. |
 | **2. DNS Leak Shield** | `StrictNrptDoh` | **Strict Global DoH Enforcement (NRPT)** | ⚪ **OFF** `[Adv.]` | Forces all system queries to `1.1.1.1` DoH. **Notice: Domestic resolution fails when proxy is off.** | Removes `AI-Guard*` NRPT policies; returns to standard DNS. |
+| **2. DNS Leak Shield** | `BlockWebRtcLeak` | **WebRTC STUN/TURN Dual-Layer Shield** | 🟢 **ON** `[Rec.]` | Blocks outbound STUN/TURN ports (3478/5349/19302-19309) on physical NICs and locks Chrome/Edge `disable_non_proxied_udp` for both VLESS and Hysteria2. | Disables `AI-Guard-Block-WebRTC-*` rules and restores browser policy from backup. |
 | **3. IPv6 & Dual-Stack** | `DisablePhysicalIpv6` | **Disable Physical NIC IPv6 Binding** | 🟢 **ON** `[Rec.]` | Blocks applications from bypassing IPv4 TUN over native ISP IPv6 (handles hot-plugged NICs). | Restores `ms_tcpip6` binding on physical adapters. |
 | **3. IPv6 & Dual-Stack** | `PreferIpv4Prefix` | **Elevate IPv4 Precedence Over IPv6** | 🟢 **ON** `[Rec.]` | Prefers IPv4; eliminates 2~5 second stalls in Python/Git/CLI caused by IPv6 timeouts. | Restores original `DisabledComponents` and prefix table weights. |
 | **4. Self-Healing & Security** | `ZeroResidentMonitor` | **Zero-Resident Event Auto-Heal** | 🟢 **ON** `[Rec.]` | **0 daemon processes · 0 MB idle RAM**; wakes via network/sleep/boot events to heal DNS and rules. | Unregisters event tasks; retains static firewall rules only. |
@@ -384,7 +385,7 @@ To whitelist specific developer tools or custom daemons from anti-drift quaranti
 | [`scripts/11-geo-cn.ps1`](./scripts/11-geo-cn.ps1) | Zero-allocation protobuf parser: normalizes and aggregates GeoIP into [`cn-ipv4.txt`](./cn-ipv4.txt) (6,516 prefixes) |
 | [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) | **24-Check Automated Regression Suite**: static state, ACL lock, 0 MB memory, fail-closed tests, 10s `pktmon` capture |
 | [`scripts/13-harden-acl.ps1`](./scripts/13-harden-acl.ps1) | Locks `C:\AI-Net-Guard` DACL to Administrators write-only (`-Undo` and `-SyncWorkspace` supported) |
-| [`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) | Declarative policy orchestrator: applies 15 feature switches idempotently from `backup\guard-policy.json` |
+| [`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) | Declarative policy orchestrator: applies 16 feature switches idempotently from `backup\guard-policy.json` |
 | [`Emergency-Rescue.bat`](./Emergency-Rescue.bat) | Zero-dependency, pure-batch offline emergency rescue utility with automatic self-elevation |
 | [`scripts/align-xray-egress.bat`](./scripts/align-xray-egress.bat) | Injects `/32` physical host route to eliminate dual-core double-hop relay overhead |
 | [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | Disables Windows 11 telemetry services (`DiagTrack`) to prevent foreign IP `connectex 10013` errors |

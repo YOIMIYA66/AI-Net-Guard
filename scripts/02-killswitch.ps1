@@ -48,6 +48,7 @@ param(
     [switch]$SkipDnsCheck,
     [switch]$SkipLanRule,
     [switch]$SkipNcsiRule,
+    [switch]$SkipWebRtcBlock,
     [switch]$StrictKillSwitchOnly,
     [switch]$AllowRemainingRules,
     [Alias('DohServer')]
@@ -583,6 +584,63 @@ if (-not $SkipNcsiRule) {
         RemotePort    = @('80')
         Description   = 'Windows NCSI connecttest.txt HTTP-80 probe (prevents false No-Internet globe when TUN is off).'
     }
+}
+
+# 6.5 WebRTC STUN/TURN leak shield on physical network interfaces (anti-leak for all proxy cores)
+if (-not $SkipWebRtcBlock -and $physicalAll.Count -gt 0) {
+    $webrtcPorts = @('3478', '3479', '5349', '5350', '19302', '19303', '19304', '19305', '19306', '19307', '19308', '19309')
+    New-AiRule @{
+        DisplayName    = 'AI-Guard-Block-WebRTC-UDP'
+        Direction      = 'Outbound'
+        Action         = 'Block'
+        Protocol       = 'UDP'
+        RemotePort     = $webrtcPorts
+        InterfaceAlias = $physicalAll
+        Description    = 'Block WebRTC STUN/TURN outbound UDP on physical NICs (anti-leak for all proxy cores).'
+    }
+    New-AiRule @{
+        DisplayName    = 'AI-Guard-Block-WebRTC-TCP'
+        Direction      = 'Outbound'
+        Action         = 'Block'
+        Protocol       = 'TCP'
+        RemotePort     = $webrtcPorts
+        InterfaceAlias = $physicalAll
+        Description    = 'Block WebRTC STUN/TURN outbound TCP on physical NICs (anti-leak for all proxy cores).'
+    }
+
+    $physIpv4s = @(Get-NetIPAddress -InterfaceAlias $physicalAll -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+        Select-Object -ExpandProperty IPAddress -Unique)
+    if ($physIpv4s.Count -gt 0) {
+        New-AiRule @{
+            DisplayName  = 'AI-Guard-Block-WebRTC-LocalIP-UDP'
+            Direction    = 'Outbound'
+            Action       = 'Block'
+            Protocol     = 'UDP'
+            LocalAddress = $physIpv4s
+            RemotePort   = $webrtcPorts
+            Description  = 'Block WebRTC STUN/TURN UDP sockets explicitly bound to physical NIC IPs even when TUN metric 0 captures ALE routing.'
+        }
+        New-AiRule @{
+            DisplayName  = 'AI-Guard-Block-WebRTC-LocalIP-TCP'
+            Direction    = 'Outbound'
+            Action       = 'Block'
+            Protocol     = 'TCP'
+            LocalAddress = $physIpv4s
+            RemotePort   = $webrtcPorts
+            Description  = 'Block WebRTC STUN/TURN TCP sockets explicitly bound to physical NIC IPs even when TUN metric 0 captures ALE routing.'
+        }
+    }
+
+    try {
+        $cPolKey = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
+        $ePolKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+        if (-not (Test-Path -LiteralPath $cPolKey)) { New-Item -Path $cPolKey -Force | Out-Null }
+        New-ItemProperty -Path $cPolKey -Name 'WebRtcIPHandlingPolicy' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+        if (-not (Test-Path -LiteralPath $ePolKey)) { New-Item -Path $ePolKey -Force | Out-Null }
+        New-ItemProperty -Path $ePolKey -Name 'WebRtcIPHandlingPolicy' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $ePolKey -Name 'WebRtcLocalhostIpHandling' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
+    } catch { }
 }
 
 # 7. Mainland-China IPv4 allowlist (v5.1 static mode) OR strict port-53/853 kill

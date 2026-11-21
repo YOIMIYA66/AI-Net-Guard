@@ -319,6 +319,24 @@ Check 'LLMNR & Smart Multi-Homed DNS (SMHNR) hardened' {
     else { 'LLMNR=off (SMHNR queued for next event or .\07-mode.ps1)' }
 } 'EnableMulticast=0 & DisableSmartNameResolution=1'
 
+Check 'WebRTC STUN leak protection (physical NIC + LocalIP block rules)' {
+    $u = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue
+    $t = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -ErrorAction SilentlyContinue
+    $lu = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -ErrorAction SilentlyContinue
+    $lt = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -ErrorAction SilentlyContinue
+    if (-not $u -or $u.Enabled -ne 'True' -or -not $t -or $t.Enabled -ne 'True' -or -not $lu -or $lu.Enabled -ne 'True' -or -not $lt -or $lt.Enabled -ne 'True') {
+        throw 'WebRTC block rules missing or disabled'
+    }
+    'Interface + LocalIP UDP/TCP rules active'
+} 'WebRTC STUN block rules present and enabled'
+
+Check 'Chromium WebRTC enterprise policy hardened' {
+    $c = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Google\Chrome' -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
+    $e = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
+    if ($c -ne 'disable_non_proxied_udp' -or $e -ne 'disable_non_proxied_udp') { throw ('policy not set: Chrome=' + $c + ' Edge=' + $e) }
+    'Chrome+Edge disable_non_proxied_udp'
+} 'disable_non_proxied_udp'
+
 Check 'Windows NTP server domestic-capable' {
     $ntp = [string](Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters' -ErrorAction SilentlyContinue).NtpServer
     if (-not $ntp) { 'default/empty' }
@@ -430,22 +448,52 @@ if ($tunUp) {
         $targetForeignIp = '13.107.246.51'
         $localEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($physIp), 0)
         $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
+        $leakedTcp = $false
+        $msgTcp = 'kernel blocked/timed out direct foreign egress on physical adapter'
         try {
             $sock.Bind($localEp)
             $async = $sock.BeginConnect($targetForeignIp, 443, $null, $null)
             if ($async.AsyncWaitHandle.WaitOne(2000, $false)) {
                 $sock.EndConnect($async)
-                throw ('direct physical outbound leak detected: ' + $physIp + ' connected to ' + $targetForeignIp + ':443')
+                $leakedTcp = $true
             }
-            'kernel blocked/timed out direct foreign egress on physical adapter'
         }
         catch {
-            'blocked by kernel WFP (' + $_.Exception.Message + ')'
+            $msgTcp = 'blocked by kernel WFP (' + $_.Exception.Message + ')'
         }
         finally {
             $sock.Close()
         }
+        if ($leakedTcp) { throw ('direct physical outbound leak detected: ' + $physIp + ' connected to ' + $targetForeignIp + ':443') }
+        $msgTcp
     } 'physical socket direct leak probe'
+
+    Check 'physical adapter raw WebRTC STUN UDP (19302) blocked' {
+        $physNic = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch '(?i)wintun|sing-tun|mihomo|singbox|xray|tap|loopback|virtual' -and $_.Name -notmatch '(?i)tun|loopback' } | Select-Object -First 1
+        if (-not $physNic) { return 'skipped (no active physical adapter)' }
+        $physIp = (Get-NetIPAddress -InterfaceIndex $physNic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
+        if (-not $physIp) { return 'skipped (no physical IPv4)' }
+        $stunReq = [byte[]]@(0x00,0x01,0x00,0x00,0x21,0x12,0xA4,0x42,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA,0xBB,0xCC)
+        $localEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($physIp), 0)
+        $udp = New-Object System.Net.Sockets.UdpClient($localEp)
+        $udp.Client.ReceiveTimeout = 2000
+        $leakedStun = $false
+        $msgStun = 'STUN UDP blocked/timed out'
+        try {
+            [void]$udp.Send($stunReq, $stunReq.Length, '74.125.250.129', 19302)
+            $rem = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+            $resp = $udp.Receive([ref]$rem)
+            if ($resp -and $resp.Length -gt 0) { $leakedStun = $true }
+        }
+        catch {
+            $msgStun = 'blocked/timed out on ' + $physIp + ' (' + $_.Exception.Message + ')'
+        }
+        finally {
+            $udp.Close()
+        }
+        if ($leakedStun) { throw ('WebRTC STUN UDP leak detected on physical NIC ' + $physIp + ' -> 74.125.250.129:19302') }
+        $msgStun
+    } 'physical STUN UDP blocked'
 
     Check 'domestic site reachable (direct TUN datapath)' {
         $r = Invoke-DirectHttp -Url 'https://www.baidu.com' -TimeoutSec 15

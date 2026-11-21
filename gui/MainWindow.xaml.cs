@@ -555,7 +555,7 @@ namespace AiNetGuard.Gui
                 UpdateV2rayNValidationBadge(V2rayNPathBox.Text);
                 UpdateSystemProxyBanner();
 
-                // 4. Sync all 15 CheckBoxes
+                // 4. Sync all 16 CheckBoxes
                 foreach (var kv in _toggleBoxes)
                 {
                     kv.Value.IsChecked = _draftPolicy.GetFlag(kv.Key);
@@ -1659,10 +1659,10 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
                 Directory.CreateDirectory(outDir);
                 var report = new List<string>();
 
-                // 1. Assert all 15 feature toggles rendered
-                if (_toggleBoxes.Count != 15)
-                    throw new InvalidOperationException($"Expected 15 toggle switches, got {_toggleBoxes.Count}");
-                report.Add($"[PASS] 15 feature toggle controls instantiated across 4 categories");
+                // 1. Assert all 16 feature toggles rendered
+                if (_toggleBoxes.Count != 16)
+                    throw new InvalidOperationException($"Expected 16 toggle switches, got {_toggleBoxes.Count}");
+                report.Add($"[PASS] 16 feature toggle controls instantiated across 4 categories");
 
                 // 2. Assert embedded payload presence
                 bool hasPayload = PayloadAndRunnerService.HasEmbeddedPayload();
