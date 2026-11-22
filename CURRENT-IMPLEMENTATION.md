@@ -133,7 +133,7 @@ flowchart TD
 | `AI-Guard-Mode-Event` | 开机 + `NetworkProfile` `10000/10001` + `System` 睡眠/现代待机唤醒（`Power-Troubleshooter 1` / `Kernel-Power 107, 507`） | `SYSTEM` Session 0 隐藏运行、Priority 7 低优先级；包含 `+800 ms` 无盲区二次确认，跑完即退（0 MB 常驻） |
 | `AI-Guard-Mode-Fallback` | 每 60 分钟 | 静默跑一次 `07-mode.ps1 -Mode Auto -Quiet` 零 CIM 快检（~160 ms） |
 
-### 3.3 脚本清单（`scripts/` 下 24 个 `.ps1` 全部为 100% 纯 ASCII，兼容 PowerShell 5.1 / 7.x）
+### 3.3 脚本清单（`scripts/` 下 25 个 `.ps1` 全部为 100% 纯 ASCII，兼容 PowerShell 5.1 / 7.x）
 
 | 文件 | 作用 |
 | --- | --- |
@@ -155,6 +155,7 @@ flowchart TD
 | [`scripts/15-webrtc-browser-shield.ps1`](./scripts/15-webrtc-browser-shield.ps1) | 浏览器级 WebRTC 出口封锁：按 `Program` 维度在物理网卡上封锁全部出站 UDP（覆盖 443 与任意 TURN 端口），只作用于浏览器进程；**并对代理核心 `xray` / `sing-box` / `mihomo` 封锁 STUN/TURN 端口（3478/3479/5349/5350/19302-19309，UDP+TCP）**——TUN 模式下真正从物理网卡出网的是核心，境内 STUN 经 `geoip:cn → direct` 会让 STUN 服务器看到真实 ISP 地址；同时修复原 4 条 WebRTC 规则的 interface / LocalAddress 漂移，`LocalAddress` 改按网段写入 |
 | [`scripts/16-browser-residue.ps1`](./scripts/16-browser-residue.ps1) | 已卸载浏览器残留清理（DCBrowser / Firefox）：注册键 + `RegisteredApplications` 值 + 孤儿 `%APPDATA%\Mozilla`，写 JSON 备份后可 `-Restore` 回滚；刻意不动属其它软件的 `MozillaPlugins` / `NativeMessagingHosts` |
 | [`scripts/17-autorepair-task.ps1`](./scripts/17-autorepair-task.ps1) | 自愈计划任务管理器：`-Status` 只读体检（状态 / 触发器 / 上次结果 / 下次运行），`-Install` 复用 `07-mode.ps1 -InstallTasks` 注册事件任务与 60 分钟兜底并回读校验，`-Install -SelfTest` 实跑两次验证退出码 0，`-Remove` 清空 `AI-Guard-Mode-*`；未提权时 exit 1 而非静默成功 |
+| [`scripts/18-route-stun-guard.ps1`](./scripts/18-route-stun-guard.ps1) | **路由层 STUN/TURN 封锁（WebRTC 防泄露的兜底层）**：实测证明防火墙挡不住核心重发的那一跳（TUN 提供方在 `ALE_AUTH_CONNECT` 用 callout PERMIT 终结分类，防火墙 Block 过滤器不被求值），故改在 xray 路由表顶部插入 `port=3478,3479,5349,5350,19302-19309 → block`（UDP+TCP），照抄 v2rayN 自身「阻断udp443」手法；`-Verify` 只读、`-Apply` 先备份 `guiNDB.db` 再写入、`-Restore` 回滚；v2rayN 运行中拒绝执行（内存副本会覆盖 DB） |
 | [`scripts/watchdog.ps1`](./scripts/watchdog.ps1) | 可选的 CLR 事件驱动常驻监听脚本（默认不启用，已支持多内核 TUN 识别与 PS7 伪接口过滤） |
 | [`scripts/align-xray-egress.ps1`](./scripts/align-xray-egress.ps1) | 物理出口 socket 对齐工具：消除 `sing-box` TUN 与 Xray 内核之间的内部二跳中继 |
 | [`scripts/lib-foreign-block.ps1`](./scripts/lib-foreign-block.ps1) | 共享助手（被 `02` / `07` / `10` / `14` dot-source）：显式物理网卡境外 IPv4 阻断规则的 IP 归一化与增删，用于压制第三方 WFP callout 驱动的 soft-permit |
