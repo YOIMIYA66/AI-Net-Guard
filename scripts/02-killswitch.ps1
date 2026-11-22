@@ -493,6 +493,70 @@ function New-AiRule {
     Write-Host ('    ' + $Params.DisplayName)
 }
 
+# ------------------------------------------------------------------ IPv4 subnet helpers
+# The WebRTC LocalAddress block used to store the exact DHCP lease (e.g. 192.168.1.165).
+# That value is a snapshot: the moment the router hands out a different address the rule
+# keeps pointing at an address the machine no longer owns, so it silently stops blocking.
+# Widening each leased address to its own subnet makes the rule survive a renumber inside
+# the same LAN.  A /32 fallback is kept whenever the subnet would also cover a TUN address,
+# because that would black-hole proxied WebRTC instead of unproxied leaks.
+function Get-IPv4MaskBytes([int]$PrefixLen) {
+    if ($PrefixLen -lt 0) { $PrefixLen = 0 }
+    if ($PrefixLen -gt 32) { $PrefixLen = 32 }
+    $full = [int][Math]::Floor($PrefixLen / 8)
+    $rem = $PrefixLen % 8
+    $b = New-Object 'byte[]' 4
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($i -lt $full) { $b[$i] = [byte]255 }
+        elseif ($i -eq $full -and $rem -gt 0) { $b[$i] = [byte]((0xFF -shl (8 - $rem)) -band 0xFF) }
+        else { $b[$i] = [byte]0 }
+    }
+    return ,$b
+}
+
+function Get-IPv4NetworkText([string]$Ip, [byte[]]$Mask) {
+    $ipb = ([System.Net.IPAddress]::Parse($Ip)).GetAddressBytes()
+    $n = New-Object 'byte[]' 4
+    for ($i = 0; $i -lt 4; $i++) { $n[$i] = [byte]($ipb[$i] -band $Mask[$i]) }
+    return (([string]$n[0]) + '.' + ([string]$n[1]) + '.' + ([string]$n[2]) + '.' + ([string]$n[3]))
+}
+
+function Get-PhysicalEgressCidrs([string[]]$PhysicalAlias, [string[]]$TunAlias) {
+    $out = New-Object System.Collections.Generic.List[string]
+    $tunIps = @()
+    if ($TunAlias) {
+        try {
+            $tunIps = @(Get-NetIPAddress -InterfaceAlias $TunAlias -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' } |
+                Select-Object -ExpandProperty IPAddress -Unique)
+        }
+        catch { }
+    }
+    $addrs = @()
+    try {
+        $addrs = @(Get-NetIPAddress -InterfaceAlias $PhysicalAlias -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' })
+    }
+    catch { }
+    foreach ($a in $addrs) {
+        $ip = [string]$a.IPAddress
+        $plen = 32
+        try { $plen = [int]$a.PrefixLength } catch { $plen = 32 }
+        if ($plen -le 0 -or $plen -gt 32) { $plen = 32 }
+        $mask = Get-IPv4MaskBytes $plen
+        $net = Get-IPv4NetworkText $ip $mask
+        $overlapsTun = $false
+        if ($plen -lt 32) {
+            foreach ($ti in $tunIps) {
+                if ((Get-IPv4NetworkText $ti $mask) -eq $net) { $overlapsTun = $true; break }
+            }
+        }
+        $cidr = if ($plen -ge 32 -or $overlapsTun) { ($ip + '/32') } else { ($net + '/' + [string]$plen) }
+        if (-not $out.Contains($cidr)) { $out.Add($cidr) }
+    }
+    return $out.ToArray()   # plain return (no leading comma) so callers can wrap with @()
+}
+
 # 1. everything routed into TUN interfaces is allowed (support all cores: xray_tun, singbox_tun, mihomo_tun, Meta)
 # Scope LocalAddress to TUN subnets + active TUN IPs (never physical NIC IPs) so sockets
 # explicitly bound to a physical IP cannot match AI-Guard-Allow-TUN via 0.0.0.0/0 metric 0.
@@ -682,27 +746,50 @@ if (-not $SkipWebRtcBlock -and $physicalAll.Count -gt 0) {
         Description    = 'Block WebRTC STUN/TURN outbound TCP on physical NICs (anti-leak for all proxy cores).'
     }
 
-    $physIpv4s = @(Get-NetIPAddress -InterfaceAlias $physicalAll -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
-        Select-Object -ExpandProperty IPAddress -Unique)
-    if ($physIpv4s.Count -gt 0) {
+    # Scope: local subnet(s) of the physical NICs, not the single leased address, so a DHCP
+    # renumber inside the same LAN does not silently void the block.  TUN subnets are never
+    # included (Get-PhysicalEgressCidrs falls back to /32 on overlap).
+    $physCidrs = @(Get-PhysicalEgressCidrs -PhysicalAlias $physicalAll -TunAlias $allTunAliases)
+    if ($physCidrs.Count -gt 0) {
         New-AiRule @{
             DisplayName  = 'AI-Guard-Block-WebRTC-LocalIP-UDP'
             Direction    = 'Outbound'
             Action       = 'Block'
             Protocol     = 'UDP'
-            LocalAddress = $physIpv4s
+            LocalAddress = $physCidrs
             RemotePort   = $webrtcPorts
-            Description  = 'Block WebRTC STUN/TURN UDP sockets explicitly bound to physical NIC IPs even when TUN metric 0 captures ALE routing.'
+            Description  = 'Block WebRTC STUN/TURN UDP sockets bound to physical NIC subnets even when TUN metric 0 captures ALE routing.'
         }
         New-AiRule @{
             DisplayName  = 'AI-Guard-Block-WebRTC-LocalIP-TCP'
             Direction    = 'Outbound'
             Action       = 'Block'
             Protocol     = 'TCP'
-            LocalAddress = $physIpv4s
+            LocalAddress = $physCidrs
             RemotePort   = $webrtcPorts
-            Description  = 'Block WebRTC STUN/TURN TCP sockets explicitly bound to physical NIC IPs even when TUN metric 0 captures ALE routing.'
+            Description  = 'Block WebRTC STUN/TURN TCP sockets bound to physical NIC subnets even when TUN metric 0 captures ALE routing.'
+        }
+        Write-Host ('    WebRTC LocalIP scope: ' + ($physCidrs -join ','))
+    }
+
+    # 6.6 Browser-scoped, port-independent UDP block.  The port list above misses
+    #     TURN over 443 and any custom STUN/TURN port, and AI-Guard-Allow-CN lets
+    #     domestic destinations through on every port.  Scoping the block to the
+    #     browser executable closes that gap without touching DHCP (67/68), plain
+    #     DNS (53), NTP (123) or the node's own UDP transport - Windows Firewall
+    #     gives Block precedence over Allow at equal weight, so a blanket UDP block
+    #     would break those.
+    $shieldPath = Join-Path $PSScriptRoot '15-webrtc-browser-shield.ps1'
+    if (-not (Test-Path -LiteralPath $shieldPath)) { $shieldPath = Join-Path $Root 'scripts\15-webrtc-browser-shield.ps1' }
+    if (Test-Path -LiteralPath $shieldPath) {
+        try {
+            # child process: the shield ends with 'exit', which would terminate this
+            # script if invoked in-process via & (exit kills the calling runspace).
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $shieldPath -Apply -Quiet | Out-Null
+            Write-Host '    AI-Guard-Block-WebRTC-*-PhysUDP'
+        }
+        catch {
+            Write-Warn ('browser WebRTC shield skipped: ' + $_.Exception.Message)
         }
     }
 

@@ -244,6 +244,106 @@ function Get-ActivePhysicalNicsFast {
     return ,$list
 }
 
+# ------------------------------------------------------------ IPv4 subnet helpers
+# The WebRTC LocalAddress rules used to store the exact DHCP lease (e.g. 192.168.1.165).
+# A lease change then leaves the rule pointing at an address this host no longer owns, so it
+# silently stops blocking while still looking "enabled" in every status view.  Comparing the
+# rule against the *subnet* of each physical NIC survives an in-LAN renumber, and /32 is kept
+# whenever the subnet would also cover a TUN address (that would black-hole proxied WebRTC).
+function Get-IPv4MaskBytes([int]$PrefixLen) {
+    if ($PrefixLen -lt 0) { $PrefixLen = 0 }
+    if ($PrefixLen -gt 32) { $PrefixLen = 32 }
+    $full = [int][Math]::Floor($PrefixLen / 8)
+    $rem = $PrefixLen % 8
+    $b = New-Object 'byte[]' 4
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($i -lt $full) { $b[$i] = [byte]255 }
+        elseif ($i -eq $full -and $rem -gt 0) { $b[$i] = [byte]((0xFF -shl (8 - $rem)) -band 0xFF) }
+        else { $b[$i] = [byte]0 }
+    }
+    return ,$b
+}
+
+function Get-IPv4PrefixFromMask([string]$Mask) {
+    $bits = 0
+    foreach ($x in ([System.Net.IPAddress]::Parse($Mask)).GetAddressBytes()) {
+        for ($i = 7; $i -ge 0; $i--) { if ((([int]$x -shr $i) -band 1) -eq 1) { $bits++ } }
+    }
+    return $bits
+}
+
+function Get-IPv4NetworkText([string]$Ip, [byte[]]$Mask) {
+    $ipb = ([System.Net.IPAddress]::Parse($Ip)).GetAddressBytes()
+    $n = New-Object 'byte[]' 4
+    for ($i = 0; $i -lt 4; $i++) { $n[$i] = [byte]($ipb[$i] -band $Mask[$i]) }
+    return (([string]$n[0]) + '.' + ([string]$n[1]) + '.' + ([string]$n[2]) + '.' + ([string]$n[3]))
+}
+
+function ConvertTo-IPv4CidrSet([string[]]$Values) {
+    # normalise any mix of '1.2.3.4', '1.2.3.0/24', '1.2.3.0/255.255.255.0' into '1.2.3.0/24'
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($v in $Values) {
+        if (-not $v) { continue }
+        foreach ($tok in ([string]$v -split ',')) {
+            $t = $tok.Trim()
+            if (-not $t -or $t -eq 'Any' -or $t -match ':') { continue }
+            $parts = $t -split '/'
+            $ip = $parts[0].Trim()
+            if ($ip -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { continue }
+            $plen = 32
+            if ($parts.Count -ge 2) {
+                $mx = $parts[1].Trim()
+                if ($mx -match '^\d+$') { $plen = [int]$mx } else { $plen = Get-IPv4PrefixFromMask $mx }
+            }
+            if ($plen -lt 0 -or $plen -gt 32) { $plen = 32 }
+            $mask = Get-IPv4MaskBytes $plen
+            $cidr = (Get-IPv4NetworkText $ip $mask) + '/' + ([string]$plen)
+            if (-not $out.Contains($cidr)) { $out.Add($cidr) }
+        }
+    }
+    return $out.ToArray()   # plain return (no leading comma) so callers can wrap with @()
+}
+
+function Get-PhysicalEgressCidrsFast($Nics) {
+    $out = New-Object System.Collections.Generic.List[string]
+    $tunIps = New-Object System.Collections.Generic.List[string]
+    try {
+        foreach ($ni in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            if ($ni.OperationalStatus -ne 'Up' -or -not (Test-IsTunInterface $ni)) { continue }
+            foreach ($ua in $ni.GetIPProperties().UnicastAddresses) {
+                if ($ua.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                    $tunIps.Add($ua.Address.IPAddressToString)
+                }
+            }
+        }
+    }
+    catch { }
+    foreach ($ni in $Nics) {
+        try {
+            foreach ($ua in $ni.GetIPProperties().UnicastAddresses) {
+                if ($ua.Address.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { continue }
+                $ip = $ua.Address.IPAddressToString
+                if (-not $ip -or $ip -like '127.*' -or $ip -like '169.254.*') { continue }
+                $plen = 32
+                try { $plen = [int]$ua.PrefixLength } catch { $plen = 32 }
+                if ($plen -le 0 -or $plen -gt 32) { $plen = 32 }
+                $mask = Get-IPv4MaskBytes $plen
+                $net = Get-IPv4NetworkText $ip $mask
+                $overlap = $false
+                if ($plen -lt 32) {
+                    foreach ($ti in $tunIps) {
+                        if ((Get-IPv4NetworkText $ti $mask) -eq $net) { $overlap = $true; break }
+                    }
+                }
+                $cidr = if ($plen -ge 32 -or $overlap) { ($ip + '/32') } else { ($net + '/' + ([string]$plen)) }
+                if (-not $out.Contains($cidr)) { $out.Add($cidr) }
+            }
+        }
+        catch { }
+    }
+    return $out.ToArray()   # plain return (no leading comma) so callers can wrap with @()
+}
+
 function Get-TunAllowedLocalAddressesFast {
     # Scope AI-Guard-Allow-TUN(-Alt) to TUN IPs and standard TUN subnets (excluding any physical NIC subnet)
     # so sockets explicitly bound to a physical IP cannot match IF=xray_tun at ALE_AUTH_CONNECT_V4.
@@ -1554,11 +1654,34 @@ function Invoke-UpgradeV54 {
 
 # ---------------------------------------------------------------- task / status dispatch
 if ($RemoveTasks) {
-    Stop-WatchdogTasksAndProcesses
+    try { Stop-WatchdogTasksAndProcesses }
+    catch { Write-Host ('[!] task removal error: ' + $_.Exception.Message) -ForegroundColor Red }
+    $leftTasks = @(Get-ScheduledTask -TaskName 'AI-Guard-Mode-*' -ErrorAction SilentlyContinue)
+    if ($leftTasks.Count -gt 0) {
+        Write-Host ('[!] still registered: ' + (($leftTasks | ForEach-Object { $_.TaskName }) -join ', ')) -ForegroundColor Red
+        Write-Host '    this normally means the shell is not elevated (tasks are owned by SYSTEM).' -ForegroundColor Yellow
+        exit 3
+    }
     exit 0
 }
 if ($InstallTasks) {
-    Install-WatchdogTasks
+    # Registration errors are non-terminating under ErrorActionPreference=Continue,
+    # so success must be proven by reading the tasks back, not by the absence of an
+    # exception. A non-zero exit here is what 14-apply-policy.ps1 and
+    # 17-autorepair-task.ps1 report as a failure.
+    try { Install-WatchdogTasks }
+    catch {
+        Write-Host ('[!] task registration failed: ' + $_.Exception.Message) -ForegroundColor Red
+        exit 3
+    }
+    $evOk = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Event' -ErrorAction SilentlyContinue
+    $wdOk = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Watcher' -ErrorAction SilentlyContinue
+    $fbOk = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Fallback' -ErrorAction SilentlyContinue
+    if (-not $fbOk -or (-not $evOk -and -not $wdOk)) {
+        Write-Host ('[!] task registration incomplete (event=' + [bool]$evOk + ', watcher=' + [bool]$wdOk + ', fallback=' + [bool]$fbOk + ')') -ForegroundColor Red
+        Write-Host '    this normally means the shell is not elevated (tasks run as SYSTEM).' -ForegroundColor Yellow
+        exit 3
+    }
     exit 0
 }
 if ($Status) {
@@ -2013,20 +2136,8 @@ function Ensure-Guard {
 
         if ($wrtcEnabled) {
             $physFast = @(Get-ActivePhysicalNicsFast)
-            $physFastIps = @()
-            foreach ($pni in $physFast) {
-                try {
-                    foreach ($ua in $pni.GetIPProperties().UnicastAddresses) {
-                        if ($ua.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
-                            $ipStr = $ua.Address.IPAddressToString
-                            if ($ipStr -and $ipStr -notlike '127.*' -and $ipStr -notlike '169.254.*') {
-                                $physFastIps += $ipStr
-                            }
-                        }
-                    }
-                } catch { }
-            }
-            $physFastIps = @($physFastIps | Select-Object -Unique)
+            # expected LocalAddress scope = the subnet of every live physical NIC (not the bare lease)
+            $physFastCidrs = @(Get-PhysicalEgressCidrsFast $physFast)
 
             $rawUdp = if ($analysis.RawByRule.ContainsKey('AI-Guard-Block-WebRTC-UDP')) { [string]$analysis.RawByRule['AI-Guard-Block-WebRTC-UDP'] } else { '' }
             $rawTcp = if ($analysis.RawByRule.ContainsKey('AI-Guard-Block-WebRTC-TCP')) { [string]$analysis.RawByRule['AI-Guard-Block-WebRTC-TCP'] } else { '' }
@@ -2043,17 +2154,19 @@ function Ensure-Guard {
                     }
                 }
             }
-            if (-not $needsFwSync -and $physFastIps.Count -gt 0) {
+            if (-not $needsFwSync -and $physFastCidrs.Count -gt 0) {
                 if ((-not $localUdpActive) -or (-not $localTcpActive) -or (-not $rawLocalUdp) -or (-not $rawLocalTcp)) {
                     $needsFwSync = $true
                 }
                 else {
-                    foreach ($pip in $physFastIps) {
-                        $laPat = '(?:^|\|)LA4=' + [regex]::Escape($pip) + '(?:/32)?(?:/255\.255\.255\.255)?(?:\||$)'
-                        if (($rawLocalUdp -notmatch $laPat) -or ($rawLocalTcp -notmatch $laPat)) {
-                            $needsFwSync = $true
-                            break
-                        }
+                    # Set equality on purpose: a lease the router no longer hands out must count
+                    # as drift too, otherwise the rule keeps an address this host does not own and
+                    # silently blocks nothing while still showing Enabled=True.
+                    $expLa = (@($physFastCidrs) | Sort-Object -Unique) -join ';'
+                    foreach ($rawLa in @($rawLocalUdp, $rawLocalTcp)) {
+                        $la4 = @([regex]::Matches([string]$rawLa, '(?:^|\|)LA4=([^|]+)') | ForEach-Object { $_.Groups[1].Value })
+                        $curLa = (@(ConvertTo-IPv4CidrSet $la4) | Sort-Object -Unique) -join ';'
+                        if ($curLa -ne $expLa) { $needsFwSync = $true; break }
                     }
                 }
             }
@@ -2113,42 +2226,40 @@ function Ensure-Guard {
                     }
                 }
 
-                if ($physFastIps.Count -gt 0) {
+                if ($physFastCidrs.Count -gt 0) {
                     $ruleLocalUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -ErrorAction SilentlyContinue
                     if (-not $ruleLocalUdp) {
                         New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -DisplayName 'AI-Guard-Block-WebRTC-LocalIP-UDP' `
-                            -Direction Outbound -Action Block -Protocol UDP -LocalAddress $physFastIps -RemotePort $webrtcPorts `
+                            -Direction Outbound -Action Block -Protocol UDP -LocalAddress $physFastCidrs -RemotePort $webrtcPorts `
                             -Profile Any -Enabled True `
-                            -Description 'Block WebRTC STUN/TURN UDP bound to physical NIC IPs even when TUN metric 0 captures ALE routing.' | Out-Null
+                            -Description 'Block WebRTC STUN/TURN UDP bound to physical NIC subnets even when TUN metric 0 captures ALE routing.' | Out-Null
                         $script:repairedItems += 'WebRTC-LocalIP-UDP-created'
-                        Say ('    created AI-Guard-Block-WebRTC-LocalIP-UDP (' + ($physFastIps -join ',') + ')')
+                        Say ('    created AI-Guard-Block-WebRTC-LocalIP-UDP (' + ($physFastCidrs -join ',') + ')')
                     }
                     else {
-                        $curLa = @(($ruleLocalUdp | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).LocalAddress | Where-Object { $_ -and $_ -ne 'Any' })
-                        $missingIp = @($physFastIps | Where-Object { $curLa -notcontains $_ })
-                        if ($missingIp.Count -gt 0 -or $ruleLocalUdp.Enabled -ne 'True') {
-                            Set-NetFirewallRule -InputObject $ruleLocalUdp -LocalAddress $physFastIps -Enabled True -ErrorAction SilentlyContinue
+                        $curLa = @(ConvertTo-IPv4CidrSet @(($ruleLocalUdp | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).LocalAddress | Where-Object { $_ -and $_ -ne 'Any' }))
+                        if (((($curLa | Sort-Object -Unique) -join ';') -ne ((@($physFastCidrs) | Sort-Object -Unique) -join ';')) -or $ruleLocalUdp.Enabled -ne 'True') {
+                            Set-NetFirewallRule -InputObject $ruleLocalUdp -LocalAddress $physFastCidrs -Enabled True -ErrorAction SilentlyContinue
                             $script:repairedItems += 'WebRTC-LocalIP-UDP-updated'
-                            Say ('    updated AI-Guard-Block-WebRTC-LocalIP-UDP (' + ($physFastIps -join ',') + ')')
+                            Say ('    updated AI-Guard-Block-WebRTC-LocalIP-UDP (' + ($physFastCidrs -join ',') + ')')
                         }
                     }
 
                     $ruleLocalTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -ErrorAction SilentlyContinue
                     if (-not $ruleLocalTcp) {
                         New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -DisplayName 'AI-Guard-Block-WebRTC-LocalIP-TCP' `
-                            -Direction Outbound -Action Block -Protocol TCP -LocalAddress $physFastIps -RemotePort $webrtcPorts `
+                            -Direction Outbound -Action Block -Protocol TCP -LocalAddress $physFastCidrs -RemotePort $webrtcPorts `
                             -Profile Any -Enabled True `
-                            -Description 'Block WebRTC STUN/TURN TCP bound to physical NIC IPs even when TUN metric 0 captures ALE routing.' | Out-Null
+                            -Description 'Block WebRTC STUN/TURN TCP bound to physical NIC subnets even when TUN metric 0 captures ALE routing.' | Out-Null
                         $script:repairedItems += 'WebRTC-LocalIP-TCP-created'
-                        Say ('    created AI-Guard-Block-WebRTC-LocalIP-TCP (' + ($physFastIps -join ',') + ')')
+                        Say ('    created AI-Guard-Block-WebRTC-LocalIP-TCP (' + ($physFastCidrs -join ',') + ')')
                     }
                     else {
-                        $curLa = @(($ruleLocalTcp | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).LocalAddress | Where-Object { $_ -and $_ -ne 'Any' })
-                        $missingIp = @($physFastIps | Where-Object { $curLa -notcontains $_ })
-                        if ($missingIp.Count -gt 0 -or $ruleLocalTcp.Enabled -ne 'True') {
-                            Set-NetFirewallRule -InputObject $ruleLocalTcp -LocalAddress $physFastIps -Enabled True -ErrorAction SilentlyContinue
+                        $curLa = @(ConvertTo-IPv4CidrSet @(($ruleLocalTcp | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).LocalAddress | Where-Object { $_ -and $_ -ne 'Any' }))
+                        if (((($curLa | Sort-Object -Unique) -join ';') -ne ((@($physFastCidrs) | Sort-Object -Unique) -join ';')) -or $ruleLocalTcp.Enabled -ne 'True') {
+                            Set-NetFirewallRule -InputObject $ruleLocalTcp -LocalAddress $physFastCidrs -Enabled True -ErrorAction SilentlyContinue
                             $script:repairedItems += 'WebRTC-LocalIP-TCP-updated'
-                            Say ('    updated AI-Guard-Block-WebRTC-LocalIP-TCP (' + ($physFastIps -join ',') + ')')
+                            Say ('    updated AI-Guard-Block-WebRTC-LocalIP-TCP (' + ($physFastCidrs -join ',') + ')')
                         }
                     }
                 }
@@ -2157,6 +2268,21 @@ function Ensure-Guard {
             if (Set-WebRtcPolicy -Enable $true) {
                 $script:repairedItems += 'WebRTC-policy'
                 Say '    repaired: Chromium WebRtcIPHandlingPolicy = disable_non_proxied_udp'
+            }
+
+            # Port-independent browser shield: BLOCK all UDP from chrome.exe/msedge.exe on the
+            # physical NICs, so TURN-over-443 and any custom STUN port cannot reach a domestic
+            # relay through AI-Guard-Allow-CN.  Idempotent; also repairs stale interface/IP drift
+            # on the stock AI-Guard-Block-WebRTC-* rules (DHCP lease change).
+            $shieldScript = Join-Path $PSScriptRoot '15-webrtc-browser-shield.ps1'
+            if (-not (Test-Path -LiteralPath $shieldScript)) { $shieldScript = Join-Path $Root 'scripts\15-webrtc-browser-shield.ps1' }
+            if (Test-Path -LiteralPath $shieldScript) {
+                try {
+                    # child process: the shield ends with 'exit', which would abort this
+                    # script if invoked in-process via & (exit kills the calling runspace).
+                    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $shieldScript -Apply -Quiet | Out-Null
+                }
+                catch { }
             }
         }
         else {
