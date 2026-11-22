@@ -34,8 +34,11 @@
 #     normal routing table. Closing that class needs a different mechanism (a server list,
 #     or blocking udp/443 outright, which breaks QUIC and HTTP/3 as well).
 #
-#     Within that scope WebRTC cannot gather a srflx candidate, so calls fall back to
-#     relay or fail. That is the intended trade: closing the real-IP leak matters more
+#     Within that scope a STUN socket whose packets actually traverse these rules gets no
+#     reply, so a srflx candidate cannot be gathered from it and calls fall back to relay or
+#     fail. "Actually traverse" carries two limits, both reported rather than hidden: a rule
+#     ahead of the pair can take the packet first (surfaced as a caveat), and a port outside
+#     the set is not covered at all. That is the intended trade: closing the real-IP leak matters more
 #     than keeping WebRTC fully working. A B2 variant (match CN STUN ip/domain, block only
 #     those) would keep foreign STUN alive but needs a maintained target list and leaves a
 #     fail-open path whenever the list goes stale, so it is deliberately not implemented.
@@ -766,8 +769,11 @@ if (-not $Apply) {
     }
     Say ' '
     if ($dbTop -and $core.State -eq 'present' -and $core.Shadow -eq 0) {
-        Say 'verdict: B1 ACTIVE - both rules loaded, every port in the configured STUN/TURN' 'Green'
-        Say '         set is dropped inside the core for ALL destinations, foreign included.' 'Green'
+        Say 'verdict: B1 ACTIVE - both rules loaded and shaped correctly, so by configuration' 'Green'
+        Say '         every port in the configured STUN/TURN set is dropped inside the core for' 'Green'
+        Say '         ALL destinations, foreign included. This is a routing-table statement,' 'Green'
+        Say '         not a packet capture: it says what the table would do, not what one probe' 'Green'
+        Say '         observed. Pair it with verify-leak-test.ps1 for measured behaviour.' 'Green'
         Say '         scope: these twelve ports over udp+tcp. STUN/TURN over any other port' 'Green'
         Say '         (udp/443, vendor ports) is outside this guard by design.' 'Green'
         if ($core.Caveat -gt 0) {
@@ -776,8 +782,8 @@ if (-not $Apply) {
             # or inbound the STUN socket belongs to - so the verdict has to say so instead of
             # letting "no shadow" read as "every preceding rule was ruled out".
             Say ('         caveat: ' + $core.Caveat + ' rule(s) above are origin-scoped and were NOT') 'Yellow'
-            Say '         ruled out. They carry no port/domain narrowing, so STUN sent from' 'Yellow'
-            Say '         that process or inbound is not covered by this guard. ACTIVE means' 'Yellow'
+            Say '         ruled out. They carry no port/domain narrowing, so a packet sent from' 'Yellow'
+            Say '         that process or inbound may bypass B1 rather than reach it. ACTIVE means' 'Yellow'
             Say '         "nothing here matches an arbitrary STUN probe", not "all clear".' 'Yellow'
         }
         exit 0

@@ -406,10 +406,10 @@ switch ($guard.State) {
 $guardOk = ($guard.State -eq 'present' -and $guard.Shadow -eq 0)
 if ($guard.Config) { Write-Host ('                  ' + $guard.Config) -ForegroundColor DarkGray }
 
-Write-Host '    B1 drops these ports for every destination, so a foreign STUN reply is a failure' -ForegroundColor DarkGray
-Write-Host '    exactly like a domestic one. Scope is these twelve ports over udp+tcp: STUN on' -ForegroundColor DarkGray
-Write-Host '    a non-standard port (udp/443) is not covered by this guard. webRTC may fall back' -ForegroundColor DarkGray
-Write-Host '    to relay, by design.' -ForegroundColor DarkGray
+Write-Host '    B1 is configured to drop these ports for every destination, so a foreign STUN' -ForegroundColor DarkGray
+Write-Host '    reply is a failure just like a domestic one (a reply proves the packet left).' -ForegroundColor DarkGray
+Write-Host '    Scope is these twelve ports over udp+tcp: STUN on a non-standard port' -ForegroundColor DarkGray
+Write-Host '    (udp/443) is not covered by this guard. webRTC may fall back to relay, by design.' -ForegroundColor DarkGray
 
 $stunTargets = @(
     @{ Name = 'miwifi (CN)'; Target = 'stun.miwifi.com'; Port = 3478 },
@@ -434,7 +434,7 @@ foreach ($t in $stunTargets) {
         'timeout' {
             if ($guardOk -and $tunIsUp) {
                 $stunPass++
-                Write-Host ('[PASS] ' + $t.Name + ' silent - dropped by the guard pair in the core') -ForegroundColor Green
+                Write-Host ('[PASS] ' + $t.Name + ' silent - no reply on the configured port') -ForegroundColor Green
             }
             elseif (-not $tunIsUp) {
                 $stunInc++
@@ -475,7 +475,12 @@ if ($stunFail -gt 0) {
 }
 elseif ($stunPass -eq $stunTargets.Count) {
     Write-Host ('[PASS] all ' + $stunTargets.Count + ' STUN endpoints silent with both guard rules loaded') -ForegroundColor Green
-    Write-Host '       none of the probed servers can learn the real address over these ports.' -ForegroundColor Green
+    Write-Host '       no probed endpoint sent a reply on the configured ports during this run.' -ForegroundColor Green
+    Write-Host '       attribution: silence alone does NOT prove the core dropped the packet.' -ForegroundColor DarkGray
+    Write-Host '       the physical-NIC STUN rules verified earlier in this run block the same' -ForegroundColor DarkGray
+    Write-Host '       egress and were active at the same time, so either layer can explain a' -ForegroundColor DarkGray
+    Write-Host '       silent probe. Separating the two needs the isolation test: keep the pair,' -ForegroundColor DarkGray
+    Write-Host '       disable the NIC rules, probe again, then re-enable them.' -ForegroundColor DarkGray
     Write-Host '       STUN/TURN on a port outside the set is not covered; webRTC calls may' -ForegroundColor Green
     Write-Host '       still need a relay.' -ForegroundColor Green
     if ($guard.Caveat -gt 0) {
@@ -483,7 +488,8 @@ elseif ($stunPass -eq $stunTargets.Count) {
         # probe, not that every rule ahead of it was cleared. An origin-scoped rule still
         # bypasses the pair for traffic from that origin.
         Write-Host ('[i] caveat: ' + $guard.Caveat + ' origin-scoped rule(s) above were NOT ruled out -') -ForegroundColor Yellow
-        Write-Host '    PASS means no blanket shadow, not that every preceding rule is clear.' -ForegroundColor Yellow
+        Write-Host '    traffic matching them may bypass the pair. PASS means no blanket shadow,' -ForegroundColor Yellow
+        Write-Host '    not that every preceding rule is clear.' -ForegroundColor Yellow
     }
 }
 else {
@@ -508,11 +514,30 @@ if ($script:Unresolved -gt 0) {
     exit 2
 }
 if ($guard.Caveat -gt 0) {
-    Write-Host ('RESULT: PASSED with ' + $guard.Caveat + ' caveat(s) - no leak, no reply, guard pair loaded,') -ForegroundColor Green
-    Write-Host '        but origin-scoped rules above the pair were not ruled out' -ForegroundColor Green
+    # Deliberately no "no leak" wording. What this run measured is: five endpoints, silent,
+    # with the pair loaded. Both a core-side drop and a NIC-side drop produce that, and an
+    # origin-scoped rule ahead of the pair is not cleared by static inspection. State the
+    # observation, then the two limits that bound it.
+    Write-Host 'RESULT: PASSED WITH CAVEAT' -ForegroundColor Green
+    Write-Host ('        all ' + $stunTargets.Count + ' configured STUN endpoints were silent during this test.') -ForegroundColor Green
+    Write-Host '        both B1 guard rules were loaded and the complete configured' -ForegroundColor Green
+    Write-Host '        12-port UDP/TCP set was present.' -ForegroundColor Green
+    Write-Host '        CAVEAT: an origin-scoped direct rule precedes the guard.' -ForegroundColor Yellow
+    Write-Host '                traffic matching that rule may bypass B1.' -ForegroundColor Yellow
+    Write-Host '        SCOPE : non-standard STUN/TURN ports, including udp/443,' -ForegroundColor Yellow
+    Write-Host '                are outside this guard.' -ForegroundColor Yellow
+    Write-Host '        ATTRIBUTION: silence does not by itself prove a core-side drop -' -ForegroundColor DarkGray
+    Write-Host '                the physical-NIC STUN rules block the same egress.' -ForegroundColor DarkGray
 }
 else {
-    Write-Host 'RESULT: PASSED - no leak, no reply, guard pair loaded' -ForegroundColor Green
+    # Even with no shadow and no caveat, this run is a five-endpoint observation on twelve
+    # ports. It is not a statement that every WebRTC leak path is closed.
+    Write-Host 'RESULT: PASSED (no shadow, no caveat)' -ForegroundColor Green
+    Write-Host ('        all ' + $stunTargets.Count + ' configured STUN endpoints were silent during this test.') -ForegroundColor Green
+    Write-Host '        both B1 guard rules were loaded with the complete configured' -ForegroundColor Green
+    Write-Host '        12-port UDP/TCP set, and no preceding rule matched an arbitrary probe.' -ForegroundColor Green
+    Write-Host '        SCOPE : non-standard STUN/TURN ports, including udp/443, are outside' -ForegroundColor Yellow
+    Write-Host '                this guard. SILENCE is not proof of a core-side drop.' -ForegroundColor Yellow
 }
 Write-Host 'Verification completed.' -ForegroundColor Cyan
 exit 0
