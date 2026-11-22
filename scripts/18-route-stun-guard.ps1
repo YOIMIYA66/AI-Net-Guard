@@ -633,6 +633,32 @@ if ($Restore) {
         Say '[+] the restored set carries no STUN-GUARD rule - the block is fully undone' 'Green'
     }
     Say ('    live sha256: ' + (Get-FileSha $liveDb)) 'DarkGray'
+
+    # A restore replaces the main file only. Any journal sidecar still sitting next to it
+    # describes the database that was just replaced, and the next client to open the file
+    # would try to roll it in - silently undoing the restore or corrupting the result. The
+    # pre-flight check refused to start with a non-empty -wal, so this ASSERTS the restore
+    # left nothing behind rather than assuming it. This runs after every sqlite call on
+    # purpose: a connection can itself clear a sidecar, which would hide the evidence.
+    $stale = @()
+    foreach ($sfx in @('-wal', '-journal', '-shm')) {
+        $f = $liveDb + $sfx
+        if (Test-Path -LiteralPath $f) {
+            $len = 0
+            try { $len = (Get-Item -LiteralPath $f).Length } catch { $len = -1 }
+            $stale += ('' + $sfx + '(' + $len + 'B)')
+        }
+    }
+    if ($stale.Count -gt 0) {
+        Say ('[!] journal sidecar(s) survived the restore: ' + ($stale -join ', ')) 'Red'
+        Say '    they belong to the state that was just replaced; replaying them would undo' 'Yellow'
+        Say '    this restore. Remove them before starting v2rayN:' 'Yellow'
+        Say ('      Remove-Item -LiteralPath "' + $liveDb + '-wal","' + $liveDb + '-shm","' + $liveDb + '-journal" -ErrorAction SilentlyContinue') 'DarkGray'
+        Say ('    pre-restore snapshot : ' + $preFile) 'DarkGray'
+        exit 3
+    }
+    Say '[+] no journal sidecar next to the database - the restored file is the whole story' 'Green'
+
     Say ('    undo this restore by copying ' + $preFile) 'DarkGray'
     Say '    reopen v2rayN so the core regenerates its config' 'DarkGray'
     exit 0
@@ -744,6 +770,16 @@ if (-not $Apply) {
         Say '         set is dropped inside the core for ALL destinations, foreign included.' 'Green'
         Say '         scope: these twelve ports over udp+tcp. STUN/TURN over any other port' 'Green'
         Say '         (udp/443, vendor ports) is outside this guard by design.' 'Green'
+        if ($core.Caveat -gt 0) {
+            # ACTIVE is a statement about blanket shadowing only. Origin-scoped rules cannot
+            # be cleared by static inspection - whether they matter depends on which process
+            # or inbound the STUN socket belongs to - so the verdict has to say so instead of
+            # letting "no shadow" read as "every preceding rule was ruled out".
+            Say ('         caveat: ' + $core.Caveat + ' rule(s) above are origin-scoped and were NOT') 'Yellow'
+            Say '         ruled out. They carry no port/domain narrowing, so STUN sent from' 'Yellow'
+            Say '         that process or inbound is not covered by this guard. ACTIVE means' 'Yellow'
+            Say '         "nothing here matches an arbitrary STUN probe", not "all clear".' 'Yellow'
+        }
         exit 0
     }
     if ($core.State -eq 'present' -and $core.Shadow -gt 0) {
@@ -861,7 +897,7 @@ Say ' '
 Say 'next steps:' 'Cyan'
 Say '  1. start v2rayN again (it regenerates the core config from the database)'
 Say '  2. run scripts\18-route-stun-guard.ps1 (no switch) - expect "B1 ACTIVE"'
-Say '  3. run scripts\verify-leak-test.ps1 - section 9 must show every STUN endpoint'
+Say '  3. run scripts\verify-leak-test.ps1 - section 9 must show every probed endpoint'
 Say '     silent, foreign ones included. Any reply at all, domestic or foreign, fails.'
 Say ('to roll back: .\18-route-stun-guard.ps1 -Restore -BackupDir "' + $bkDir + '"') 'DarkGray'
 Say ('    (core config currently on disk: ' + $core2.State + ' - restart v2rayN to load the change)') 'DarkGray'

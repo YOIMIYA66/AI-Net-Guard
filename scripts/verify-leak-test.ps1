@@ -474,8 +474,17 @@ if ($stunFail -gt 0) {
     Write-Host '       a foreign reply is not acceptable here: B1 blocks the port for every host' -ForegroundColor Yellow
 }
 elseif ($stunPass -eq $stunTargets.Count) {
-    Write-Host ('[PASS] all ' + $stunTargets.Count + ' STUN endpoints silent with both guard rules loaded -') -ForegroundColor Green
-    Write-Host '       no srflx candidate can carry the real address. webRTC calls may need a relay.' -ForegroundColor Green
+    Write-Host ('[PASS] all ' + $stunTargets.Count + ' STUN endpoints silent with both guard rules loaded') -ForegroundColor Green
+    Write-Host '       none of the probed servers can learn the real address over these ports.' -ForegroundColor Green
+    Write-Host '       STUN/TURN on a port outside the set is not covered; webRTC calls may' -ForegroundColor Green
+    Write-Host '       still need a relay.' -ForegroundColor Green
+    if ($guard.Caveat -gt 0) {
+        # Same reason as 18's verdict: silence proves the pair is reached for an arbitrary
+        # probe, not that every rule ahead of it was cleared. An origin-scoped rule still
+        # bypasses the pair for traffic from that origin.
+        Write-Host ('[i] caveat: ' + $guard.Caveat + ' origin-scoped rule(s) above were NOT ruled out -') -ForegroundColor Yellow
+        Write-Host '    PASS means no blanket shadow, not that every preceding rule is clear.' -ForegroundColor Yellow
+    }
 }
 else {
     $script:Unresolved++
@@ -498,6 +507,12 @@ if ($script:Unresolved -gt 0) {
     Write-Host 'Verification completed.' -ForegroundColor Cyan
     exit 2
 }
-Write-Host 'RESULT: PASSED - no leak, no reply, guard pair loaded' -ForegroundColor Green
+if ($guard.Caveat -gt 0) {
+    Write-Host ('RESULT: PASSED with ' + $guard.Caveat + ' caveat(s) - no leak, no reply, guard pair loaded,') -ForegroundColor Green
+    Write-Host '        but origin-scoped rules above the pair were not ruled out' -ForegroundColor Green
+}
+else {
+    Write-Host 'RESULT: PASSED - no leak, no reply, guard pair loaded' -ForegroundColor Green
+}
 Write-Host 'Verification completed.' -ForegroundColor Cyan
 exit 0
