@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.0 - network auto-repair scheduled tasks (status / install / remove / self-test).
+    AI-Net-Guard v5.8.1 - network auto-repair scheduled tasks (status / install / remove / self-test).
 
 .DESCRIPTION
     Windows can invalidate part of the static guard without any user action: a NIC
@@ -16,15 +16,17 @@
           no idle RAM cost.
 
       AI-Guard-Mode-Fallback
-          Periodic check, default every 60 minutes. The guard logic itself leaves
-          through the zero-CIM fast path in roughly 90 ms, yet a full run measures
-          about 17 s end to end because the firewall rule set is enumerated
-          several times (measured on this machine, 2026-11-22).
+          Periodic check, default every 60 minutes. A healthy run costs one
+          PowerShell start-up plus the guard's zero-CIM fast path; measured 5.1 s
+          of wall clock per fire on this machine in SYSTEM context (2026-11-22,
+          after the v5.8.0 drift-gate rebuild; it was ~17 s before that).
 
       The event task deliberately does more than the periodic one: it re-verifies
       the whole guard, re-syncs node rules and TUN allowances, and waits an extra
-      800 ms for Wintun to settle. That path measures about 20 s on this class of
-      hardware and runs only on an actual network transition or wake, never on a
+      800 ms for Wintun to settle. Both paths now land at ~5 s on this class of
+      hardware - the difference is the extra work, not the process start-up, since
+      a bare PowerShell process plus the 148 KB script parse already costs 1.3 s.
+      The event task runs only on an actual network transition or wake, never on a
       timer.
 
     Both tasks invoke 07-mode.ps1, so repair logic is never duplicated here.
@@ -32,7 +34,8 @@
     Modes (-Status is the default):
         .\17-autorepair-task.ps1                      task state and last result
         .\17-autorepair-task.ps1 -Install             (re)register and verify
-        .\17-autorepair-task.ps1 -Install -SelfTest   also fire once, require exit 0
+        .\17-autorepair-task.ps1 -Install -SelfTest   fire the event task twice and
+                                                      the fallback once, require exit 0
         .\17-autorepair-task.ps1 -Remove              remove every AI-Guard-Mode-* task
 
 .PARAMETER Root
@@ -46,8 +49,10 @@
     Upper bound for one -SelfTest event run. Default 180.
 
 .PARAMETER SelfTest
-    After -Install, start AI-Guard-Mode-Event on demand, wait for it to finish and
-    require exit code 0. Prints the measured wall-clock duration of the run.
+    After -Install, start AI-Guard-Mode-Event twice (first fire repairs, second
+    measures the steady state) and AI-Guard-Mode-Fallback once, wait for each to
+    finish and require exit code 0 from all three. Prints the measured wall-clock
+    duration of every run.
 
 .NOTES
     -Install / -Remove / -SelfTest require an elevated shell because the tasks run
@@ -193,7 +198,8 @@ function Show-Tasks {
     else {
         Write-Host 'verdict: OFF - no auto-repair task registered (drift stays until you repair manually)' -ForegroundColor Red
     }
-    Write-Host 'cost   : 0 MB idle RAM, 0 % idle CPU ; fallback ~17 s, event repair ~21 s per fire' -ForegroundColor DarkGray
+    Write-Host 'cost   : 0 MB idle RAM, 0 % idle CPU ; fires only on boot / network change / wake + a 60-min timer' -ForegroundColor DarkGray
+    Write-Host '         (no wall-clock guess here on purpose - measure it with -Install -SelfTest)' -ForegroundColor DarkGray
     Write-Host ' '
     return $found
 }
@@ -206,16 +212,16 @@ function Invoke-ModeChild([string[]]$ExtraArgs) {
     return $LASTEXITCODE
 }
 
-function Invoke-EventSelfTest {
-    $before = Get-ScheduledTaskInfo -TaskName $EventTask -ErrorAction SilentlyContinue
+function Invoke-TaskSelfTest([string]$TaskName) {
+    $before = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue
     $beforeRun = [datetime]::MinValue
     if ($before -and $before.LastRunTime.Year -gt 1999) { $beforeRun = $before.LastRunTime }
 
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    try { Start-ScheduledTask -TaskName $EventTask -ErrorAction Stop }
+    try { Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop }
     catch {
         $sw.Stop()
-        Write-Host ('[!] could not start ' + $EventTask + ': ' + $_.Exception.Message) -ForegroundColor Red
+        Write-Host ('[!] could not start ' + $TaskName + ': ' + $_.Exception.Message) -ForegroundColor Red
         return $null
     }
 
@@ -223,15 +229,15 @@ function Invoke-EventSelfTest {
     $done = $false
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 300
-        $info = Get-ScheduledTaskInfo -TaskName $EventTask -ErrorAction SilentlyContinue
-        $task = Get-ScheduledTask -TaskName $EventTask -ErrorAction SilentlyContinue
+        $info = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         if (-not $info -or -not $task) { break }
         $st = [string]$task.State
         if ($info.LastRunTime -gt $beforeRun -and $st -ne 'Running' -and $st -ne 'Queued') { $done = $true; break }
     }
     $sw.Stop()
 
-    $final = Get-ScheduledTaskInfo -TaskName $EventTask -ErrorAction SilentlyContinue
+    $final = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue
     $code = if ($final) { $final.LastTaskResult } else { $null }
     return [pscustomobject]@{
         Completed = $done
@@ -306,22 +312,33 @@ Write-Host ('[+] ' + $FallbackTask + '  -> ' + $fallback.State + '  triggers: ' 
 if ($SelfTest) {
     Write-Host ' '
     Write-Host '[*] self-test: firing the event task once (this also repairs any live drift)' -ForegroundColor DarkGray
-    $r1 = Invoke-EventSelfTest
+    $r1 = Invoke-TaskSelfTest $EventTask
     if (-not $r1) { exit 4 }
     $ok = ($r1.Completed -and [int64]$r1.Result -eq 0)
     Write-Host ('    run 1 : ' + $r1.Seconds + ' s   result: ' + (Format-TaskResult $r1.Result)) `
         -ForegroundColor $(if ($ok) { 'Green' } else { 'Red' })
 
     Write-Host '[*] self-test: second run measures the steady-state (nothing to repair) cost' -ForegroundColor DarkGray
-    $r2 = Invoke-EventSelfTest
+    $r2 = Invoke-TaskSelfTest $EventTask
     if (-not $r2) { exit 4 }
     $ok2 = ($r2.Completed -and [int64]$r2.Result -eq 0)
     Write-Host ('    run 2 : ' + $r2.Seconds + ' s   result: ' + (Format-TaskResult $r2.Result)) `
         -ForegroundColor $(if ($ok2) { 'Green' } else { 'Red' })
 
-    if (-not ($ok -and $ok2)) {
+    # The periodic path is a different invocation (-Mode Auto -Quiet, no Wintun settle) and
+    # on a fresh install it has never run, so "never" is the only value it can report. Firing
+    # it here proves the 60-minute safety net works instead of assuming it does.
+    Write-Host '[*] self-test: firing the periodic fallback once (the 60-minute safety net)' -ForegroundColor DarkGray
+    $r3 = Invoke-TaskSelfTest $FallbackTask
+    if (-not $r3) { exit 4 }
+    $ok3 = ($r3.Completed -and [int64]$r3.Result -eq 0)
+    Write-Host ('    fallback: ' + $r3.Seconds + ' s   result: ' + (Format-TaskResult $r3.Result)) `
+        -ForegroundColor $(if ($ok3) { 'Green' } else { 'Red' })
+
+    if (-not ($ok -and $ok2 -and $ok3)) {
         Write-Host ' '
         Write-Host '[!] self-test failed - inspect: Get-ScheduledTaskInfo -TaskName AI-Guard-Mode-Event' -ForegroundColor Red
+        Write-Host '    or: Get-ScheduledTaskInfo -TaskName AI-Guard-Mode-Fallback' -ForegroundColor Red
         exit 4
     }
 }

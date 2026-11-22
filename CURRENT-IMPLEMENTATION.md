@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.8.0 · 路由层 STUN 封锁 + 自愈快路径重构 + 显式物理境外硬阻断）
+# AI-Net-Guard 实现方案与持续审查文档（v5.8.1 · 路由层 STUN 封锁 + 自愈快路径重构 + 显式物理境外硬阻断）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
-> 节点同步：**v5.8.0 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.8.0 正式版**（新增 v2rayN 路由层 `STUN/TURN` 端口封锁 + 自愈快路径 `5.8 s → 2.1 s` + `AI-Guard-Block-Foreign-Physical` 原地更新，`16` 项防护开关完备）
+> 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
+> 版本状态：**v5.8.1 正式版**（新增 v2rayN 路由层 `STUN/TURN` 端口封锁 + 自愈快路径提权实测 `20.7 s → 5.1 s` + `AI-Guard-Block-Foreign-Physical` 原地更新 + `17 -SelfTest` 补齐兜底腿，`16` 项防护开关完备）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -154,7 +154,7 @@ flowchart TD
 | [`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) | 声明式策略编排器：读取 `backup\guard-policy.json` 对本表 16 项特性做增量幂等应用 |
 | [`scripts/15-webrtc-browser-shield.ps1`](./scripts/15-webrtc-browser-shield.ps1) | 浏览器级 WebRTC 出口封锁：按 `Program` 维度在物理网卡上封锁全部出站 UDP（覆盖 443 与任意 TURN 端口），只作用于浏览器进程；**并对代理核心 `xray` / `sing-box` / `mihomo` 封锁 STUN/TURN 端口（3478/3479/5349/5350/19302-19309，UDP+TCP）**——TUN 模式下真正从物理网卡出网的是核心，境内 STUN 经 `geoip:cn → direct` 会让 STUN 服务器看到真实 ISP 地址；同时修复原 4 条 WebRTC 规则的 interface / LocalAddress 漂移，`LocalAddress` 改按网段写入 |
 | [`scripts/16-browser-residue.ps1`](./scripts/16-browser-residue.ps1) | 已卸载浏览器残留清理（DCBrowser / Firefox）：注册键 + `RegisteredApplications` 值 + 孤儿 `%APPDATA%\Mozilla`，写 JSON 备份后可 `-Restore` 回滚；刻意不动属其它软件的 `MozillaPlugins` / `NativeMessagingHosts` |
-| [`scripts/17-autorepair-task.ps1`](./scripts/17-autorepair-task.ps1) | 自愈计划任务管理器：`-Status` 只读体检（状态 / 触发器 / 上次结果 / 下次运行），`-Install` 复用 `07-mode.ps1 -InstallTasks` 注册事件任务与 60 分钟兜底并回读校验，`-Install -SelfTest` 实跑两次验证退出码 0，`-Remove` 清空 `AI-Guard-Mode-*`；未提权时 exit 1 而非静默成功 |
+| [`scripts/17-autorepair-task.ps1`](./scripts/17-autorepair-task.ps1) | 自愈计划任务管理器：`-Status` 只读体检（状态 / 触发器 / 上次结果 / 下次运行），`-Install` 复用 `07-mode.ps1 -InstallTasks` 注册事件任务与 60 分钟兜底并回读校验，`-Install -SelfTest` 事件任务实跑两次（首次修复 / 二次稳态）+ 兜底任务实跑一次，三条退出码全为 0 才算通过，`-Remove` 清空 `AI-Guard-Mode-*`；未提权时 exit 1 而非静默成功 |
 | [`scripts/18-route-stun-guard.ps1`](./scripts/18-route-stun-guard.ps1) | **路由层 STUN/TURN 封锁（WebRTC 防泄露的兜底层）**：实测证明防火墙挡不住核心重发的那一跳（TUN 提供方在 `ALE_AUTH_CONNECT` 用 callout PERMIT 终结分类，防火墙 Block 过滤器不被求值），故改在 xray 路由表顶部插入 `port=3478,3479,5349,5350,19302-19309 → block`（UDP+TCP），照抄 v2rayN 自身「阻断udp443」手法；`-Verify` 只读、`-Apply` 先备份 `guiNDB.db` 再写入、`-Restore` 回滚；v2rayN 运行中拒绝执行（内存副本会覆盖 DB） |
 | [`scripts/watchdog.ps1`](./scripts/watchdog.ps1) | 可选的 CLR 事件驱动常驻监听脚本（默认不启用，已支持多内核 TUN 识别与 PS7 伪接口过滤） |
 | [`scripts/align-xray-egress.ps1`](./scripts/align-xray-egress.ps1) | 物理出口 socket 对齐工具：消除 `sing-box` TUN 与 Xray 内核之间的内部二跳中继 |
@@ -421,5 +421,14 @@ v5.7.x 把"防火墙 Block 规则已启用"当成 WebRTC 已封堵的证据，�
 `Get-NetFirewallRule` 单次约 1233 ms（加不加 `-Name` 都一样，模块先做全量 CIM 往返再客户端过滤），每个 `Get-NetFirewall*Filter` 约 290~337 ms。新增 `RuleIndex`（Name / DisplayName 双键）+ `RuleFilterCache`（`Kind|Key`）两层缓存，并提供 `Reset-RuleCache`：**任何 `Set-/New-/Remove-/Disable-/Enable-NetFirewallRule` 之后必须失效缓存**，否则会拿陈旧对象去"修复"它刚修好的漂移。
 
 对健康路径收益接近零（健康路径本就不怎么调这些命令），但对 `15` 自身显著：`-Verify` 45.1 s → 11.9 s，`-Apply` 12.4 s → 6.6 s，`-DryRun` 32.4 s → 7.8 s。
+
+### 16.6 提权实测与 `17 -SelfTest` 补齐兜底腿（v5.8.1）
+
+在真实 SYSTEM 上下文（提权终端跑 `17-autorepair-task.ps1 -Install -SelfTest`）实测：**run 1 = 5.09 s / run 2 = 5.17 s，result 均为 0**，较改前的 20.69 s / 21.18 s 缩短约 4 倍。剩余的 5 s 构成为：任务计划程序启动 + SYSTEM 冷进程 ~2 s、`-OnNetworkEvent` 的 350 ms 预延时与 800 ms 后置复核、以及脚本自身约 2.1 s（其中 1.33 s 是 PowerShell 启动 + 解析）。
+
+同时修掉两处会误导的表述：
+
+1. `-Status` 的 `cost` 行原本硬编码「fallback ~17 s, event repair ~21 s per fire」，优化后已失真。**静态耗时数字写进输出必然会腐烂**，改为只描述触发模型，耗时一律以 `-Install -SelfTest` 实测为准。
+2. `-Install -SelfTest` 原本只验证事件任务（跑两次），**兜底任务在全新安装上永远是 `last run: never / result: 267011`**，等于从没被证明过能用。现在追加一次兜底任务实跑（`-Mode Auto -Quiet`，与定时器触发完全同一路径），三条退出码全为 0 才判定通过。
 
 
