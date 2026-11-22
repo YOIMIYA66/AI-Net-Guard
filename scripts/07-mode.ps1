@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.5 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
+    AI-Net-Guard v5.7.6 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
 
 .DESCRIPTION
     The guard itself is 100% STATIC in Windows kernel WFP (BFE / tcpip.sys):
@@ -437,7 +437,7 @@ function Get-FirewallRuleAnalysis {
                                    ($v -notmatch '(^|\|)RA[46]=') -and ($v -notmatch '(^|\|)IF=') -and ($v -notmatch '(^|\|)App='))
             $ruleIdent = if ($dn) { $dn } else { $pr.Name }
             $isAuthorizedAiGuard = $isAiGuard -and (-not $isDangerousBlanket) -and
-                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|PhysicalIP-On-TUN|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$')
+                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|PhysicalIP-On-TUN|Foreign-Physical|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$')
 
             if ($isAuthorizedAiGuard) {
                 if (-not $rawByRule.ContainsKey($pr.Name) -or $active) { $rawByRule[$pr.Name] = $v }
@@ -1144,7 +1144,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>AI-Net-Guard v5.7.5 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
+    <Description>AI-Net-Guard v5.7.6 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
@@ -1247,7 +1247,7 @@ function Show-Status {
     else { 'stopped' }
 
     Write-Host ''
-    Write-Host '=== AI-Net-Guard v5.7.5 Status (read-only) ===' -ForegroundColor Cyan
+    Write-Host '=== AI-Net-Guard v5.7.6 Status (read-only) ===' -ForegroundColor Cyan
     Write-Host ('TUN : ' + $tunLabel + '   core : ' + $coreLabel)
     if (Test-Path -LiteralPath $policyFile) {
         Write-Host ('  policy preset     : ' + $guardPolicy.Preset + ' (guard-policy.json active)') -ForegroundColor Cyan
@@ -1282,6 +1282,7 @@ function Show-Status {
     if ($ruleStates.ContainsKey('AI-Guard-Allow-Node-UDP')) { $displayRules += 'AI-Guard-Allow-Node-UDP' }
     if ($ruleStates.ContainsKey('AI-Guard-Allow-TUN-Alt')) { $displayRules += 'AI-Guard-Allow-TUN-Alt' }
     $displayRules += 'AI-Guard-Allow-NCSI'
+    $displayRules += 'AI-Guard-Block-Foreign-Physical'
 
     foreach ($rn in $displayRules) {
         $optDisabled = ($rn -eq 'AI-Guard-Allow-LAN' -and -not $guardPolicy.AllowLan) -or ($rn -eq 'AI-Guard-Allow-NCSI' -and -not $guardPolicy.AllowNcsi)
@@ -1393,7 +1394,7 @@ function Show-Status {
 }
 
 function Invoke-UpgradeV54 {
-    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.7.5 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
+    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.7.6 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
 
     # 1. Backfill new rollback fields into existing DNS baseline JSON without altering original values
     $bf = Join-Path $Root 'backup\baseline.json'
@@ -2122,6 +2123,92 @@ function Ensure-Guard {
             if (Set-WebRtcPolicy -Enable $false) {
                 $script:repairedItems += 'WebRTC-policy-removed(policy)'
                 Say '    enforced policy: Chromium WebRtcIPHandlingPolicy removed (BlockWebRtcLeak=false)'
+            }
+        }
+    }
+    catch { }
+
+    # 10. Explicit physical-NIC foreign IPv4 block (vetoes third-party WFP soft-permit callouts)
+    try {
+        $libForeign = if ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'lib-foreign-block.ps1'))) {
+            Join-Path $PSScriptRoot 'lib-foreign-block.ps1'
+        }
+        else {
+            Join-Path $Root 'scripts\lib-foreign-block.ps1'
+        }
+        if (Test-Path -LiteralPath $libForeign) {
+            $fpActive = $ruleStates.ContainsKey('AI-Guard-Block-Foreign-Physical') -and $ruleStates['AI-Guard-Block-Foreign-Physical']
+            $physFastFp = @(Get-ActivePhysicalNicsFast)
+            $physNamesFastFp = @($physFastFp | Select-Object -ExpandProperty Name | Sort-Object -Unique)
+
+            $nodeIpsMeta = @()
+            if (Test-Path -LiteralPath $nodeMeta) {
+                try {
+                    $nmRaw = (Get-Content -LiteralPath $nodeMeta -Raw -Encoding ASCII -ErrorAction SilentlyContinue).Trim()
+                    $nmParts = $nmRaw.Split('|')
+                    if ($nmParts.Count -ge 2 -and $nmParts[1]) {
+                        $nodeIpsMeta = @($nmParts[1].Split(',') | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Sort-Object -Unique)
+                    }
+                } catch { }
+            }
+
+            $cnStampFp = 'nocn'
+            if ($guardPolicy.AllowCnDirect -and (Test-Path -LiteralPath $cnList)) {
+                $cnItemFp = Get-Item -LiteralPath $cnList -ErrorAction SilentlyContinue
+                if ($cnItemFp) { $cnStampFp = ($cnItemFp.Length.ToString() + ':' + $cnItemFp.LastWriteTimeUtc.Ticks.ToString()) }
+            }
+
+            $fpMetaFile = Join-Path $Root 'backup\foreign-block.meta'
+            $fpNeedsSync = (-not $fpActive)
+            if (-not $fpNeedsSync -and (Test-Path -LiteralPath $fpMetaFile)) {
+                try {
+                    $fpMetaRaw = (Get-Content -LiteralPath $fpMetaFile -Raw -Encoding ASCII -ErrorAction SilentlyContinue).Trim()
+                    $fpParts = $fpMetaRaw.Split('|')
+                    if ($fpParts.Count -ge 6) {
+                        $metaCn = [int]$fpParts[0]
+                        $metaLan = [int]$fpParts[1]
+                        $metaNcsi = [int]$fpParts[2]
+                        $metaPhys = @($fpParts[3].Split(',') | Where-Object { $_ })
+                        $metaNodes = @($fpParts[4].Split(',') | Where-Object { $_ })
+                        $metaStamp = $fpParts[5]
+                        if ($metaCn -ne [int][bool]$guardPolicy.AllowCnDirect -or
+                            $metaLan -ne [int][bool]$guardPolicy.AllowLan -or
+                            $metaNcsi -ne [int][bool]$guardPolicy.AllowNcsi -or
+                            $metaStamp -ne $cnStampFp -or
+                            (($metaNodes -join ',') -ne ($nodeIpsMeta -join ','))) {
+                            $fpNeedsSync = $true
+                        }
+                        if (-not $fpNeedsSync) {
+                            foreach ($pn in $physNamesFastFp) {
+                                if ($metaPhys -notcontains $pn) { $fpNeedsSync = $true; break }
+                            }
+                        }
+                    }
+                    else { $fpNeedsSync = $true }
+                } catch { $fpNeedsSync = $true }
+            }
+            elseif (-not (Test-Path -LiteralPath $fpMetaFile)) {
+                $fpNeedsSync = $true
+            }
+
+            if ($fpNeedsSync) {
+                $activeTunsFp = @(Get-ActiveTunNamesFast)
+                $allPhysFp = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Status -ne 'Not Present' -and
+                    $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|Loopback' -and
+                    $_.Name -notmatch '(?i)loopback' -and
+                    ($knownTunNames -notcontains $_.Name) -and
+                    ($activeTunsFp -notcontains $_.Name)
+                } | Select-Object -ExpandProperty Name)
+                if ($allPhysFp.Count -eq 0) { $allPhysFp = $physNamesFastFp }
+                if ($allPhysFp.Count -gt 0) {
+                    . $libForeign
+                    if (Sync-ForeignPhysicalBlockRule -Root $Root -PhysicalAliases $allPhysFp -NodeIps $nodeIpsMeta `
+                        -AllowCnDirect ([bool]$guardPolicy.AllowCnDirect) -AllowLan ([bool]$guardPolicy.AllowLan) -AllowNcsi ([bool]$guardPolicy.AllowNcsi)) {
+                        $script:repairedItems += 'Foreign-Physical-synced'
+                        Say '    enforced AI-Guard-Block-Foreign-Physical (vetoes WFP soft-permit callouts)'
+                    }
+                }
             }
         }
     }

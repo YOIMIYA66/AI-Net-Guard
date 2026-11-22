@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.5 - maintenance: re-sync node allow rule after switching proxy node or core.
+    AI-Net-Guard v5.7.6 - maintenance: re-sync node allow rule after switching proxy node or core.
 
 .DESCRIPTION
     Note: In v5.4, 07-mode.ps1 automatically syncs AI-Guard-Allow-Node-TCP/UDP
@@ -385,6 +385,43 @@ New-Item -ItemType Directory -Path (Split-Path $nodeMeta) -Force | Out-Null
 $domainTag = if ($usedDomain) { '|domain' } else { '|ip' }
 $metaLine = ($cfgItem.Length.ToString() + ':' + $cfgItem.LastWriteTimeUtc.Ticks.ToString() + '|' + ($ips -join ',') + '|' + ($tcpPorts -join ',') + '|' + ($udpPorts -join ',') + '|' + $coreExe + $domainTag)
 Set-Content -LiteralPath $nodeMeta -Value $metaLine -Encoding ASCII
+
+# Sync explicit physical-NIC foreign IPv4 block rule with newly synced node IPs
+try {
+    $libForeign = if ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'lib-foreign-block.ps1'))) {
+        Join-Path $PSScriptRoot 'lib-foreign-block.ps1'
+    }
+    else {
+        Join-Path $Root 'scripts\lib-foreign-block.ps1'
+    }
+    if (Test-Path -LiteralPath $libForeign) {
+        . $libForeign
+        $allowCn = $true; $allowLan = $true; $allowNcsi = $true
+        $polPath = Join-Path $Root 'backup\guard-policy.json'
+        if (Test-Path -LiteralPath $polPath) {
+            try {
+                $rawP = Get-Content -LiteralPath $polPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($rawP) {
+                    if ($rawP.PSObject.Properties.Name -contains 'AllowCnDirect' -and $null -ne $rawP.AllowCnDirect) { $allowCn = [bool]$rawP.AllowCnDirect }
+                    if ($rawP.PSObject.Properties.Name -contains 'AllowLan' -and $null -ne $rawP.AllowLan) { $allowLan = [bool]$rawP.AllowLan }
+                    if ($rawP.PSObject.Properties.Name -contains 'AllowNcsi' -and $null -ne $rawP.AllowNcsi) { $allowNcsi = [bool]$rawP.AllowNcsi }
+                }
+            } catch { }
+        }
+        $physAliases = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+            $_.Status -ne 'Not Present' -and
+            $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|Loopback' -and
+            $_.Name -notmatch '(?i)tun|loopback|xray|singbox|mihomo'
+        } | Select-Object -ExpandProperty Name)
+        if ($physAliases.Count -gt 0) {
+            if (Sync-ForeignPhysicalBlockRule -Root $Root -PhysicalAliases $physAliases -NodeIps $ips `
+                -AllowCnDirect $allowCn -AllowLan $allowLan -AllowNcsi $allowNcsi) {
+                Write-Host '[+] AI-Guard-Block-Foreign-Physical updated for new node/policy' -ForegroundColor Green
+            }
+        }
+    }
+}
+catch { }
 
 Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-Node-*' |
     Select-Object DisplayName, Enabled, @{n = 'Program'; e = { Split-Path -Leaf (($_ | Get-NetFirewallApplicationFilter).Program) } }, @{n = 'RemoteAddress'; e = { ($_ | Get-NetFirewallAddressFilter).RemoteAddress -join ',' } }, @{n = 'RemotePort'; e = { ($_ | Get-NetFirewallPortFilter).RemotePort -join ',' } } |

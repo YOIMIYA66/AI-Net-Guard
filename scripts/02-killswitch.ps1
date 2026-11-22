@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.5 - step 2: static default-deny firewall + CN & TUN allowlist.
+    AI-Net-Guard v5.7.6 - step 2: static default-deny firewall + CN & TUN allowlist.
 
 .DESCRIPTION
     Configures Windows Defender Firewall for the v5.1 zero-switch static guard:
@@ -768,6 +768,27 @@ else {
         InterfaceAlias = $physicalAll
         Description    = 'Block DNS-over-TLS on physical NICs (strict mode).'
     }
+}
+
+# Explicit physical-NIC foreign IPv4 block (vetoes third-party WFP soft-permit callouts)
+try {
+    $libForeign = if ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'lib-foreign-block.ps1'))) {
+        Join-Path $PSScriptRoot 'lib-foreign-block.ps1'
+    }
+    else {
+        Join-Path $Root 'scripts\lib-foreign-block.ps1'
+    }
+    if (Test-Path -LiteralPath $libForeign) {
+        . $libForeign
+        $resolvedNodes = @($nodeAddress + @($allNodeAddresses) | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Select-Object -Unique)
+        if (Sync-ForeignPhysicalBlockRule -Root $Root -PhysicalAliases $physicalAll -NodeIps $resolvedNodes `
+            -AllowCnDirect (-not [bool]$StrictKillSwitchOnly) -AllowLan (-not [bool]$SkipLanRule) -AllowNcsi (-not [bool]$SkipNcsiRule) -Force) {
+            Write-Host '    AI-Guard-Block-Foreign-Physical'
+        }
+    }
+}
+catch {
+    Write-Warn ('AI-Guard-Block-Foreign-Physical skipped: ' + $_.Exception.Message)
 }
 
 # ------------------------------------------------------------------ default deny

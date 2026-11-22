@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.7.5 · 纯内核静态防线 + 零常驻 + WebRTC 双层盾 + Fluent 纯矢量微图标）
+# AI-Net-Guard 实现方案与持续审查文档（v5.7.6 · 显式物理境外硬阻断 + hy2/VLESS 全协议零泄漏 + 零常驻）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
-> 节点同步：**v5.7.5 默认开启多内核自动同步**（支持 IP / 域名节点、VLESS / Trojan / VMess / Hysteria2 端口跳跃等）
-> 版本状态：**v5.7.5 正式版**（新增 `BlockWebRtcLeak` 第 16 项特性：物理网卡 + 源 IP 级 STUN/TURN 阻断 + Chromium 企业策略，修复全协议 WebRTC 泄漏）
+> 节点同步：**v5.7.6 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
+> 版本状态：**v5.7.6 正式版**（新增 `AI-Guard-Block-Foreign-Physical` 显式物理外网阻断盾、压制第三方 WFP 软放行绕过，`16` 项防护开关完备）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -332,4 +332,19 @@ v5.7.3 针对原生桌面 GUI 客户端进行了全链路深度美化与人机�
 3. **全链路集成与验证**：
    - 新增策略开关 `BlockWebRtcLeak`（第 16 项策略，默认开启），同步集成于 `01-dns-hardening.ps1`、`02-killswitch.ps1`、`07-mode.ps1`（0-CIM 快路径审计与新接入物理网卡自动纳管）、`09-rollback.ps1`、`14-apply-policy.ps1` 及 WPF GUI（`GuardPolicy.cs`、`MainWindow.xaml.cs`）。
    - `03-verify.ps1`、`12-regression.ps1`、`verify-leak-test.ps1` 均新增规则/策略检查及物理网卡绑定真实 STUN UDP（`74.125.250.129:19302`）阻断实测探针。
+
+---
+## 14. v5.7.6 升级版本：显式物理境外阻断 (`AI-Guard-Block-Foreign-Physical`) 与 Hysteria2/VLESS 多核深化优化
+
+1. **第三方 WFP 软放行与物理网卡旁路彻底封堵**：
+   - 在同时安装第三方安全/流控 WFP 驱动（如 `hrwfpdrv` 火绒、`idmwfp` IDM、`nfwfp` NetFilter）的环境下，其 `Flow Established Callout` 等软放行优先级高于 Windows 防火墙底层的 `DefaultOutboundAction = Block`，导致仅依赖默认拒绝时，显式绑定物理 IP（如 `192.168.1.165`）的非 CN 请求仍可能出站。
+   - **核心修复**：
+     - 新增共享模块 [`scripts/lib-foreign-block.ps1`](./scripts/lib-foreign-block.ps1)，基于 `[0, 2^32-1]` IPv4 区间扫面算法精准计算 `cn-ipv4.txt` + 私网/LAN + NCSI(`13.107.4.52`) + 阿里 DoH(`223.5.5.5/223.6.6.6`) + 落地节点 IP 之外的全部补集网段，在物理网卡接口写入显式 `Action=Block` 规则 **`AI-Guard-Block-Foreign-Physical`**，跨子层一票否决任何第三方 WFP 软放行与 `Xray TUN` 软放行。
+     - 同步收窄 `AI-Guard-Allow-TUN` / `AI-Guard-Allow-TUN-Alt` 的 `LocalAddress` 为 TUN 地址及非重叠私网 TUN 网段，并维护 `AI-Guard-Block-PhysicalIP-On-TUN` 显式阻断。
+2. **Hysteria2 (`hy2`) + `sing-box` + 双核心稳定性优化**：
+   - **多出站 & 端口跳跃 (`server_ports`) 完备支持**：`02-killswitch.ps1`、`07-mode.ps1`、`10-sync-node-rule.ps1` 全面支持扫描 `sing-box` 多代理出站及 `configTest*.json` 中的 `server_ports`（自动将 `:` 转为防火墙范围 `-`），并在 `07-mode.ps1` 快路径比对 `AI-Guard-Allow-Node-UDP` 的具体 IP 与端口，同时自动清理不再使用 UDP 时的陈旧 `AI-Guard-Allow-Core-*-UDP` 规则。
+   - **双核心阿里 DoH 伴生放行 (`AI-Guard-Allow-Core-*-DoH`)**：为所有已安装代理核心（`xray.exe`、`sing-box.exe`、`v2rayN.exe`）各自维护 `223.5.5.5/223.6.6.6:443` 放行规则，切换协议或双核协同不互抢。
+   - **域名节点 15 分钟周期重解析 & 旧 `/32` 路由清理**：CDN/DDNS 域名落地节点自动定期刷新 IP，切换节点时清理旧 `/32` 物理主机路由。
+   - **`03-verify.ps1` 与 `04-wfp-audit.ps1` 完善**：节点校验同时观测 `sing-box` UDP 套接字与物理 `/32` 路由对齐；WFP 审计器支持输出非 `AI-Guard` 的 `ALE_AUTH_CONNECT_V4` `FWP_ACTION_PERMIT` / `FWP_ACTION_CALLOUT_TERMINATING` 过滤器。
+
 
