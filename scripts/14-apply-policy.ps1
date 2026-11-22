@@ -1036,7 +1036,15 @@ if ($policy.ZeroResidentMonitor) {
     if (-not $policy.QuarantineRogueAllow) { $taskArgs += '-SkipQuarantineAllowRules' }
     if (-not $policy.AutoHealStaleProxy)   { $taskArgs += '-SkipStaleProxyHeal' }
     & $psExe @taskArgs
-    Write-Ok 'ZeroResidentMonitor = ON (AI-Guard-Mode-Event + Fallback tasks registered, 0 MB idle RAM)'
+    $taskRc = $LASTEXITCODE
+    $evTask = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Event' -ErrorAction SilentlyContinue
+    $fbTask = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Fallback' -ErrorAction SilentlyContinue
+    if ($taskRc -ne 0 -or -not $evTask -or -not $fbTask) {
+        Write-Warn ('task registration failed (07-mode exit ' + $taskRc + ', event=' + [bool]$evTask + ', fallback=' + [bool]$fbTask + ') - run scripts\17-autorepair-task.ps1 -Install elevated')
+    }
+    else {
+        Write-Ok 'ZeroResidentMonitor = ON (AI-Guard-Mode-Event + Fallback tasks registered, 0 MB idle RAM)'
+    }
 }
 else {
     & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -RemoveTasks -Root $Root -Quiet
