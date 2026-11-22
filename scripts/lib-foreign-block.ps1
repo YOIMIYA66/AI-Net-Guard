@@ -115,7 +115,11 @@ function Sync-ForeignPhysicalBlockRule {
     $wantSig = ([int]$AllowCnDirect).ToString() + '|' + ([int]$AllowLan).ToString() + '|' + ([int]$AllowNcsi).ToString() + '|' + ($physClean -join ',') + '|' + ($nodeClean -join ',') + '|' + $cnStamp
     if (-not $Force -and (Test-Path -LiteralPath $metaFile)) {
         try {
-            $oldSig = (Get-Content -LiteralPath $metaFile -Raw -Encoding ASCII -ErrorAction SilentlyContinue).Trim()
+            # UTF-8 on purpose: adapter aliases are localised (e.g. the Chinese name of
+            # Ethernet), and an ASCII round-trip turned every non-ASCII name into '?', so the
+            # stored signature never matched the live alias list again and the rule was
+            # rebuilt - with a delete/recreate gap - on every single run.
+            $oldSig = [System.IO.File]::ReadAllText($metaFile, [System.Text.Encoding]::UTF8).Trim()
             if ($oldSig -eq $wantSig) {
                 $existing = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
                 if ($existing -and $existing.Enabled -eq 'True') { return $false }
@@ -132,15 +136,31 @@ function Sync-ForeignPhysicalBlockRule {
     $ranges = Get-ForeignComplementRanges -CnPrefixes $cnPrefixes -NodeIps $nodeClean -AllowLan $AllowLan -AllowNcsi $AllowNcsi
     if ($ranges.Count -eq 0) { return $false }
 
+    # Rewrite in place when the rule already exists: removing it first left a window with no
+    # explicit BLOCK rule, i.e. exactly the soft-permit-only state this rule exists to veto.
     $oldRule = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
-    if ($oldRule) { $oldRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
-    New-NetFirewallRule -Name $ruleName -DisplayName $ruleName `
-        -Direction Outbound -Action Block -Protocol Any `
-        -InterfaceAlias $physClean -RemoteAddress $ranges -Profile Any -Enabled True `
-        -Description 'Explicitly block non-CN/non-LAN/non-Node IPv4 egress on physical NICs (vetoes third-party WFP soft-permit callouts).' | Out-Null
+    if ($oldRule) {
+        try {
+            Set-NetFirewallRule -InputObject $oldRule -InterfaceAlias $physClean -RemoteAddress $ranges `
+                -Action Block -Profile Any -Enabled True -ErrorAction Stop
+        }
+        catch {
+            $oldRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+            New-NetFirewallRule -Name $ruleName -DisplayName $ruleName `
+                -Direction Outbound -Action Block -Protocol Any `
+                -InterfaceAlias $physClean -RemoteAddress $ranges -Profile Any -Enabled True `
+                -Description 'Explicitly block non-CN/non-LAN/non-Node IPv4 egress on physical NICs (vetoes third-party WFP soft-permit callouts).' | Out-Null
+        }
+    }
+    else {
+        New-NetFirewallRule -Name $ruleName -DisplayName $ruleName `
+            -Direction Outbound -Action Block -Protocol Any `
+            -InterfaceAlias $physClean -RemoteAddress $ranges -Profile Any -Enabled True `
+            -Description 'Explicitly block non-CN/non-LAN/non-Node IPv4 egress on physical NICs (vetoes third-party WFP soft-permit callouts).' | Out-Null
+    }
 
     $metaDir = Split-Path -Parent $metaFile
     if (-not (Test-Path -LiteralPath $metaDir)) { New-Item -ItemType Directory -Path $metaDir -Force | Out-Null }
-    Set-Content -LiteralPath $metaFile -Value $wantSig -Encoding ASCII
+    [System.IO.File]::WriteAllText($metaFile, $wantSig, (New-Object System.Text.UTF8Encoding($false)))
     return $true
 }

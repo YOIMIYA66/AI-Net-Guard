@@ -32,6 +32,19 @@
         longer voids the block.  /32 is kept whenever the subnet would also cover a TUN address,
         because that would black-hole proxied WebRTC instead of unproxied leaks.
 
+    Third gap, measured on 2026-11-22 with a live ICE probe: blocking the browser process is
+    not enough when a TUN is up.  The browser hands the STUN packet to the tunnel, the tunnel
+    core re-sends it from the physical NIC, and the rule that names chrome.exe never sees it.
+    A CN-resident STUN server (stun.miwifi.com, stun.chat.bilibili.com) matched geoip:cn ->
+    direct and came back with the real ISP address (183.188.38.12), while Google/Cloudflare
+    STUN servers returned the proxy exit (20.89.232.246).  That is exactly the "sometimes it
+    leaks, sometimes it does not" pattern: it depends on which STUN server the test page hits.
+
+    The program-less AI-Guard-Block-WebRTC-UDP does not stop this because AI-Guard-Allow-CN
+    carries an explicit CN address list and is therefore the more specific filter.  This
+    script adds Program-scoped BLOCK rules for the tunnel core itself (xray / sing-box /
+    mihomo) on the STUN/TURN ports, which are more specific than Allow-CN and win.
+
 .PARAMETER Apply     Create/update the rules (default action).
 .PARAMETER Verify    Read-only report of the current shield state.
 .PARAMETER Remove    Delete the browser-shield rules and restore the stock interface/IP lists.
@@ -57,6 +70,64 @@ $ErrorActionPreference = 'Stop'
 
 function Say($m, $c = 'Gray') { if (-not $Quiet) { Write-Host $m -ForegroundColor $c } }
 
+# ------------------------------------------------------------ NetSecurity cache
+# Measured on this host: Get-NetFirewallRule costs ~1.23 s per call whether or not
+# -Name narrows it, and each Get-NetFirewall*Filter costs another ~0.3 s. Discovery
+# alone probed six rule names, so a single -Apply run burned ~12 s before touching
+# anything. The index below enumerates once and serves every later lookup from memory;
+# any write invalidates it, because repairing from a stale object re-applies drift.
+$script:RuleIndex = $null
+$script:RuleFilterCache = @{}
+
+function Reset-RuleCache {
+    $script:RuleIndex = $null
+    $script:RuleFilterCache = @{}
+}
+
+function Get-RuleIndex {
+    if ($null -ne $script:RuleIndex) { return $script:RuleIndex }
+    $idx = @{}
+    try {
+        foreach ($r in @(Get-NetFirewallRule -ErrorAction SilentlyContinue)) {
+            if (-not $r) { continue }
+            $n = [string]$r.Name
+            if ($n -and -not $idx.ContainsKey($n)) { $idx[$n] = $r }
+            $d = [string]$r.DisplayName
+            if ($d -and -not $idx.ContainsKey($d)) { $idx[$d] = $r }
+        }
+    }
+    catch { }
+    $script:RuleIndex = $idx
+    return $idx
+}
+
+function Get-GuardRule([string]$Key) {
+    if (-not $Key) { return $null }
+    $idx = Get-RuleIndex
+    if ($idx.ContainsKey($Key)) { return $idx[$Key] }
+    return $null
+}
+
+function Get-GuardRuleFilter([string]$Key, [string]$Kind) {
+    $ck = $Kind + '|' + $Key
+    if ($script:RuleFilterCache.ContainsKey($ck)) { return $script:RuleFilterCache[$ck] }
+    $val = $null
+    $r = Get-GuardRule $Key
+    if ($r) {
+        try {
+            switch ($Kind) {
+                'Interface' { $val = @(($r | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias) }
+                'Address' { $val = @(($r | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).LocalAddress) }
+                'Application' { $val = ($r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue).Program }
+                'Port' { $val = @(($r | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue).RemotePort) }
+            }
+        }
+        catch { $val = $null }
+    }
+    $script:RuleFilterCache[$ck] = $val
+    return $val
+}
+
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
@@ -76,10 +147,15 @@ if ($physical.Count -eq 0) {
 }
 $physNames = @($physical | Select-Object -ExpandProperty Name | Select-Object -Unique)
 
+# One enumeration of the IPv4 table feeds the lease list, the TUN addresses and the subnet
+# scope below. Get-NetIPAddress costs ~0.45 s per call, and the script used to issue three.
+$allV4 = @()
+try { $allV4 = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue) } catch { }
+
 $physIps = @()
 try {
-    $physIps = @(Get-NetIPAddress -InterfaceAlias $physNames -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+    $physIps = @($allV4 |
+        Where-Object { $_.IPAddress -and ($physNames -contains $_.InterfaceAlias) -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
         Select-Object -ExpandProperty IPAddress -Unique)
 }
 catch { }
@@ -146,14 +222,14 @@ function ConvertTo-IPv4CidrSet([string[]]$Values) {
 $physCidrs = @()
 $tunIps = @()
 try {
-    $tunIps = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    $tunIps = @($allV4 |
         Where-Object { $_.IPAddress -and ($knownTun -contains $_.InterfaceAlias) } |
         Select-Object -ExpandProperty IPAddress -Unique)
 }
 catch { }
 try {
-    foreach ($pa in @(Get-NetIPAddress -InterfaceAlias $physNames -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-            Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' })) {
+    foreach ($pa in @($allV4 |
+            Where-Object { $_.IPAddress -and ($physNames -contains $_.InterfaceAlias) -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' })) {
         $ip = [string]$pa.IPAddress
         $plen = 32
         try { $plen = [int]$pa.PrefixLength } catch { $plen = 32 }
@@ -195,46 +271,111 @@ foreach ($k in $candidates.Keys) {
     if (Test-Path -LiteralPath $exe) { $targets += [pscustomobject]@{ Tag = $k; Exe = $exe } }
 }
 
+# proxy cores: the process that actually egresses the physical NIC while a TUN is up.
+# Prefer the live process path; when the core is stopped, derive the bin root from the
+# running v2rayN GUI so the rules still get created before the tunnel comes back.
+$coreExe = New-Object System.Collections.Generic.List[string]
+foreach ($n in @('xray', 'sing-box', 'mihomo', 'mihomo-windows-amd64-v1')) {
+    foreach ($p in @(Get-Process -Name $n -ErrorAction SilentlyContinue)) {
+        try { if ($p.Path) { if (-not $coreExe.Contains($p.Path)) { $coreExe.Add($p.Path) } } } catch { }
+    }
+}
+if ($coreExe.Count -eq 0) {
+    # An unelevated shell cannot read the path of a core running at a higher integrity,
+    # but the guard's own Allow rules already store it. Reuse them before guessing dirs.
+    foreach ($rn in @('AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-Core-Xray-TCP', 'AI-Guard-Allow-Core-Xray-UDP',
+            'AI-Guard-Allow-Core-SingBox-TCP', 'AI-Guard-Allow-Core-mihomo-TCP', 'AI-Guard-Allow-Core-mihomo-windows-amd64-v1-TCP')) {
+        $rr = Get-GuardRule $rn
+        if (-not $rr) { continue }
+        $prog = [string](Get-GuardRuleFilter $rn 'Application')
+        if (-not $prog -or $prog -eq 'Any') { continue }
+        if ($prog -notmatch '(?i)(xray|sing-box|mihomo).*\.exe$') { continue }
+        if ((Test-Path -LiteralPath $prog) -and -not $coreExe.Contains($prog)) { $coreExe.Add($prog) }
+    }
+}
+if ($coreExe.Count -eq 0) {
+    $binRoots = New-Object System.Collections.Generic.List[string]
+    foreach ($pn in @('v2rayN', 'v2rayN-Core')) {
+        foreach ($p in @(Get-Process -Name $pn -ErrorAction SilentlyContinue)) {
+            try { if ($p.Path) { $binRoots.Add((Join-Path (Split-Path $p.Path -Parent) 'bin')) } } catch { }
+        }
+    }
+    $binRoots.Add((Join-Path $env:APPDATA 'v2rayN\bin'))
+    foreach ($br in $binRoots) {
+        if (-not (Test-Path -LiteralPath $br)) { continue }
+        foreach ($f in @(Get-ChildItem -LiteralPath $br -Recurse -Include 'xray.exe', 'sing-box.exe', 'mihomo.exe', 'mihomo-windows-amd64-v1.exe' -File -ErrorAction SilentlyContinue)) {
+            if (-not $coreExe.Contains($f.FullName)) { $coreExe.Add($f.FullName) }
+        }
+    }
+}
+$cores = @()
+foreach ($e in $coreExe) {
+    $tag = [System.IO.Path]::GetFileNameWithoutExtension($e)
+    $cores += [pscustomobject]@{ Tag = $tag; Exe = $e }
+}
+
+# STUN / TURN well-known ports.  Kept as an explicit list because Windows Firewall has no
+# port-range object here; 19302-19309 covers the Google STUN pool.
+$stunPorts = @('3478', '3479', '5349', '5350', '19302', '19303', '19304', '19305', '19306', '19307', '19308', '19309')
+
 Say ' '
 Say ('physical NICs : ' + ($physNames -join ', ')) 'Cyan'
 Say ('physical IPv4 : ' + $(if ($physIps.Count) { $physIps -join ', ' } else { '(none)' })) 'Cyan'
 Say ('LocalIP scope : ' + $(if ($physCidrs.Count) { $physCidrs -join ', ' } else { '(none)' })) 'Cyan'
 Say ('browsers      : ' + $(if ($targets.Count) { ($targets | ForEach-Object { $_.Tag }) -join ', ' } else { '(none found)' })) 'Cyan'
+Say ('proxy cores   : ' + $(if ($cores.Count) { ($cores | ForEach-Object { $_.Tag }) -join ', ' } else { '(none found - core STUN block will NOT be created)' })) $(if ($cores.Count) { 'Cyan' } else { 'Red' })
 
 # ---------------------------------------------------------------- helpers
 function Get-RuleInterfaceList([string]$Name) {
-    $r = Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue
-    if (-not $r) { return $null }
-    @(($r | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias |
-        Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+    if (-not (Get-GuardRule $Name)) { return $null }
+    @(Get-GuardRuleFilter $Name 'Interface' | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
 }
 
 function Get-RuleLocalAddressList([string]$Name) {
-    $r = Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue
-    if (-not $r) { return $null }
-    @(($r | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).LocalAddress |
-        Where-Object { $_ -and $_ -ne 'Any' })
+    if (-not (Get-GuardRule $Name)) { return $null }
+    @(Get-GuardRuleFilter $Name 'Address' | Where-Object { $_ -and $_ -ne 'Any' })
 }
 
 $stockIfRules = @('AI-Guard-Block-WebRTC-UDP', 'AI-Guard-Block-WebRTC-TCP')
 $stockIpRules = @('AI-Guard-Block-WebRTC-LocalIP-UDP', 'AI-Guard-Block-WebRTC-LocalIP-TCP')
 $shieldRules = @($targets | ForEach-Object { 'AI-Guard-Block-WebRTC-' + $_.Tag + '-PhysUDP' })
+foreach ($c in $cores) {
+    foreach ($proto in @('UDP', 'TCP')) {
+        $shieldRules += ('AI-Guard-Block-WebRTC-' + $c.Tag + '-CoreSTUN-' + $proto)
+    }
+}
 
 # ---------------------------------------------------------------- verify
 if ($Verify) {
     Say ' '
     Say '=== browser shield state ===' 'Cyan'
     foreach ($n in $shieldRules) {
-        $r = Get-NetFirewallRule -Name $n -ErrorAction SilentlyContinue
+        $r = Get-GuardRule $n
         if (-not $r) { Say ('  {0,-46} MISSING' -f $n) 'Red'; continue }
         $ifs = @(Get-RuleInterfaceList $n)
         $ifText = $ifs -join ','
-        $ap = ($r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue).Program
+        $ap = [string](Get-GuardRuleFilter $n 'Application')
         # language independent check: the rule must target at least one live physical NIC
         # (adapter aliases differ per OS language, e.g. WLAN / Ethernet / a localized name)
         $ifOk = (@($physNames | Where-Object { $ifs -contains $_ }).Count -gt 0)
         $ok = ($r.Enabled -eq 'True') -and ($r.Action -eq 'Block') -and $ifOk
         Say ('  {0,-46} {1} enabled={2} if={3} prog={4}' -f $n, $(if ($ok) { 'OK  ' } else { 'DRIFT' }), $r.Enabled, $ifText, (Split-Path -Leaf $ap)) $(if ($ok) { 'Green' } else { 'Yellow' })
+    }
+    if ($cores.Count -eq 0) {
+        Say '  [warn] no proxy core detected - TUN-mode STUN egress stays open' 'Red'
+    }
+    else {
+        foreach ($c in $cores) {
+            foreach ($proto in @('UDP', 'TCP')) {
+                $cn = 'AI-Guard-Block-WebRTC-' + $c.Tag + '-CoreSTUN-' + $proto
+                if (-not (Get-GuardRule $cn)) { continue }
+                $cports = @(Get-GuardRuleFilter $cn 'Port')
+                $missingPorts = @($stunPorts | Where-Object { $cports -notcontains $_ })
+                if ($missingPorts.Count -gt 0) {
+                    Say ('  {0,-46} port drift (missing {1})' -f $cn, ($missingPorts -join ',')) 'Yellow'
+                }
+            }
+        }
     }
     Say ' '
     Say '=== stock shield drift ===' 'Cyan'
@@ -259,17 +400,34 @@ if ($Verify) {
 # ---------------------------------------------------------------- remove
 if ($Remove) {
     if (-not $isAdmin) { Say 'ERROR: needs an elevated PowerShell.' 'Red'; exit 5 }
+    $removed = 0
     foreach ($n in $shieldRules) {
-        if (Get-NetFirewallRule -Name $n -ErrorAction SilentlyContinue) {
-            Remove-NetFirewallRule -Name $n -ErrorAction SilentlyContinue
-            Say ('  removed ' + $n) 'Yellow'
-        }
+        if (-not (Get-GuardRule $n)) { continue }
+        Remove-NetFirewallRule -Name $n -ErrorAction SilentlyContinue
+        Say ('  removed ' + $n) 'Yellow'
+        $removed++
     }
+    # core rules are built from the live process list, so sweep by pattern as well - a core
+    # that is not running right now must not leave a stray block behind.  The sweep reads
+    # the cached index instead of re-enumerating (that cost 1.4 s on its own).
+    $coreRuleNames = @()
+    foreach ($rr in @((Get-RuleIndex).Values)) {
+        if (-not $rr) { continue }
+        $nm = [string]$rr.Name
+        if ($nm -notmatch '^AI-Guard-Block-WebRTC-(.+)-CoreSTUN-(?:UDP|TCP)$') { continue }
+        if ($coreRuleNames -contains $nm) { continue }
+        $coreRuleNames += $nm
+        Remove-NetFirewallRule -Name $nm -ErrorAction SilentlyContinue
+        Say ('  removed ' + $nm) 'Yellow'
+        $removed++
+    }
+    if ($removed -gt 0) { Reset-RuleCache }
     # put the two stock LocalAddress rules back on their original exact-IP (/32) behaviour
     if ($physIps.Count -gt 0) {
         foreach ($n in $stockIpRules) {
-            if (Get-NetFirewallRule -Name $n -ErrorAction SilentlyContinue) {
+            if (Get-GuardRule $n) {
                 Set-NetFirewallRule -Name $n -LocalAddress $physIps -Enabled True -ErrorAction SilentlyContinue
+                Reset-RuleCache
                 Say ('  restored {0} LocalAddress -> {1}' -f $n, ($physIps -join ',')) 'Yellow'
             }
         }
@@ -290,16 +448,17 @@ $changed = 0
 # 1) browser-scoped, port-independent UDP block on physical NICs
 foreach ($t in $targets) {
     $name = 'AI-Guard-Block-WebRTC-' + $t.Tag + '-PhysUDP'
-    $exists = Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
+    $exists = Get-GuardRule $name
     if ($DryRun) {
         Say ('  [dry] {0} -> {1}' -f $name, $t.Exe) 'DarkGray'
         continue
     }
     if ($exists) {
-        $cur = Get-RuleInterfaceList $name
+        $cur = @(Get-RuleInterfaceList $name)
         $missing = @($physNames | Where-Object { $cur -notcontains $_ })
         if ($missing.Count -gt 0 -or $exists.Enabled -ne 'True' -or $exists.Action -ne 'Block') {
             Set-NetFirewallRule -Name $name -InterfaceAlias $physNames -Enabled True -Action Block -ErrorAction Stop
+            Reset-RuleCache
             Say ('  updated {0} (if: {1})' -f $name, ($physNames -join ',')) 'Green'
             $changed++
         }
@@ -312,6 +471,7 @@ foreach ($t in $targets) {
             -Protocol UDP -Program $t.Exe -InterfaceAlias $physNames -Profile Any -Enabled True `
             -Group 'AI-Net-Guard' `
             -Description ('Block all UDP from ' + $t.Tag + ' on physical NICs (port-independent WebRTC/STUN/TURN leak shield).') | Out-Null
+        Reset-RuleCache
         Say ('  created {0} -> {1}' -f $name, $t.Exe) 'Green'
         $changed++
     }
@@ -324,7 +484,7 @@ foreach ($n in $stockIfRules) {
     $missing = @($physNames | Where-Object { $cur -notcontains $_ })
     if ($missing.Count -gt 0) {
         if ($DryRun) { Say ('  [dry] {0} add interfaces: {1}' -f $n, ($missing -join ',')) 'DarkGray' }
-        else { Set-NetFirewallRule -Name $n -InterfaceAlias $physNames -ErrorAction Stop; Say ('  updated {0} (if: {1})' -f $n, ($physNames -join ',')) 'Green'; $changed++ }
+        else { Set-NetFirewallRule -Name $n -InterfaceAlias $physNames -ErrorAction Stop; Reset-RuleCache; Say ('  updated {0} (if: {1})' -f $n, ($physNames -join ',')) 'Green'; $changed++ }
     }
 }
 
@@ -344,13 +504,55 @@ foreach ($n in $stockIpRules) {
         New-NetFirewallRule -Name $n -DisplayName $n -Direction Outbound -Action Block -Protocol $proto `
             -LocalAddress $expSet -RemotePort $webrtcPorts -Profile Any -Enabled True -Group 'AI-Net-Guard' `
             -Description ('Block WebRTC STUN/TURN ' + $proto + ' bound to physical NIC subnets even when TUN metric 0 captures ALE routing.') | Out-Null
+        Reset-RuleCache
         Say ('  created {0} (la: {1})' -f $n, ($expSet -join ',')) 'Green'
     }
     else {
         Set-NetFirewallRule -Name $n -LocalAddress $expSet -Enabled True -ErrorAction Stop
+        Reset-RuleCache
         Say ('  updated {0} (la: {1})' -f $n, ($expSet -join ',')) 'Green'
     }
     $changed++
+}
+
+# 3) proxy-core STUN/TURN block on the physical NICs.  Browser-scoped rules never see this
+#    traffic: with a TUN up the browser sends the STUN packet into the tunnel and the core
+#    re-sends it out of the physical NIC.  AI-Guard-Allow-CN (explicit CN address list, any
+#    program, any port) outranks the program-less AI-Guard-Block-WebRTC-UDP, so a CN STUN
+#    server still answers with the real ISP address.  A Program-scoped block is the more
+#    specific filter and wins that comparison.
+foreach ($c in $cores) {
+    foreach ($proto in @('UDP', 'TCP')) {
+        $name = 'AI-Guard-Block-WebRTC-' + $c.Tag + '-CoreSTUN-' + $proto
+        $exists = Get-GuardRule $name
+        if ($DryRun) {
+            Say ('  [dry] {0} -> {1} : {2}' -f $name, $c.Exe, ($stunPorts -join ',')) 'DarkGray'
+            continue
+        }
+        $needFix = $true
+        if ($exists) {
+            $curIf = @(Get-RuleInterfaceList $name)
+            $curPorts = @(Get-GuardRuleFilter $name 'Port')
+            $missingIf = @($physNames | Where-Object { $curIf -notcontains $_ })
+            $missingPt = @($stunPorts | Where-Object { $curPorts -notcontains $_ })
+            if ($missingIf.Count -eq 0 -and $missingPt.Count -eq 0 -and $exists.Enabled -eq 'True' -and $exists.Action -eq 'Block') {
+                $needFix = $false
+            }
+        }
+        if (-not $needFix) { Say ('  ok      {0}' -f $name) 'DarkGray'; continue }
+        if ($exists) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
+        New-NetFirewallRule -Name $name -DisplayName $name -Direction Outbound -Action Block `
+            -Protocol $proto -Program $c.Exe -RemotePort $stunPorts -InterfaceAlias $physNames `
+            -Profile Any -Enabled True -Group 'AI-Net-Guard' `
+            -Description ('Block STUN/TURN ' + $proto + ' from the tunnel core on physical NICs (a CN-resident STUN server reached through geoip:cn -> direct would otherwise return the real ISP address).') | Out-Null
+        Reset-RuleCache
+        $verb = if ($exists) { 'updated' } else { 'created' }
+        Say ('  {0} {1} -> {2}' -f $verb, $name, $c.Exe) 'Green'
+        $changed++
+    }
+}
+if ($cores.Count -eq 0) {
+    Say '  [warn] no proxy core found - core STUN block skipped (TUN-mode leak path stays open)' 'Red'
 }
 
 Say ' '

@@ -205,12 +205,76 @@ function Test-TunUp {
     return ((Get-ActiveTunNamesFast).Count -gt 0)
 }
 
+# ------------------------------------------------------------ NetSecurity cache
+# Measured on this host: Get-NetFirewallRule costs ~1.23 s whether or not -Name
+# narrows it (the module issues a full CIM round-trip and filters client side), and
+# each Get-NetFirewall*Filter call costs another ~0.3 s. A single self-check used to
+# issue 8-14 of them, which is where most of the 20 s wall clock went.
+#
+# The index below enumerates the rule table once and serves every later lookup from
+# memory. Any write invalidates it: a cached object goes stale the moment
+# Set-/New-/Remove-/Disable-/Enable-NetFirewallRule touches the store, and repairing
+# from a stale object is how a guard silently re-applies the drift it just fixed.
+$script:RuleIndex = $null
+$script:RuleFilterCache = @{}
+
+function Reset-RuleCache {
+    $script:RuleIndex = $null
+    $script:RuleFilterCache = @{}
+}
+
+function Get-RuleIndex {
+    if ($null -ne $script:RuleIndex) { return $script:RuleIndex }
+    $idx = @{}
+    try {
+        foreach ($r in @(Get-NetFirewallRule -ErrorAction SilentlyContinue)) {
+            if (-not $r) { continue }
+            $n = [string]$r.Name
+            if ($n -and -not $idx.ContainsKey($n)) { $idx[$n] = $r }
+            $d = [string]$r.DisplayName
+            if ($d -and -not $idx.ContainsKey($d)) { $idx[$d] = $r }
+        }
+    }
+    catch { }
+    $script:RuleIndex = $idx
+    return $idx
+}
+
+function Get-GuardRule([string]$Key) {
+    if (-not $Key) { return $null }
+    $idx = Get-RuleIndex
+    if ($idx.ContainsKey($Key)) { return $idx[$Key] }
+    return $null
+}
+
+function Get-GuardRuleFilter([string]$Key, [string]$Kind) {
+    $ck = $Kind + '|' + $Key
+    if ($script:RuleFilterCache.ContainsKey($ck)) { return $script:RuleFilterCache[$ck] }
+    $val = $null
+    $r = Get-GuardRule $Key
+    if ($r) {
+        try {
+            switch ($Kind) {
+                'Interface' { $val = @(($r | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias) }
+                'Address' { $val = @(($r | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).LocalAddress) }
+                'Application' { $val = ($r | Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue).Program }
+                'Port' { $val = @(($r | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue).RemotePort) }
+            }
+        }
+        catch { $val = $null }
+    }
+    $script:RuleFilterCache[$ck] = $val
+    return $val
+}
+
 function Test-FirewallRuleHasTun($ruleObject, [string]$tunName) {
     if (-not $ruleObject -or -not $tunName) { return $false }
     try {
-        $filt = $ruleObject | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue
-        if (-not $filt) { return $false }
-        $aliases = @($filt.InterfaceAlias | Where-Object { $_ -and $_ -ne '0' -and $_ -ne 'Any' })
+        $key = [string]$ruleObject.Name
+        if (-not $key) { return $false }
+        $all = @(Get-GuardRuleFilter $key 'Interface')
+        if ($all.Count -eq 0) { return $false }
+        $aliases = @($all | Where-Object { $_ -and $_ -ne '0' -and $_ -ne 'Any' })
         if ($aliases -contains $tunName) { return $true }
 
         $ad = Get-NetAdapter -Name $tunName -ErrorAction SilentlyContinue
@@ -1001,6 +1065,9 @@ function Sync-NodeRuleFast {
         Set-Content -LiteralPath $nodeMeta -Value $metaLine -Encoding ASCII
     }
     catch { }
+    # node sync creates / removes companion rules, so an index built before this call
+    # no longer reflects the store; drop it instead of repairing from a stale object.
+    Reset-RuleCache
 }
 
 function Test-LocalPortListening([int]$Port, [int]$TimeoutMs = 150) {
@@ -1493,8 +1560,8 @@ function Show-Status {
     $mdnsOff = ($dnsSvc -and $dnsSvc.EnableMDNS -eq 0)
     $smhnrOff = ($dnsPol -and $dnsPol.DisableSmartNameResolution -eq 1)
     Write-Host ('  DNS leak-shield   : LLMNR={0}  mDNS={1}  SMHNR={2}' -f $(if ($llmnrOff) { 'off' } else { 'ON' }), $(if ($mdnsOff) { 'off' } else { 'ON' }), $(if ($smhnrOff) { 'off' } else { 'pending (auto-applies on next event or .\07-mode.ps1)' }))
-    $wrtcUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue
-    $wrtcTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -ErrorAction SilentlyContinue
+    $wrtcUdp = Get-GuardRule 'AI-Guard-Block-WebRTC-UDP'
+    $wrtcTcp = Get-GuardRule 'AI-Guard-Block-WebRTC-TCP'
     $cProps = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Google\Chrome' -ErrorAction SilentlyContinue
     $eProps = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -ErrorAction SilentlyContinue
     $cPol = if ($cProps) { $cProps.WebRtcIPHandlingPolicy } else { $null }
@@ -1708,6 +1775,105 @@ if ((Test-Path -LiteralPath $refresher) -and
 }
 
 # ---------------------------------------------------------------- static state (zero-CIM fast path when healthy)
+function Test-ShieldDriftFast($Analysis, $PhysNics) {
+    # Decides whether 15-webrtc-browser-shield.ps1 has anything to repair, using only the
+    # registry snapshot already collected in $Analysis.RawByRule plus file / process
+    # existence.  Spawning that script costs a second PowerShell start-up and a second full
+    # rule enumeration; on a healthy host it used to run on every single self-check.
+    #
+    # Anything that cannot be positively verified counts as drift.  A wrong "clean" would
+    # skip a repair and leave a leak path open, which is exactly the silent failure this
+    # guard exists to prevent; a wrong "drift" only costs one extra repair run.
+    $stunPorts = @('3478', '3479', '5349', '5350', '19302', '19303', '19304', '19305', '19306', '19307', '19308', '19309')
+
+    if ($null -eq $Analysis -or $null -eq $Analysis.RawByRule) { return $true }
+    $raw = $Analysis.RawByRule
+
+    # Mirror 15's own definition of "physical NIC" exactly. A looser set here would demand
+    # coverage of an adapter that 15 never adds and turn every check into a false drift.
+    # NetworkInterface.Id already carries its braces: '{A2AF782E-...}'.  Normalise to one
+    # braced form here so the registry pattern below can compare it verbatim (adding a
+    # second pair of braces made every comparison fail and forced a repair run each time).
+    $nicIds = @($PhysNics | Where-Object {
+            $_ -and
+            ($_.Description -notmatch '(?i)Wintun|sing-tun|Mihomo|TAP-Windows|Loopback') -and
+            ($_.Name -notmatch '(?i)loopback') -and
+            ($knownTunNames -notcontains $_.Name)
+        } | ForEach-Object { '{' + ([string]$_.Id).Trim('{', '}') + '}' })
+    if ($nicIds.Count -eq 0) { return $true }
+
+    # every installed browser must own a program-scoped UDP block
+    $browsers = @{}
+    foreach ($cand in @(
+            @{ Tag = 'Chrome'; Exe = (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe') },
+            @{ Tag = 'Chrome'; Exe = (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe') },
+            @{ Tag = 'Edge'; Exe = (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe') },
+            @{ Tag = 'Edge'; Exe = (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe') }
+        )) {
+        if ($cand.Exe -and (Test-Path -LiteralPath $cand.Exe)) { $browsers[$cand.Tag] = $true }
+    }
+    if ($browsers.Count -eq 0) { return $true }
+
+    foreach ($tag in @($browsers.Keys)) {
+        $n = 'AI-Guard-Block-WebRTC-' + $tag + '-PhysUDP'
+        if (-not $raw.ContainsKey($n)) { return $true }
+        $s = [string]$raw[$n]
+        if ($s -notmatch '(^|\|)Active=TRUE(\||$)') { return $true }
+        if ($s -notmatch '(^|\|)Action=Block(\||$)') { return $true }
+        if ($s -notmatch '(^|\|)Dir=Out(\||$)') { return $true }
+        foreach ($gid in $nicIds) {
+            if ($s -notmatch ('(?i)(^|\|)IF=' + [regex]::Escape($gid) + '(\||$)')) { return $true }
+        }
+    }
+
+    # tunnel core tags: live process first, otherwise the path the guard's own Allow rules
+    # already recorded (the core is stopped while v2rayN is closed, and the rules must
+    # still match it when it comes back)
+    $coreTags = @()
+    foreach ($pn in @('xray', 'sing-box', 'mihomo', 'mihomo-windows-amd64-v1')) {
+        if (@(Get-Process -Name $pn -ErrorAction SilentlyContinue).Count -gt 0) {
+            if ($coreTags -notcontains $pn) { $coreTags += $pn }
+        }
+    }
+    if ($coreTags.Count -eq 0) {
+        foreach ($k in @('AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-Core-Xray-TCP', 'AI-Guard-Allow-Core-SingBox-TCP',
+                'AI-Guard-Allow-Core-mihomo-TCP', 'AI-Guard-Allow-Core-mihomo-windows-amd64-v1-TCP')) {
+            if (-not $raw.ContainsKey($k)) { continue }
+            $s = [string]$raw[$k]
+            if ($s -match '(?i)(^|\|)App=([^|]*?(?:xray|sing-box|mihomo)[^|]*?\.exe)') {
+                $t = [System.IO.Path]::GetFileNameWithoutExtension($Matches[2])
+                if ($t -and ($coreTags -notcontains $t)) { $coreTags += $t }
+            }
+        }
+    }
+    if ($coreTags.Count -eq 0) { return $true }
+
+    foreach ($t in $coreTags) {
+        foreach ($proto in @('UDP', 'TCP')) {
+            $n = 'AI-Guard-Block-WebRTC-' + $t + '-CoreSTUN-' + $proto
+            if (-not $raw.ContainsKey($n)) { return $true }
+            $s = [string]$raw[$n]
+            if ($s -notmatch '(^|\|)Active=TRUE(\||$)') { return $true }
+            if ($s -notmatch '(^|\|)Action=Block(\||$)') { return $true }
+            if ($s -notmatch '(^|\|)Dir=Out(\||$)') { return $true }
+            foreach ($gid in $nicIds) {
+                if ($s -notmatch ('(?i)(^|\|)IF=' + [regex]::Escape($gid) + '(\||$)')) { return $true }
+            }
+            foreach ($sp in $stunPorts) {
+                if ($s -notmatch ('(^|\|)RPort=' + $sp + '(\||$)')) { return $true }
+            }
+        }
+    }
+
+    # a CoreSTUN rule for a core that no longer exists has to be swept away
+    foreach ($k in @($raw.Keys)) {
+        if ($k -notmatch '^AI-Guard-Block-WebRTC-(.+)-CoreSTUN-(?:UDP|TCP)$') { continue }
+        if ($coreTags -notcontains $Matches[1]) { return $true }
+    }
+
+    return $false
+}
+
 function Ensure-Guard {
     $script:missingRules = @()
     $script:repairedItems = @()
@@ -1854,12 +2020,13 @@ function Ensure-Guard {
 
     if ($needMainScope -or $needAltScope -or $needTunAdd -or $needBlkPhysTun) {
         $tunLocalAddrs = Get-TunAllowedLocalAddressesFast
-        $mainTunRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
-        $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
+        $mainTunRule = Get-GuardRule 'AI-Guard-Allow-TUN'
+        $altRule = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
 
         if ($needMainScope -and $mainTunRule -and $tunLocalAddrs.Count -gt 0) {
             try {
                 Set-NetFirewallRule -InputObject $mainTunRule -LocalAddress $tunLocalAddrs -ErrorAction Stop
+                Reset-RuleCache
                 $script:repairedItems += 'TUN-LocalScope'
                 Say '    tightened AI-Guard-Allow-TUN LocalAddress scope (anti physical-IP bypass)'
             } catch { }
@@ -1867,6 +2034,7 @@ function Ensure-Guard {
         if ($needAltScope -and $altRule -and $tunLocalAddrs.Count -gt 0) {
             try {
                 Set-NetFirewallRule -InputObject $altRule -LocalAddress $tunLocalAddrs -ErrorAction Stop
+                Reset-RuleCache
                 $script:repairedItems += 'TUN-Alt-LocalScope'
                 Say '    tightened AI-Guard-Allow-TUN-Alt LocalAddress scope (anti physical-IP bypass)'
             } catch { }
@@ -1881,15 +2049,17 @@ function Ensure-Guard {
                     New-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -DisplayName 'AI-Guard-Allow-TUN' `
                         -Direction Outbound -Action Allow -InterfaceAlias $activeTun -LocalAddress $tunLocalAddrs -Profile Any -Enabled True `
                         -Description ('Allow outbound traffic routed into TUN (' + $activeTun + ').') | Out-Null
-                    $mainTunRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
+                    Reset-RuleCache
+                    $mainTunRule = Get-GuardRule 'AI-Guard-Allow-TUN'
                     $script:repairedItems += ('TUN(' + $activeTun + ')')
                     Say ('    created AI-Guard-Allow-TUN for ' + $activeTun)
                     continue
                 }
                 if ($altRule) {
-                    $curAliases = @(($altRule | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                    $curAliases = @(Get-GuardRuleFilter ([string]$altRule.Name) 'Interface' | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
                     $mergedAliases = @($curAliases + @($activeTun) | Select-Object -Unique)
                     Set-NetFirewallRule -InputObject $altRule -InterfaceAlias $mergedAliases -LocalAddress $tunLocalAddrs -Enabled True -ErrorAction Stop
+                    Reset-RuleCache
                     $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
                     Say ('    authorized alternate TUN interface: ' + $activeTun)
                 }
@@ -1897,7 +2067,8 @@ function Ensure-Guard {
                     New-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -DisplayName 'AI-Guard-Allow-TUN-Alt' `
                         -Direction Outbound -Action Allow -InterfaceAlias $activeTun -LocalAddress $tunLocalAddrs -Profile Any -Enabled True `
                         -Description ('Allow outbound traffic routed into alternate TUN (' + $activeTun + ').') | Out-Null
-                    $altRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
+                    Reset-RuleCache
+                    $altRule = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
                     $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
                     Say ('    created AI-Guard-Allow-TUN-Alt for ' + $activeTun)
                 }
@@ -1907,12 +2078,13 @@ function Ensure-Guard {
 
         if ($needBlkPhysTun -and $activeTunNamesNow.Count -gt 0 -and $physIpsForTunBlock.Count -gt 0) {
             try {
-                $blkRule = Get-NetFirewallRule -Name 'AI-Guard-Block-PhysicalIP-On-TUN' -ErrorAction SilentlyContinue
+                $blkRule = Get-GuardRule 'AI-Guard-Block-PhysicalIP-On-TUN'
                 $physIpArr = @($physIpsForTunBlock.ToArray())
                 if ($blkRule) {
-                    $curBlkIf = @(($blkRule | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                    $curBlkIf = @(Get-GuardRuleFilter ([string]$blkRule.Name) 'Interface' | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
                     $mergedBlkIf = @($curBlkIf + $activeTunNamesNow | Select-Object -Unique)
                     Set-NetFirewallRule -InputObject $blkRule -InterfaceAlias $mergedBlkIf -LocalAddress $physIpArr -Enabled True -ErrorAction Stop
+                    Reset-RuleCache
                     $script:repairedItems += 'Block-PhysicalIP-On-TUN-updated'
                 }
                 else {
@@ -1973,11 +2145,12 @@ function Ensure-Guard {
                 $prefixes = Get-CnPrefixes
                 if ($prefixes.Count -eq 0) { return $null }
             }
-            $cn = Get-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
+            $cn = Get-GuardRule $cnRuleName
             if ($cn) { $cn | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
             New-NetFirewallRule -Name $cnRuleName -DisplayName $cnRuleName -Direction Outbound -Action Allow `
                 -Protocol Any -RemoteAddress $prefixes -Profile Any -Enabled True `
                 -Description 'Allow direct egress to mainland-China IPv4 prefixes.' | Out-Null
+            Reset-RuleCache
             New-Item -ItemType Directory -Path (Split-Path $cnSig) -Force | Out-Null
             Set-Content -LiteralPath $cnSig -Value $sig -Encoding ASCII
             Set-Content -LiteralPath $cnMeta -Value ($stampPrefix + $sig) -Encoding ASCII
@@ -2185,41 +2358,45 @@ function Ensure-Guard {
                 }
 
                 if ($physNames.Count -gt 0) {
-                    $ruleUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue
+                    $ruleUdp = Get-GuardRule 'AI-Guard-Block-WebRTC-UDP'
                     if (-not $ruleUdp) {
                         New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -DisplayName 'AI-Guard-Block-WebRTC-UDP' `
                             -Direction Outbound -Action Block -Protocol UDP -RemotePort $webrtcPorts `
                             -InterfaceAlias $physNames -Profile Any -Enabled True `
                             -Description 'Block WebRTC STUN/TURN UDP on physical NICs (anti-leak for all proxy cores).' | Out-Null
+                        Reset-RuleCache
                         $script:repairedItems += 'WebRTC-UDP-created'
                         Say '    created AI-Guard-Block-WebRTC-UDP (physical NICs)'
                     }
                     else {
-                        $curIf = @(($ruleUdp | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                        $curIf = @(Get-GuardRuleFilter 'AI-Guard-Block-WebRTC-UDP' 'Interface' | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
                         $missing = @($physNames | Where-Object { $curIf -notcontains $_ })
                         if ($missing.Count -gt 0 -or $ruleUdp.Enabled -ne 'True') {
                             $merged = @($curIf + $missing | Where-Object { $_ -and ($knownTunNames -notcontains $_) -and ($activeTunsNow -notcontains $_) } | Select-Object -Unique)
                             Set-NetFirewallRule -InputObject $ruleUdp -InterfaceAlias $merged -Enabled True -ErrorAction SilentlyContinue
+                            Reset-RuleCache
                             $script:repairedItems += 'WebRTC-UDP-updated'
                             Say ('    updated AI-Guard-Block-WebRTC-UDP (physical NICs: ' + ($merged -join ',') + ')')
                         }
                     }
 
-                    $ruleTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -ErrorAction SilentlyContinue
+                    $ruleTcp = Get-GuardRule 'AI-Guard-Block-WebRTC-TCP'
                     if (-not $ruleTcp) {
                         New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -DisplayName 'AI-Guard-Block-WebRTC-TCP' `
                             -Direction Outbound -Action Block -Protocol TCP -RemotePort $webrtcPorts `
                             -InterfaceAlias $physNames -Profile Any -Enabled True `
                             -Description 'Block WebRTC STUN/TURN TCP on physical NICs (anti-leak for all proxy cores).' | Out-Null
+                        Reset-RuleCache
                         $script:repairedItems += 'WebRTC-TCP-created'
                         Say '    created AI-Guard-Block-WebRTC-TCP (physical NICs)'
                     }
                     else {
-                        $curIf = @(($ruleTcp | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                        $curIf = @(Get-GuardRuleFilter 'AI-Guard-Block-WebRTC-TCP' 'Interface' | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
                         $missing = @($physNames | Where-Object { $curIf -notcontains $_ })
                         if ($missing.Count -gt 0 -or $ruleTcp.Enabled -ne 'True') {
                             $merged = @($curIf + $missing | Where-Object { $_ -and ($knownTunNames -notcontains $_) -and ($activeTunsNow -notcontains $_) } | Select-Object -Unique)
                             Set-NetFirewallRule -InputObject $ruleTcp -InterfaceAlias $merged -Enabled True -ErrorAction SilentlyContinue
+                            Reset-RuleCache
                             $script:repairedItems += 'WebRTC-TCP-updated'
                             Say ('    updated AI-Guard-Block-WebRTC-TCP (physical NICs: ' + ($merged -join ',') + ')')
                         }
@@ -2227,37 +2404,41 @@ function Ensure-Guard {
                 }
 
                 if ($physFastCidrs.Count -gt 0) {
-                    $ruleLocalUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -ErrorAction SilentlyContinue
+                    $ruleLocalUdp = Get-GuardRule 'AI-Guard-Block-WebRTC-LocalIP-UDP'
                     if (-not $ruleLocalUdp) {
                         New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -DisplayName 'AI-Guard-Block-WebRTC-LocalIP-UDP' `
                             -Direction Outbound -Action Block -Protocol UDP -LocalAddress $physFastCidrs -RemotePort $webrtcPorts `
                             -Profile Any -Enabled True `
                             -Description 'Block WebRTC STUN/TURN UDP bound to physical NIC subnets even when TUN metric 0 captures ALE routing.' | Out-Null
+                        Reset-RuleCache
                         $script:repairedItems += 'WebRTC-LocalIP-UDP-created'
                         Say ('    created AI-Guard-Block-WebRTC-LocalIP-UDP (' + ($physFastCidrs -join ',') + ')')
                     }
                     else {
-                        $curLa = @(ConvertTo-IPv4CidrSet @(($ruleLocalUdp | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).LocalAddress | Where-Object { $_ -and $_ -ne 'Any' }))
+                        $curLa = @(ConvertTo-IPv4CidrSet @(Get-GuardRuleFilter 'AI-Guard-Block-WebRTC-LocalIP-UDP' 'Address' | Where-Object { $_ -and $_ -ne 'Any' }))
                         if (((($curLa | Sort-Object -Unique) -join ';') -ne ((@($physFastCidrs) | Sort-Object -Unique) -join ';')) -or $ruleLocalUdp.Enabled -ne 'True') {
                             Set-NetFirewallRule -InputObject $ruleLocalUdp -LocalAddress $physFastCidrs -Enabled True -ErrorAction SilentlyContinue
+                            Reset-RuleCache
                             $script:repairedItems += 'WebRTC-LocalIP-UDP-updated'
                             Say ('    updated AI-Guard-Block-WebRTC-LocalIP-UDP (' + ($physFastCidrs -join ',') + ')')
                         }
                     }
 
-                    $ruleLocalTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -ErrorAction SilentlyContinue
+                    $ruleLocalTcp = Get-GuardRule 'AI-Guard-Block-WebRTC-LocalIP-TCP'
                     if (-not $ruleLocalTcp) {
                         New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -DisplayName 'AI-Guard-Block-WebRTC-LocalIP-TCP' `
                             -Direction Outbound -Action Block -Protocol TCP -LocalAddress $physFastCidrs -RemotePort $webrtcPorts `
                             -Profile Any -Enabled True `
                             -Description 'Block WebRTC STUN/TURN TCP bound to physical NIC subnets even when TUN metric 0 captures ALE routing.' | Out-Null
+                        Reset-RuleCache
                         $script:repairedItems += 'WebRTC-LocalIP-TCP-created'
                         Say ('    created AI-Guard-Block-WebRTC-LocalIP-TCP (' + ($physFastCidrs -join ',') + ')')
                     }
                     else {
-                        $curLa = @(ConvertTo-IPv4CidrSet @(($ruleLocalTcp | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).LocalAddress | Where-Object { $_ -and $_ -ne 'Any' }))
+                        $curLa = @(ConvertTo-IPv4CidrSet @(Get-GuardRuleFilter 'AI-Guard-Block-WebRTC-LocalIP-TCP' 'Address' | Where-Object { $_ -and $_ -ne 'Any' }))
                         if (((($curLa | Sort-Object -Unique) -join ';') -ne ((@($physFastCidrs) | Sort-Object -Unique) -join ';')) -or $ruleLocalTcp.Enabled -ne 'True') {
                             Set-NetFirewallRule -InputObject $ruleLocalTcp -LocalAddress $physFastCidrs -Enabled True -ErrorAction SilentlyContinue
+                            Reset-RuleCache
                             $script:repairedItems += 'WebRTC-LocalIP-TCP-updated'
                             Say ('    updated AI-Guard-Block-WebRTC-LocalIP-TCP (' + ($physFastCidrs -join ',') + ')')
                         }
@@ -2274,9 +2455,12 @@ function Ensure-Guard {
             # physical NICs, so TURN-over-443 and any custom STUN port cannot reach a domestic
             # relay through AI-Guard-Allow-CN.  Idempotent; also repairs stale interface/IP drift
             # on the stock AI-Guard-Block-WebRTC-* rules (DHCP lease change).
+            #
+            # Gate first: the child costs a PowerShell start-up plus a second full rule
+            # enumeration, so it only runs when the registry snapshot shows real drift.
             $shieldScript = Join-Path $PSScriptRoot '15-webrtc-browser-shield.ps1'
             if (-not (Test-Path -LiteralPath $shieldScript)) { $shieldScript = Join-Path $Root 'scripts\15-webrtc-browser-shield.ps1' }
-            if (Test-Path -LiteralPath $shieldScript) {
+            if ((Test-Path -LiteralPath $shieldScript) -and (Test-ShieldDriftFast $analysis $physFast)) {
                 try {
                     # child process: the shield ends with 'exit', which would abort this
                     # script if invoked in-process via & (exit kills the calling runspace).
@@ -2346,7 +2530,11 @@ function Ensure-Guard {
             $fpNeedsSync = (-not $fpActive)
             if (-not $fpNeedsSync -and (Test-Path -LiteralPath $fpMetaFile)) {
                 try {
-                    $fpMetaRaw = (Get-Content -LiteralPath $fpMetaFile -Raw -Encoding ASCII -ErrorAction SilentlyContinue).Trim()
+                    # UTF-8 must match how Sync-ForeignPhysicalBlockRule writes it: the
+                    # signature carries localised adapter aliases, and reading them back as
+                    # ASCII turned each one into '?' so this gate never matched and the
+                    # whole foreign-block rule got rebuilt on every single run.
+                    $fpMetaRaw = [System.IO.File]::ReadAllText($fpMetaFile, [System.Text.Encoding]::UTF8).Trim()
                     $fpParts = $fpMetaRaw.Split('|')
                     if ($fpParts.Count -ge 6) {
                         $metaCn = [int]$fpParts[0]
@@ -2475,23 +2663,25 @@ else {
 
         if ($tunFlipped) {
             $tunLocalAddrsLate = Get-TunAllowedLocalAddressesFast
-            $mainTunRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN' -ErrorAction SilentlyContinue
-            $altRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
+            $mainTunRuleLate = Get-GuardRule 'AI-Guard-Allow-TUN'
+            $altRuleLate = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
             foreach ($activeTun in (Get-ActiveTunNamesFast)) {
                 if (Test-FirewallRuleHasTun $mainTunRuleLate $activeTun) { continue }
                 if (Test-FirewallRuleHasTun $altRuleLate $activeTun) { continue }
                 try {
                     if ($altRuleLate) {
-                        $curAliasesLate = @(($altRuleLate | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                        $curAliasesLate = @(Get-GuardRuleFilter ([string]$altRuleLate.Name) 'Interface' | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
                         $mergedAliasesLate = @($curAliasesLate + @($activeTun) | Select-Object -Unique)
                         Set-NetFirewallRule -InputObject $altRuleLate -InterfaceAlias $mergedAliasesLate -LocalAddress $tunLocalAddrsLate -Enabled True -ErrorAction Stop
+                        Reset-RuleCache
                         $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
                     }
                     else {
                         New-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -DisplayName 'AI-Guard-Allow-TUN-Alt' `
                             -Direction Outbound -Action Allow -InterfaceAlias $activeTun -LocalAddress $tunLocalAddrsLate -Profile Any -Enabled True `
                             -Description ('Allow outbound traffic routed into alternate TUN (' + $activeTun + ').') | Out-Null
-                        $altRuleLate = Get-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -ErrorAction SilentlyContinue
+                        Reset-RuleCache
+                        $altRuleLate = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
                         $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
                     }
                 }
