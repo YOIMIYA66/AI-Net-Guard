@@ -133,7 +133,7 @@ flowchart TD
 | `AI-Guard-Mode-Event` | 开机 + `NetworkProfile` `10000/10001` + `System` 睡眠/现代待机唤醒（`Power-Troubleshooter 1` / `Kernel-Power 107, 507`） | `SYSTEM` Session 0 隐藏运行、Priority 7 低优先级；包含 `+800 ms` 无盲区二次确认，跑完即退（0 MB 常驻） |
 | `AI-Guard-Mode-Fallback` | 每 60 分钟 | 静默跑一次 `07-mode.ps1 -Mode Auto -Quiet` 零 CIM 快检（~160 ms） |
 
-### 3.3 脚本清单（全部 15 个 `.ps1` 均为 100% 纯 ASCII，兼容 PowerShell 5.1 / 7.x）
+### 3.3 脚本清单（`scripts/` 下 24 个 `.ps1` 全部为 100% 纯 ASCII，兼容 PowerShell 5.1 / 7.x）
 
 | 文件 | 作用 |
 | --- | --- |
@@ -150,8 +150,17 @@ flowchart TD
 | [`scripts/10-sync-node-rule.ps1`](./scripts/10-sync-node-rule.ps1) | 多内核节点同步/预览工具（支持 Xray + `sing-box`/Hysteria2 端口跳跃，`-WhatIfOnly` 免提权预览） |
 | [`scripts/11-geo-cn.ps1`](./scripts/11-geo-cn.ps1) | 零分配预扫描 v2rayN `geoip` 数据库，归一化并无损聚合生成 [`cn-ipv4.txt`](./cn-ipv4.txt) |
 | [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) | **v5.4 全量 22 项自动化回归套件**（`PASS` 后自动清理 8.7 MB WFP XML 与 `pktmon` ETL 临时文件，保留最近 10 份报告） |
-| [`scripts/13-harden-acl.ps1`](./scripts/13-harden-acl.ps1) | **O1/O2 一键落地**：备份原 ACL → 所有者改 Administrators → DACL 收紧为 Admin/SYSTEM=F、Users=RX → 校验无非管理员写权限 → 以子进程跑 `07-mode.ps1`（完成 v5.4 热迁移）与 `12-regression.ps1` 并核对迁移结果；`-Undo` 恢复继承 |
+| [`scripts/13-harden-acl.ps1`](./scripts/13-harden-acl.ps1) | **O1/O2 一键落地**：备份原 ACL → 所有者改 Administrators → DACL 收紧为 Admin/SYSTEM=F、Users=RX → 校验无非管理员写权限 → 以子进程跑 `07-mode.ps1`（完成 v5.4 热迁移）与 `12-regression.ps1` 并核对迁移结果；`-Undo` 恢复继承；`-SyncWorkspace` 从 Git 克隆目录热同步 `*.ps1` 到生产目录 |
+| [`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) | 声明式策略编排器：读取 `backup\guard-policy.json` 对本表 16 项特性做增量幂等应用 |
+| [`scripts/15-webrtc-browser-shield.ps1`](./scripts/15-webrtc-browser-shield.ps1) | 浏览器级 WebRTC 出口封锁：按 `Program` 维度在物理网卡上封锁全部出站 UDP（覆盖 443 与任意 TURN 端口），只作用于浏览器进程；同时修复原 4 条 WebRTC 规则的 interface / LocalAddress 漂移，`LocalAddress` 改按网段写入 |
+| [`scripts/16-browser-residue.ps1`](./scripts/16-browser-residue.ps1) | 已卸载浏览器残留清理（DCBrowser / Firefox）：注册键 + `RegisteredApplications` 值 + 孤儿 `%APPDATA%\Mozilla`，写 JSON 备份后可 `-Restore` 回滚；刻意不动属其它软件的 `MozillaPlugins` / `NativeMessagingHosts` |
+| [`scripts/17-autorepair-task.ps1`](./scripts/17-autorepair-task.ps1) | 自愈计划任务管理器：`-Status` 只读体检（状态 / 触发器 / 上次结果 / 下次运行），`-Install` 复用 `07-mode.ps1 -InstallTasks` 注册事件任务与 60 分钟兜底并回读校验，`-Install -SelfTest` 实跑两次验证退出码 0，`-Remove` 清空 `AI-Guard-Mode-*`；未提权时 exit 1 而非静默成功 |
 | [`scripts/watchdog.ps1`](./scripts/watchdog.ps1) | 可选的 CLR 事件驱动常驻监听脚本（默认不启用，已支持多内核 TUN 识别与 PS7 伪接口过滤） |
+| [`scripts/align-xray-egress.ps1`](./scripts/align-xray-egress.ps1) | 物理出口 socket 对齐工具：消除 `sing-box` TUN 与 Xray 内核之间的内部二跳中继 |
+| [`scripts/lib-foreign-block.ps1`](./scripts/lib-foreign-block.ps1) | 共享助手（被 `02` / `07` / `10` / `14` dot-source）：显式物理网卡境外 IPv4 阻断规则的 IP 归一化与增删，用于压制第三方 WFP callout 驱动的 soft-permit |
+| [`scripts/verify-leak-test.ps1`](./scripts/verify-leak-test.ps1) | 轻量泄漏与连通性自检四项：越权全放行规则、TUN 适配器状态、物理网卡真实境外探测（`13.107.246.51:443`）、代理/TUN 连通性 |
+| [`scripts/disable-telemetry.ps1`](./scripts/disable-telemetry.ps1) | Windows 11 遥测与隐私加固：停用并禁用 `DiagTrack` / `dmwappushservice` 及关联计划任务与策略 |
+| [`scripts/restore-telemetry.ps1`](./scripts/restore-telemetry.ps1) | 遥测还原：把服务启动类型与组策略恢复为系统默认，供 `disable-telemetry` 回滚 |
 
 ---
 

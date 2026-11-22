@@ -395,6 +395,9 @@ cd C:\AI-Net-Guard
 | [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) | **24 项自动化回归测试套件**：覆盖静态规则、ACL 权限、0 MB 内存特征、TUN 启闭熔断、WFP 注入、10 秒真实 `pktmon` DNS 抓包 |
 | [`scripts/13-harden-acl.ps1`](./scripts/13-harden-acl.ps1) | 生产目录 ACL 权限防篡改锁定（支持 `-Undo` 权限还原与 `-SyncWorkspace` 源码目录热同步） |
 | [`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) | **声明式策略编排器**：读取 `backup\guard-policy.json` 实现 16 项特性的增量幂等应用 |
+| [`scripts/15-webrtc-browser-shield.ps1`](./scripts/15-webrtc-browser-shield.ps1) | **浏览器级 WebRTC 出口封锁**：按进程（`chrome.exe` / `msedge.exe`）在物理网卡上封锁全部出站 UDP（含 443 与任意 TURN 端口），DHCP/DNS/NTP/节点传输零影响；`-Apply / -Verify / -Remove / -DryRun`，规则 `LocalAddress` 按网段写入，DHCP 换址不再静默失效 |
+| [`scripts/16-browser-residue.ps1`](./scripts/16-browser-residue.ps1) | 已卸载浏览器残留清理：DCBrowser / Firefox 的 HKLM+HKCU 注册键、`RegisteredApplications` 值、孤儿 `%APPDATA%\Mozilla`；JSON 备份 + `-Restore` 回滚，不动 WPS/迅雷/Adobe 的 `MozillaPlugins` |
+| [`scripts/17-autorepair-task.ps1`](./scripts/17-autorepair-task.ps1) | **自愈计划任务管理器**：默认 `-Status` 只读体检，`-Install` 注册「开机 + 网络变更（NetworkProfile 10000/10001）+ 睡眠唤醒」事件任务与 60 分钟低频兜底，`-Install -SelfTest` 装完实跑两次并校验退出码 0，`-Remove` 清理全部 `AI-Guard-Mode-*` |
 | [`Emergency-Rescue.bat`](./Emergency-Rescue.bat) | 纯原生、无依赖、自带提权的离线一键网络应急脱困批处理脚本 |
 | [`scripts/align-xray-egress.bat`](./scripts/align-xray-egress.bat) | 自动注入物理网卡高优先级 `/32` 主机路由，消除双核架构下的二跳中继开销 |
 | [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | 一键关闭 Windows 11 遥测服务与遥测组策略，杜绝海外遥测 IP 拦截产生的 `connectex 10013` 报错 |

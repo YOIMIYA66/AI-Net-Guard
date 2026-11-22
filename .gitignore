@@ -20,6 +20,9 @@ Thumbs.db
 .idea/
 *.user
 
+# Local agent workspace (session memory / scratch notes)
+.workbuddy/
+
 # Build outputs & standalone release binaries
 gui/bin/
 gui/obj/
