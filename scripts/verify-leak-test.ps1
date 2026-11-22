@@ -136,5 +136,104 @@ foreach ($t in $testUrls) {
     Write-Host ('{0,-22}: Status={1,-8} (Elapsed: {2} ms)' -f $t.Name, $status, $sw.ElapsedMilliseconds) -ForegroundColor $color
 }
 
+# 9. Live STUN egress probe.
+#    "Every rule is Active=TRUE" is not the same statement as "nothing leaks". Measured on
+#    2026-11-22: eight Active=TRUE BLOCK rules (program, port list and interface GUIDs all
+#    correct) did not stop a raw UDP STUN request from reaching stun.miwifi.com and coming
+#    back with the real ISP address, because the TUN provider permits the core's own re-send
+#    before the firewall filters run. So the accept criterion here is behavioural: with a TUN
+#    up, no mainland STUN server may answer at all - the guard drops that port set inside the
+#    core's routing table (scripts\18-route-stun-guard.ps1).
+function Invoke-StunProbe {
+    param([string]$Target, [int]$Port = 3478, [int]$TimeoutMs = 2200)
+    $res = [pscustomobject]@{ State = 'error'; Mapped = ''; Detail = '' }
+    $udp = New-Object System.Net.Sockets.UdpClient
+    try {
+        $udp.Client.ReceiveTimeout = $TimeoutMs
+        $udp.Connect($Target, $Port)
+        $b = New-Object byte[] 20
+        $b[1] = 0x01
+        $b[4] = 0x21; $b[5] = 0x12; $b[6] = 0xA4; $b[7] = 0x42
+        for ($i = 8; $i -lt 20; $i++) { $b[$i] = [byte](Get-Random -Minimum 0 -Maximum 256) }
+        [void]$udp.Send($b, $b.Length)
+        $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+        $resp = $udp.Receive([ref]$ep)
+        $res.State = 'reply'
+        $len = ([int]$resp[2] -shl 8) -bor [int]$resp[3]
+        $i = 20
+        while (($i + 12) -le $resp.Length -and $i -lt (20 + $len)) {
+            $t = ([int]$resp[$i] -shl 8) -bor [int]$resp[$i + 1]
+            $l = ([int]$resp[$i + 2] -shl 8) -bor [int]$resp[$i + 3]
+            $v = $i + 4
+            if ($t -eq 0x0020 -and $resp[$v + 1] -eq 0x01 -and ($v + 8) -le $resp.Length) {
+                $ck = [BitConverter]::GetBytes([uint32]0x2112A442)
+                if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($ck) }
+                $ipb = @()
+                for ($k = 0; $k -lt 4; $k++) { $ipb += [string]([byte]($resp[$v + 4 + $k] -bxor $ck[$k])) }
+                $res.Mapped = ($ipb -join '.')
+                break
+            }
+            $i = $v + $l + ((4 - ($l % 4)) % 4)
+        }
+    }
+    catch {
+        # Match on the socket error code, never on the message text: Windows localises it,
+        # so a zh-CN host would report 10060 as plain text and a text match would mislabel
+        # a blocked port as a probe error.
+        $se = $null
+        if ($_.Exception -is [System.Net.Sockets.SocketException]) { $se = $_.Exception }
+        elseif ($_.Exception.InnerException -is [System.Net.Sockets.SocketException]) { $se = $_.Exception.InnerException }
+        if ($se -and @('TimedOut', 'ConnectionRefused', 'HostUnreachable', 'NetworkUnreachable') -contains [string]$se.SocketErrorCode) {
+            $res.State = 'silent'
+        }
+        elseif ($_.Exception.Message -match 'timed out|timeout') { $res.State = 'silent' }
+        else { $res.Detail = $_.Exception.Message }
+    }
+    finally { $udp.Close() }
+    return $res
+}
+
+Write-Host ''
+Write-Host '--- 9. Live STUN egress probe (behaviour, not rule presence) ---' -ForegroundColor Cyan
+$tunIsUp = ($activeTuns.Count -gt 0)
+$stunTargets = @(
+    @{ Name = 'miwifi (CN)'; Target = 'stun.miwifi.com'; Port = 3478 },
+    @{ Name = 'bilibili (CN)'; Target = 'stun.chat.bilibili.com'; Port = 3478 },
+    @{ Name = 'qq (CN)'; Target = 'stun.qq.com'; Port = 3478 },
+    @{ Name = 'google (foreign)'; Target = 'stun.l.google.com'; Port = 19302 }
+)
+$stunLeaks = 0
+foreach ($t in $stunTargets) {
+    $isCn = ($t.Name -like '*CN*')
+    $r = Invoke-StunProbe -Target $t.Target -Port $t.Port
+    if ($r.State -eq 'reply') {
+        if ($isCn -and $tunIsUp) {
+            Write-Host ('[FAIL] ' + $t.Name + ' answered with ' + $r.Mapped + ' - mainland STUN reachable from the physical NIC') -ForegroundColor Red
+            $stunLeaks++
+        }
+        elseif ($isCn) {
+            Write-Host ('[WARN] ' + $t.Name + ' answered with ' + $r.Mapped + ' (no TUN up - informational only)') -ForegroundColor Yellow
+        }
+        else {
+            Write-Host ('[PASS] ' + $t.Name + ' answered with ' + $r.Mapped + ' (tunnel egress, expected)') -ForegroundColor Green
+        }
+    }
+    elseif ($r.State -eq 'silent') {
+        if ($isCn) {
+            Write-Host ('[PASS] ' + $t.Name + ' silent (STUN port set dropped inside the core)') -ForegroundColor Green
+        }
+        else {
+            Write-Host ('[WARN] ' + $t.Name + ' silent - tunnel may be down, CN results are inconclusive') -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host ('[WARN] ' + $t.Name + ' probe error: ' + $r.Detail) -ForegroundColor Yellow
+    }
+}
+if ($stunLeaks -gt 0) {
+    Write-Host ('[FAIL] ' + $stunLeaks + ' mainland STUN server(s) reachable - the WebRTC leak path is open') -ForegroundColor Red
+    Write-Host '       fix: close v2rayN, run scripts\18-route-stun-guard.ps1 -Apply, start v2rayN again' -ForegroundColor Yellow
+}
+
 Write-Host ''
 Write-Host 'Verification completed.' -ForegroundColor Cyan

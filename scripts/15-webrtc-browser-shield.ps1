@@ -40,10 +40,16 @@
     STUN servers returned the proxy exit (20.89.232.246).  That is exactly the "sometimes it
     leaks, sometimes it does not" pattern: it depends on which STUN server the test page hits.
 
-    The program-less AI-Guard-Block-WebRTC-UDP does not stop this because AI-Guard-Allow-CN
-    carries an explicit CN address list and is therefore the more specific filter.  This
-    script adds Program-scoped BLOCK rules for the tunnel core itself (xray / sing-box /
-    mihomo) on the STUN/TURN ports, which are more specific than Allow-CN and win.
+    Follow-up measurement, same day, independent STUN client (no browser involved): the
+    Program-scoped BLOCK rules this script creates do NOT stop it either.  With all eight
+    AI-Guard-Block-WebRTC-* rules Active=TRUE and the exact core path, port list and interface
+    GUIDs in place, a raw UDP STUN request still came back with the real ISP address.  Windows
+    Firewall gives an explicit BLOCK precedence over every ALLOW rule, so the losing comparison
+    is not rule specificity: the TUN provider terminates ALE_AUTH_CONNECT for the core's own
+    re-send with a PERMIT, and the firewall's block filters are never evaluated at all.  These
+    rules stay as defence in depth (they do stop a core that egresses without a TUN), but the
+    layer that actually closes this leak is scripts/18-route-stun-guard.ps1, which drops the
+    STUN/TURN port set inside the core's routing table.
 
 .PARAMETER Apply     Create/update the rules (default action).
 .PARAMETER Verify    Read-only report of the current shield state.
