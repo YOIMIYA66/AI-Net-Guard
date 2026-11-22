@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.7.6 · 显式物理境外硬阻断 + hy2/VLESS 全协议零泄漏 + 零常驻）
+# AI-Net-Guard 实现方案与持续审查文档（v5.7.7 · 显式物理境外硬阻断 + 浏览器 DoH/mDNS 防泄漏 + 零常驻）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
-> 节点同步：**v5.7.6 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.7.6 正式版**（新增 `AI-Guard-Block-Foreign-Physical` 显式物理外网阻断盾、压制第三方 WFP 软放行绕过，`16` 项防护开关完备）
+> 节点同步：**v5.7.7 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
+> 版本状态：**v5.7.7 正式版**（新增 Chrome/Edge `DnsOverHttpsMode=off` 防国内 DoH 旁路泄漏 + Windows `Dnscache EnableMDNS=0` 多播封堵，`16` 项防护开关完备）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -346,5 +346,15 @@ v5.7.3 针对原生桌面 GUI 客户端进行了全链路深度美化与人机�
    - **双核心阿里 DoH 伴生放行 (`AI-Guard-Allow-Core-*-DoH`)**：为所有已安装代理核心（`xray.exe`、`sing-box.exe`、`v2rayN.exe`）各自维护 `223.5.5.5/223.6.6.6:443` 放行规则，切换协议或双核协同不互抢。
    - **域名节点 15 分钟周期重解析 & 旧 `/32` 路由清理**：CDN/DDNS 域名落地节点自动定期刷新 IP，切换节点时清理旧 `/32` 物理主机路由。
    - **`03-verify.ps1` 与 `04-wfp-audit.ps1` 完善**：节点校验同时观测 `sing-box` UDP 套接字与物理 `/32` 路由对齐；WFP 审计器支持输出非 `AI-Guard` 的 `ALE_AUTH_CONNECT_V4` `FWP_ACTION_PERMIT` / `FWP_ACTION_CALLOUT_TERMINATING` 过滤器。
+
+---
+## 15. v5.7.7 升级版本：浏览器内置 DoH 防泄漏锁定与 Windows mDNS 禁用
+
+1. **禁止 Chrome / Edge 内置 DoH 旁路国内 DNS (`DnsOverHttpsMode = "off"`)**：
+   - 当物理网卡 DNS 锁定为 `223.5.5.5` 时，浏览器若默认开启“安全 DNS 自动模式”可能直接升级为阿里云 `dns.alidns.com` DoH，绕过 `xray_tun` 的国外 DoH 分流模块（`dns-module`）并将境外域名泄漏给国内 DNS。
+   - 归属于 `LockPhysicalDns`（及 `StrictNrptDoh`）：在 [`scripts/01-dns-hardening.ps1`](./scripts/01-dns-hardening.ps1)、[`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) 与 [`scripts/07-mode.ps1`](./scripts/07-mode.ps1)（`Set-BrowserDohPolicy`）中统一写入 Chrome / Edge 组策略 `DnsOverHttpsMode = "off"`，使浏览器域名请求统一进入 `xray_tun` / 系统解析路径分流；并在 `dns-*.json`（`ChromeDohMode`、`EdgeDohMode`）完整备份以便关闭或 [`scripts/09-rollback.ps1`](./scripts/09-rollback.ps1) 时原样恢复。
+2. **显式禁用 Windows 系统级 mDNS (`EnableMDNS = 0`)**：
+   - 归属于 `DisableLlmnrNetbios`：除 `DNSClient\EnableMulticast=0`（LLMNR）与 NetBIOS 外，同步在 `HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters` 写入 `EnableMDNS = 0`，并在 `dns-*.json`（`MdnsEnabled`）保存原始基线，关闭开关或完整回滚时无损还原。
+   - [`scripts/03-verify.ps1`](./scripts/03-verify.ps1)、[`scripts/12-regression.ps1`](./scripts/12-regression.ps1) 与 [`scripts/verify-leak-test.ps1`](./scripts/verify-leak-test.ps1) 同步增加 `DnsOverHttpsMode=off` 与 `EnableMDNS=0` 校验。
 
 

@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.7.6 - rollback & baseline restore (100% thorough uninstaller)
+# AI-Net-Guard v5.7.7 - rollback & baseline restore (100% thorough uninstaller)
 [CmdletBinding()]
 param(
     [string]$Root = 'C:\AI-Net-Guard',
@@ -22,7 +22,7 @@ function Log ($msg) {
 }
 
 $DohServer = '223.5.5.5'
-Log 'AI-Net-Guard v5.7.6 thorough rollback started'
+Log 'AI-Net-Guard v5.7.7 thorough rollback started'
 Log ('user: ' + [System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
 
 # ------------------------------------------------------------------ admin check
@@ -262,7 +262,7 @@ try {
 }
 catch { }
 
-# ------------------------------------------------------------------ 6. LLMNR & SMHNR policy removal
+# ------------------------------------------------------------------ 6. LLMNR, mDNS & SMHNR policy removal
 try {
     $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
     if (Test-Path -LiteralPath $key) {
@@ -270,10 +270,21 @@ try {
         Remove-ItemProperty -Path $key -Name 'DisableSmartNameResolution' -ErrorAction SilentlyContinue
         Log 'removed LLMNR & SMHNR group policies (Windows defaults restored)'
     }
+    $svcKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters'
+    if (Test-Path -LiteralPath $svcKey) {
+        if ($dnsBackup -and ($dnsBackup.PSObject.Properties.Name -contains 'MdnsEnabled') -and $null -ne $dnsBackup.MdnsEnabled) {
+            New-ItemProperty -Path $svcKey -Name 'EnableMDNS' -Value ([int]$dnsBackup.MdnsEnabled) -PropertyType DWord -Force | Out-Null
+            Log ('restored Dnscache EnableMDNS: ' + $dnsBackup.MdnsEnabled)
+        }
+        else {
+            Remove-ItemProperty -Path $svcKey -Name 'EnableMDNS' -ErrorAction SilentlyContinue
+            Log 'removed Dnscache EnableMDNS (Windows mDNS default restored)'
+        }
+    }
 }
 catch { }
 
-# ------------------------------------------------------------------ 6.5. WebRTC browser enterprise policy cleanup
+# ------------------------------------------------------------------ 6.5. Browser WebRTC & DoH enterprise policy cleanup
 try {
     $cPolKey = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
     $ePolKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
@@ -293,6 +304,14 @@ try {
             Remove-ItemProperty -Path $cPolKey -Name 'WebRtcIPHandlingPolicy' -ErrorAction SilentlyContinue
             Log 'removed Chrome WebRtcIPHandlingPolicy (restore to default)'
         }
+        $origChromeDoh = if ($dnsBackupWrtc -and $dnsBackupWrtc.PSObject.Properties.Name -contains 'ChromeDohMode') { $dnsBackupWrtc.ChromeDohMode } else { $null }
+        if ($null -ne $origChromeDoh) {
+            New-ItemProperty -Path $cPolKey -Name 'DnsOverHttpsMode' -Value ([string]$origChromeDoh) -PropertyType String -Force | Out-Null
+            Log ('restored Chrome DnsOverHttpsMode: ' + $origChromeDoh)
+        } else {
+            Remove-ItemProperty -Path $cPolKey -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
+            Log 'removed Chrome DnsOverHttpsMode (restore to default)'
+        }
     }
     if (Test-Path -LiteralPath $ePolKey) {
         $origEdge = if ($dnsBackupWrtc -and $dnsBackupWrtc.PSObject.Properties.Name -contains 'EdgeWebRtcPolicy') { $dnsBackupWrtc.EdgeWebRtcPolicy } else { $null }
@@ -310,9 +329,17 @@ try {
             Remove-ItemProperty -Path $ePolKey -Name 'WebRtcLocalhostIpHandling' -ErrorAction SilentlyContinue
             Log 'removed Edge WebRtcLocalhostIpHandling (restore to default)'
         }
+        $origEdgeDoh = if ($dnsBackupWrtc -and $dnsBackupWrtc.PSObject.Properties.Name -contains 'EdgeDohMode') { $dnsBackupWrtc.EdgeDohMode } else { $null }
+        if ($null -ne $origEdgeDoh) {
+            New-ItemProperty -Path $ePolKey -Name 'DnsOverHttpsMode' -Value ([string]$origEdgeDoh) -PropertyType String -Force | Out-Null
+            Log ('restored Edge DnsOverHttpsMode: ' + $origEdgeDoh)
+        } else {
+            Remove-ItemProperty -Path $ePolKey -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
+            Log 'removed Edge DnsOverHttpsMode (restore to default)'
+        }
     }
 }
-catch { Log ('warning removing WebRTC browser policy: ' + $_.Exception.Message) }
+catch { Log ('warning removing WebRTC/DoH browser policy: ' + $_.Exception.Message) }
 
 # ------------------------------------------------------------------ 7. WinINET system proxy cleanup
 try {

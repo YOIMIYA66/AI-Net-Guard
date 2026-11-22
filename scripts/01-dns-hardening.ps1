@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.6 - step 1: DNS, IPv6/IPv4-precedence, SMHNR, and NTP hardening.
+    AI-Net-Guard v5.7.7 - step 1: DNS, IPv6/IPv4-precedence, SMHNR, and NTP hardening.
 
 .DESCRIPTION
     Prepares Windows networking for the v5.1 static guard:
@@ -136,6 +136,7 @@ $dnscacheParamKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters
 $multicast = $null
 $smhnrPol = $null
 $smhnrSvc = $null
+$mdnsSvc = $null
 if (Test-Path -LiteralPath $policyKey) {
     $polProps = Get-ItemProperty -LiteralPath $policyKey -ErrorAction SilentlyContinue
     if ($polProps) {
@@ -144,7 +145,11 @@ if (Test-Path -LiteralPath $policyKey) {
     }
 }
 if (Test-Path -LiteralPath $dnscacheParamKey) {
-    $smhnrSvc = (Get-ItemProperty -LiteralPath $dnscacheParamKey -ErrorAction SilentlyContinue).DisableSmartNameResolution
+    $svcProps = Get-ItemProperty -LiteralPath $dnscacheParamKey -ErrorAction SilentlyContinue
+    if ($svcProps) {
+        $smhnrSvc = $svcProps.DisableSmartNameResolution
+        $mdnsSvc = $svcProps.EnableMDNS
+    }
 }
 
 $netbiosBackup = @()
@@ -176,26 +181,34 @@ if (Test-Path -LiteralPath $w32TimeKey) {
 $chromePolicyKey = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
 $edgePolicyKey   = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
 $chromeWebRtcBackup = $null
+$chromeDohBackup = $null
 $edgeWebRtcBackup = $null
 $edgeLocalhostBackup = $null
+$edgeDohBackup = $null
 if (Test-Path -LiteralPath $chromePolicyKey) {
-    $chromeWebRtcBackup = (Get-ItemProperty -LiteralPath $chromePolicyKey -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
+    $cpProps = Get-ItemProperty -LiteralPath $chromePolicyKey -ErrorAction SilentlyContinue
+    if ($cpProps) {
+        $chromeWebRtcBackup = $cpProps.WebRtcIPHandlingPolicy
+        $chromeDohBackup = $cpProps.DnsOverHttpsMode
+    }
 }
 if (Test-Path -LiteralPath $edgePolicyKey) {
     $epProps = Get-ItemProperty -LiteralPath $edgePolicyKey -ErrorAction SilentlyContinue
     if ($epProps) {
         $edgeWebRtcBackup = $epProps.WebRtcIPHandlingPolicy
         $edgeLocalhostBackup = $epProps.WebRtcLocalhostIpHandling
+        $edgeDohBackup = $epProps.DnsOverHttpsMode
     }
 }
 
 $backup = [pscustomobject]@{
-    Version                    = '5.5'
+    Version                    = '5.7'
     Created                    = (Get-Date).ToString('o')
     Dns                        = $dnsBackup
     Nrpt                       = $nrptBackup
     Doh                        = $dohBackup
     Llmnr                      = $multicast
+    MdnsEnabled                = $mdnsSvc
     SmartNameResolutionPolicy  = $smhnrPol
     SmartNameResolutionService = $smhnrSvc
     Netbios                    = $netbiosBackup
@@ -204,8 +217,10 @@ $backup = [pscustomobject]@{
     Ipv4PrefixPolicy           = $v4PrefixBackup
     NtpServer                  = $ntpOrig
     ChromeWebRtcPolicy         = $chromeWebRtcBackup
+    ChromeDohMode              = $chromeDohBackup
     EdgeWebRtcPolicy           = $edgeWebRtcBackup
     EdgeWebRtcLocalhost        = $edgeLocalhostBackup
+    EdgeDohMode                = $edgeDohBackup
 }
 $backup | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $BackupFile -Encoding UTF8
 Write-Host ('    backup: ' + $BackupFile) -ForegroundColor DarkGray
@@ -271,6 +286,17 @@ foreach ($a in $physical) {
     }
 }
 
+try {
+    if (-not (Test-Path -LiteralPath $chromePolicyKey)) { New-Item -Path $chromePolicyKey -Force | Out-Null }
+    New-ItemProperty -Path $chromePolicyKey -Name 'DnsOverHttpsMode' -Value 'off' -PropertyType String -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $edgePolicyKey)) { New-Item -Path $edgePolicyKey -Force | Out-Null }
+    New-ItemProperty -Path $edgePolicyKey -Name 'DnsOverHttpsMode' -Value 'off' -PropertyType String -Force | Out-Null
+    Write-Host '    Chrome & Edge DnsOverHttpsMode = off (prevents domestic DoH leak)'
+}
+catch {
+    Write-Host ('    Browser DoH policy warning: ' + $_.Exception.Message) -ForegroundColor Yellow
+}
+
 # ------------------------------------------------------------------ 3. IPv6 binding
 if (-not $SkipIpv6Disable) {
     Write-Step 'disabling IPv6 binding on physical adapters (no v6 default route / AAAA leak)'
@@ -304,11 +330,14 @@ if (-not $SkipIpv4Prefer) {
     }
 }
 
-# ------------------------------------------------------------------ 5. LLMNR / NetBIOS / SMHNR
+# ------------------------------------------------------------------ 5. LLMNR / NetBIOS / mDNS / SMHNR
 if (-not $SkipLlmnrNetbios) {
-    Write-Step 'disabling LLMNR and NetBIOS name resolution'
+    Write-Step 'disabling LLMNR, mDNS and NetBIOS name resolution'
     if (-not (Test-Path -LiteralPath $policyKey)) { New-Item -Path $policyKey -Force | Out-Null }
     New-ItemProperty -Path $policyKey -Name 'EnableMulticast' -Value 0 -PropertyType DWord -Force | Out-Null
+    if (Test-Path -LiteralPath $dnscacheParamKey) {
+        New-ItemProperty -Path $dnscacheParamKey -Name 'EnableMDNS' -Value 0 -PropertyType DWord -Force | Out-Null
+    }
     foreach ($a in $physical) {
         if (-not $a.InterfaceGuid) { continue }
         $nbKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_' + $a.InterfaceGuid

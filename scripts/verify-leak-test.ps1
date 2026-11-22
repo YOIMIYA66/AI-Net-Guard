@@ -1,4 +1,4 @@
-# AI-Net-Guard Leak & Connectivity Verification Test (v5.7.6)
+# AI-Net-Guard Leak & Connectivity Verification Test (v5.7.7)
 $ErrorActionPreference = 'Continue'
 Write-Host '===============================================================================' -ForegroundColor Cyan
 Write-Host '               AI-Net-Guard Post-Optimization Leak & Health Test               ' -ForegroundColor Cyan
@@ -31,6 +31,21 @@ if ($cWrtc -eq 'disable_non_proxied_udp' -and $eWrtc -eq 'disable_non_proxied_ud
     Write-Host '[PASS] Chromium WebRTC policy active (Chrome+Edge: disable_non_proxied_udp)' -ForegroundColor Green
 } else {
     Write-Host ('[WARN] Chromium WebRtcIPHandlingPolicy incomplete (Chrome=' + $cWrtc + ', Edge=' + $eWrtc + ')') -ForegroundColor Yellow
+}
+
+$cDoh = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Google\Chrome' -ErrorAction SilentlyContinue).DnsOverHttpsMode
+$eDoh = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -ErrorAction SilentlyContinue).DnsOverHttpsMode
+if ($cDoh -eq 'off' -and $eDoh -eq 'off') {
+    Write-Host '[PASS] Chromium built-in DoH disabled (Chrome+Edge DnsOverHttpsMode=off)' -ForegroundColor Green
+} else {
+    Write-Host ('[WARN] Chromium DnsOverHttpsMode not off (Chrome=' + $cDoh + ', Edge=' + $eDoh + ')') -ForegroundColor Yellow
+}
+
+$mdns = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -ErrorAction SilentlyContinue).EnableMDNS
+if ($mdns -eq 0) {
+    Write-Host '[PASS] Windows mDNS disabled (Dnscache EnableMDNS=0)' -ForegroundColor Green
+} else {
+    Write-Host ('[WARN] Windows Dnscache EnableMDNS=' + $mdns + ' (expected 0)') -ForegroundColor Yellow
 }
 
 # 2. Check TUN adapter status

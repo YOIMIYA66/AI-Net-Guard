@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.6 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
+    AI-Net-Guard v5.7.7 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
 
 .DESCRIPTION
     Verifies the v5.4 static guard end-to-end. Read-only, except for a temporary
@@ -249,7 +249,7 @@ function Get-ConfiguredNodeInfo {
     }
 }
 
-W ('=== AI-Net-Guard v5.7.6 regression ' + (Get-Date -Format 'o') + ' ===')
+W ('=== AI-Net-Guard v5.7.7 regression ' + (Get-Date -Format 'o') + ' ===')
 function Get-ActiveIpPhysicalNics {
     @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
         $_.OperationalStatus -eq 'Up' -and
@@ -356,7 +356,12 @@ Check ('physical adapter DNS policy (' + $(if ($guardPolicy.LockPhysicalDns) { $
             if (($s -join ',') -ne $DnsServer) { $bad += ($a.Name + '=' + ($s -join ',')) }
         }
         if ($bad.Count -gt 0) { throw ($bad -join '; ') }
-        'ok'
+        $cDoh = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Google\Chrome' -ErrorAction SilentlyContinue).DnsOverHttpsMode
+        $eDoh = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -ErrorAction SilentlyContinue).DnsOverHttpsMode
+        if ($cDoh -ne 'off' -or $eDoh -ne 'off') {
+            throw ('Chromium DnsOverHttpsMode mismatch: Chrome=' + $cDoh + ' Edge=' + $eDoh)
+        }
+        'ok (Chrome+Edge DoH=off)'
     }
 }
 
@@ -389,14 +394,17 @@ Check 'IPv4/IPv6 prefix precedence policy' {
     }
 }
 
-Check 'LLMNR & Smart Multi-Homed DNS (SMHNR) policy' {
+Check 'LLMNR, mDNS & Smart Multi-Homed DNS (SMHNR) policy' {
     $pol = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -ErrorAction SilentlyContinue
+    $svc = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -ErrorAction SilentlyContinue
     $parts = @()
     if ($guardPolicy.DisableLlmnrNetbios) {
         if (-not $pol -or $pol.EnableMulticast -ne 0) { throw ('EnableMulticast=' + $(if ($pol) { $pol.EnableMulticast } else { 'null' })) }
+        if (-not $svc -or $svc.EnableMDNS -ne 0) { throw ('EnableMDNS=' + $(if ($svc) { $svc.EnableMDNS } else { 'null' })) }
         $parts += 'LLMNR=off'
+        $parts += 'mDNS=off'
     }
-    else { $parts += 'LLMNR=allowed(policy)' }
+    else { $parts += 'LLMNR=allowed(policy), mDNS=allowed(policy)' }
 
     if ($guardPolicy.DisableSmhnr) {
         $v54Migrated = Test-Path -LiteralPath (Join-Path $Root 'backup\v54-migrated.flag')

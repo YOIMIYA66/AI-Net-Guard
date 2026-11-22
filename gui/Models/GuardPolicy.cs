@@ -535,13 +535,13 @@ namespace AiNetGuard.Gui.Models
                 CategoryZh = "二、DNS 防污染与防泄漏护盾 (DNS & Leak-Shield Hardening)",
                 CategoryEn = "2. DNS Leak Protection & Protocol Hardening",
                 Key = "LockPhysicalDns",
-                TitleZh = "锁定物理网卡安全静态 DNS (223.5.5.5)",
-                TitleEn = "Lock Physical Adapter Secure Static DNS (223.5.5.5)",
+                TitleZh = "锁定物理网卡安全静态 DNS (223.5.5.5) + 禁浏览器内置 DoH",
+                TitleEn = "Lock Physical Adapter DNS (223.5.5.5) + Disable Browser Built-in DoH",
                 BadgeTextZh = "推荐开启",
                 BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                SummaryZh = "防止路由器 DHCP 下发运营商劫持 DNS；开启代理时 53 端口自动被 TUN 接管走加密 DoH，关闭代理时也能在大陆白名单内安全解析国内域名。",
-                SummaryEn = "Prevents rogue DHCP router DNS hijacking. When proxy is ON, port 53 is captured by TUN for encrypted DoH; when OFF, securely resolves domestic domains."
+                SummaryZh = "防止路由器 DHCP 劫持，并强制 Chrome/Edge DnsOverHttpsMode=off（避免浏览器自动升级到阿里 DoH 绕过 TUN 分流造成国内 DNS 泄漏）；开启代理时 53 端口由 TUN 接管，关闭时安全解析国内域名。",
+                SummaryEn = "Prevents DHCP hijacking and enforces Chrome/Edge DnsOverHttpsMode=off (stops browsers from auto-upgrading to domestic DoH and bypassing TUN split DNS); when proxy is ON, port 53 is routed through TUN."
             },
             new FeatureToggleItem
             {
@@ -561,13 +561,13 @@ namespace AiNetGuard.Gui.Models
                 CategoryZh = "二、DNS 防污染与防泄漏护盾 (DNS & Leak-Shield Hardening)",
                 CategoryEn = "2. DNS Leak Protection & Protocol Hardening",
                 Key = "DisableLlmnrNetbios",
-                TitleZh = "禁用局域网多播与广播名称解析 (LLMNR & NetBIOS)",
-                TitleEn = "Disable Local Multicast & Broadcast Resolution (LLMNR & NetBIOS)",
+                TitleZh = "禁用局域网多播与广播名称解析 (LLMNR / mDNS / NetBIOS)",
+                TitleEn = "Disable Local Multicast & Broadcast Resolution (LLMNR / mDNS / NetBIOS)",
                 BadgeTextZh = "推荐开启",
                 BadgeTextEn = "Recommended",
                 IsRecommended = true,
-                SummaryZh = "关闭陈旧的局域网广播域名解析协议，既防止未命中域名泄漏到局域网，也能免疫局域网内常见的 LLMNR / NBT-NS 欺骗劫持攻击。",
-                SummaryEn = "Disables legacy local broadcast name resolution protocols, preventing unresolved queries from leaking to LAN and blocking LLMNR/NBT-NS spoofing attacks."
+                SummaryZh = "关闭 LLMNR、Windows mDNS（Dnscache EnableMDNS=0）与 NetBIOS 局域网广播/多播名称解析，防止未命中域名泄漏到局域网并免疫内网欺骗劫持。",
+                SummaryEn = "Disables LLMNR, Windows mDNS (Dnscache EnableMDNS=0), and NetBIOS local broadcast/multicast name resolution to prevent LAN DNS leaks and spoofing attacks."
             },
             new FeatureToggleItem
             {

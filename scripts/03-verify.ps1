@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.6 - step 3: comprehensive verification (run as Administrator).
+    AI-Net-Guard v5.7.7 - step 3: comprehensive verification (run as Administrator).
 
 .DESCRIPTION
     Verifies both static configuration invariants and live network behaviour for
-    AI-Net-Guard v5.7.6 (works in both TUN-ON and TUN-OFF states, multi-core aware,
+    AI-Net-Guard v5.7.7 (works in both TUN-ON and TUN-OFF states, multi-core aware,
     bypasses HKCU HTTP proxy to test the real kernel WFP/TUN datapath, and
     auto-cleans temporary WFP XML dumps unless -KeepCaptures is passed).
 
@@ -193,7 +193,7 @@ function Get-FirewallRuleStates {
 
 Assert-Admin
 Write-Host ''
-Write-Host 'AI-Net-Guard v5.7.6 verification' -ForegroundColor Cyan
+Write-Host 'AI-Net-Guard v5.7.7 verification' -ForegroundColor Cyan
 Write-Host ''
 
 $ruleStates = Get-FirewallRuleStates
@@ -312,12 +312,21 @@ Check 'IPv4 preferred over IPv6 in prefix policy' {
     else { throw ('IPv6 ::/0 (' + $v6.Precedence + ') >= IPv4 ::ffff:0:0/96 (' + $v4.Precedence + ') - may cause AAAA stalls') }
 } '::ffff:0:0/96 precedence > ::/0'
 
-Check 'LLMNR & Smart Multi-Homed DNS (SMHNR) hardened' {
+Check 'LLMNR, mDNS & Smart Multi-Homed DNS (SMHNR) hardened' {
     $pol = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -ErrorAction SilentlyContinue
+    $svc = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -ErrorAction SilentlyContinue
     if (-not $pol -or $pol.EnableMulticast -ne 0) { throw ('EnableMulticast=' + $(if ($pol) { $pol.EnableMulticast } else { 'null' })) }
-    if ($pol.DisableSmartNameResolution -eq 1) { 'LLMNR=off, SMHNR=off' }
-    else { 'LLMNR=off (SMHNR queued for next event or .\07-mode.ps1)' }
-} 'EnableMulticast=0 & DisableSmartNameResolution=1'
+    if (-not $svc -or $svc.EnableMDNS -ne 0) { throw ('EnableMDNS=' + $(if ($svc) { $svc.EnableMDNS } else { 'null' })) }
+    if ($pol.DisableSmartNameResolution -eq 1) { 'LLMNR=off, mDNS=off, SMHNR=off' }
+    else { 'LLMNR=off, mDNS=off (SMHNR queued for next event or .\07-mode.ps1)' }
+} 'EnableMulticast=0, EnableMDNS=0 & DisableSmartNameResolution=1'
+
+Check 'Chromium built-in DoH disabled (prevents domestic DoH leak)' {
+    $cDoh = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Google\Chrome' -ErrorAction SilentlyContinue).DnsOverHttpsMode
+    $eDoh = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -ErrorAction SilentlyContinue).DnsOverHttpsMode
+    if ($cDoh -ne 'off' -or $eDoh -ne 'off') { throw ('DnsOverHttpsMode not off: Chrome=' + $cDoh + ' Edge=' + $eDoh) }
+    'Chrome+Edge DnsOverHttpsMode=off'
+} 'DnsOverHttpsMode=off'
 
 Check 'WebRTC STUN leak protection (physical NIC + LocalIP block rules)' {
     $u = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue

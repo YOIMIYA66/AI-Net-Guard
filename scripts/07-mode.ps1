@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.6 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
+    AI-Net-Guard v5.7.7 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
 
 .DESCRIPTION
     The guard itself is 100% STATIC in Windows kernel WFP (BFE / tcpip.sys):
@@ -998,6 +998,9 @@ function Set-SmhnrHardening {
         }
         if ($DisableLlmnr) {
             New-ItemProperty -Path $polKey -Name 'EnableMulticast' -Value 0 -PropertyType DWord -Force | Out-Null
+            if (Test-Path -LiteralPath $svcKey) {
+                New-ItemProperty -Path $svcKey -Name 'EnableMDNS' -Value 0 -PropertyType DWord -Force | Out-Null
+            }
         }
         if ($DisableSmhnr) {
             New-ItemProperty -Path $polKey -Name 'DisableSmartNameResolution' -Value 1 -PropertyType DWord -Force | Out-Null
@@ -1043,6 +1046,47 @@ function Set-WebRtcPolicy {
                 if ($ep -and ($null -ne $ep.WebRtcIPHandlingPolicy -or $null -ne $ep.WebRtcLocalhostIpHandling)) {
                     Remove-ItemProperty -Path $ePol -Name 'WebRtcIPHandlingPolicy' -ErrorAction SilentlyContinue
                     Remove-ItemProperty -Path $ePol -Name 'WebRtcLocalhostIpHandling' -ErrorAction SilentlyContinue
+                    $changed = $true
+                }
+            }
+        }
+    }
+    catch { }
+    return $changed
+}
+
+function Set-BrowserDohPolicy {
+    param([bool]$DisableBuiltInDoh = $true)
+    $changed = $false
+    try {
+        $cPol = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
+        $ePol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+        if ($DisableBuiltInDoh) {
+            $curC = (Get-ItemProperty -LiteralPath $cPol -ErrorAction SilentlyContinue).DnsOverHttpsMode
+            if ($curC -ne 'off') {
+                if (-not (Test-Path -LiteralPath $cPol)) { New-Item -Path $cPol -Force | Out-Null }
+                New-ItemProperty -Path $cPol -Name 'DnsOverHttpsMode' -Value 'off' -PropertyType String -Force | Out-Null
+                $changed = $true
+            }
+            $curE = (Get-ItemProperty -LiteralPath $ePol -ErrorAction SilentlyContinue).DnsOverHttpsMode
+            if ($curE -ne 'off') {
+                if (-not (Test-Path -LiteralPath $ePol)) { New-Item -Path $ePol -Force | Out-Null }
+                New-ItemProperty -Path $ePol -Name 'DnsOverHttpsMode' -Value 'off' -PropertyType String -Force | Out-Null
+                $changed = $true
+            }
+        }
+        else {
+            if (Test-Path -LiteralPath $cPol) {
+                $curC = (Get-ItemProperty -LiteralPath $cPol -ErrorAction SilentlyContinue).DnsOverHttpsMode
+                if ($null -ne $curC) {
+                    Remove-ItemProperty -Path $cPol -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
+                    $changed = $true
+                }
+            }
+            if (Test-Path -LiteralPath $ePol) {
+                $curE = (Get-ItemProperty -LiteralPath $ePol -ErrorAction SilentlyContinue).DnsOverHttpsMode
+                if ($null -ne $curE) {
+                    Remove-ItemProperty -Path $ePol -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
                     $changed = $true
                 }
             }
@@ -1144,7 +1188,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>AI-Net-Guard v5.7.6 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
+    <Description>AI-Net-Guard v5.7.7 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
@@ -1247,7 +1291,7 @@ function Show-Status {
     else { 'stopped' }
 
     Write-Host ''
-    Write-Host '=== AI-Net-Guard v5.7.6 Status (read-only) ===' -ForegroundColor Cyan
+    Write-Host '=== AI-Net-Guard v5.7.7 Status (read-only) ===' -ForegroundColor Cyan
     Write-Host ('TUN : ' + $tunLabel + '   core : ' + $coreLabel)
     if (Test-Path -LiteralPath $policyFile) {
         Write-Host ('  policy preset     : ' + $guardPolicy.Preset + ' (guard-policy.json active)') -ForegroundColor Cyan
@@ -1344,18 +1388,25 @@ function Show-Status {
     }
 
     $dnsPol = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -ErrorAction SilentlyContinue
+    $dnsSvc = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -ErrorAction SilentlyContinue
     $llmnrOff = ($dnsPol -and $dnsPol.EnableMulticast -eq 0)
+    $mdnsOff = ($dnsSvc -and $dnsSvc.EnableMDNS -eq 0)
     $smhnrOff = ($dnsPol -and $dnsPol.DisableSmartNameResolution -eq 1)
-    Write-Host ('  DNS leak-shield   : LLMNR={0}  SMHNR={1}' -f $(if ($llmnrOff) { 'off' } else { 'ON' }), $(if ($smhnrOff) { 'off' } else { 'pending (auto-applies on next event or .\07-mode.ps1)' }))
+    Write-Host ('  DNS leak-shield   : LLMNR={0}  mDNS={1}  SMHNR={2}' -f $(if ($llmnrOff) { 'off' } else { 'ON' }), $(if ($mdnsOff) { 'off' } else { 'ON' }), $(if ($smhnrOff) { 'off' } else { 'pending (auto-applies on next event or .\07-mode.ps1)' }))
     $wrtcUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue
     $wrtcTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -ErrorAction SilentlyContinue
-    $cPol = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Google\Chrome' -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
-    $ePol = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -ErrorAction SilentlyContinue).WebRtcIPHandlingPolicy
+    $cProps = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Google\Chrome' -ErrorAction SilentlyContinue
+    $eProps = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -ErrorAction SilentlyContinue
+    $cPol = if ($cProps) { $cProps.WebRtcIPHandlingPolicy } else { $null }
+    $ePol = if ($eProps) { $eProps.WebRtcIPHandlingPolicy } else { $null }
+    $cDoh = if ($cProps) { $cProps.DnsOverHttpsMode } else { $null }
+    $eDoh = if ($eProps) { $eProps.DnsOverHttpsMode } else { $null }
     $wrtcFwOk = ($wrtcUdp -and $wrtcUdp.Enabled -eq 'True' -and $wrtcTcp -and $wrtcTcp.Enabled -eq 'True')
     $wrtcPolOk = ($cPol -eq 'disable_non_proxied_udp' -and $ePol -eq 'disable_non_proxied_udp')
+    $dohOffOk = ($cDoh -eq 'off' -and $eDoh -eq 'off')
     $wrtcStatus = if ($wrtcFwOk -and $wrtcPolOk) { 'ACTIVE (FW+browser policy)' } elseif ($wrtcFwOk) { 'FW only (browser policy missing)' } elseif ($wrtcPolOk) { 'browser policy only (FW rules missing)' } else { 'MISSING - run 02-killswitch.ps1' }
     $wrtcColor = if ($wrtcFwOk -and $wrtcPolOk) { 'Green' } elseif ($wrtcFwOk -or $wrtcPolOk) { 'Yellow' } else { 'Red' }
-    Write-Host ('  WebRTC leak-shield: {0}' -f $wrtcStatus) -ForegroundColor $wrtcColor
+    Write-Host ('  WebRTC leak-shield: {0}  BrowserDoH={1}' -f $wrtcStatus, $(if ($dohOffOk) { 'off' } else { 'default' })) -ForegroundColor $wrtcColor
 
     $v4pol = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::ffff:0:0/96' } | Select-Object -First 1
     $v6pol = Get-NetPrefixPolicy -ErrorAction SilentlyContinue | Where-Object { $_.Prefix -eq '::/0' } | Select-Object -First 1
@@ -1394,7 +1445,7 @@ function Show-Status {
 }
 
 function Invoke-UpgradeV54 {
-    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.7.6 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
+    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.7.7 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
 
     # 1. Backfill new rollback fields into existing DNS baseline JSON without altering original values
     $bf = Join-Path $Root 'backup\baseline.json'
@@ -1930,12 +1981,19 @@ function Ensure-Guard {
         }
         if ($guardPolicy.DisableLlmnrNetbios -or $guardPolicy.DisableSmhnr) {
             $dnsPol = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient' -ErrorAction SilentlyContinue
-            $needLlmnr = ($guardPolicy.DisableLlmnrNetbios -and (-not $dnsPol -or $dnsPol.EnableMulticast -ne 0))
+            $dnsSvc = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters' -ErrorAction SilentlyContinue
+            $needLlmnr = ($guardPolicy.DisableLlmnrNetbios -and ((-not $dnsPol -or $dnsPol.EnableMulticast -ne 0) -or (-not $dnsSvc -or $dnsSvc.EnableMDNS -ne 0)))
             $needSmhnr = ($guardPolicy.DisableSmhnr -and (-not $dnsPol -or $dnsPol.DisableSmartNameResolution -ne 1))
             if ($needLlmnr -or $needSmhnr) {
                 Set-SmhnrHardening -DisableLlmnr ([bool]$guardPolicy.DisableLlmnrNetbios) -DisableSmhnr ([bool]$guardPolicy.DisableSmhnr)
-                $script:repairedItems += 'LLMNR+SMHNR-hardened'
-                Say '    repaired: DNS leak-shield policy hardened'
+                $script:repairedItems += 'LLMNR+mDNS+SMHNR-hardened'
+                Say '    repaired: DNS leak-shield policy hardened (LLMNR/mDNS/SMHNR)'
+            }
+        }
+        if ($guardPolicy.LockPhysicalDns -or $guardPolicy.StrictNrptDoh) {
+            if (Set-BrowserDohPolicy -DisableBuiltInDoh $true) {
+                $script:repairedItems += 'BrowserDoH-off'
+                Say '    repaired: Chromium DnsOverHttpsMode = off'
             }
         }
     }

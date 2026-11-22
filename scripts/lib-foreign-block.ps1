@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.7.6 - shared helper for explicit physical-NIC foreign IPv4 block rule
+# AI-Net-Guard v5.7.7 - shared helper for explicit physical-NIC foreign IPv4 block rule
 # Pure ASCII script. Dot-sourced by 02-killswitch.ps1, 07-mode.ps1, 10-sync-node-rule.ps1, 14-apply-policy.ps1.
 #
 # Why this exists:

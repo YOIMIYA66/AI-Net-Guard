@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.7.6 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.7.7 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 16
@@ -359,7 +359,7 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.7.6 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.7.7 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
 
 if ($isFreshInstall) {
@@ -422,6 +422,24 @@ if ($isFreshInstall) {
                 }
                 Write-Note 'restored original adapter DNS (LockPhysicalDns=false)'
             }
+            try {
+                $cKeyInit = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
+                $eKeyInit = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+                if (Test-Path -LiteralPath $cKeyInit) {
+                    if ($db -and ($db.PSObject.Properties.Name -contains 'ChromeDohMode') -and $null -ne $db.ChromeDohMode) {
+                        New-ItemProperty -Path $cKeyInit -Name 'DnsOverHttpsMode' -Value ([string]$db.ChromeDohMode) -PropertyType String -Force | Out-Null
+                    } else {
+                        Remove-ItemProperty -Path $cKeyInit -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
+                    }
+                }
+                if (Test-Path -LiteralPath $eKeyInit) {
+                    if ($db -and ($db.PSObject.Properties.Name -contains 'EdgeDohMode') -and $null -ne $db.EdgeDohMode) {
+                        New-ItemProperty -Path $eKeyInit -Name 'DnsOverHttpsMode' -Value ([string]$db.EdgeDohMode) -PropertyType String -Force | Out-Null
+                    } else {
+                        Remove-ItemProperty -Path $eKeyInit -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
+                    }
+                }
+            } catch { }
         }
     }
 
@@ -685,6 +703,39 @@ else {
         }
     }
 
+    $cPolKey = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
+    $ePolKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+    if ($policy.LockPhysicalDns -or $policy.StrictNrptDoh) {
+        try {
+            if (-not (Test-Path -LiteralPath $cPolKey)) { New-Item -Path $cPolKey -Force | Out-Null }
+            New-ItemProperty -Path $cPolKey -Name 'DnsOverHttpsMode' -Value 'off' -PropertyType String -Force | Out-Null
+            if (-not (Test-Path -LiteralPath $ePolKey)) { New-Item -Path $ePolKey -Force | Out-Null }
+            New-ItemProperty -Path $ePolKey -Name 'DnsOverHttpsMode' -Value 'off' -PropertyType String -Force | Out-Null
+            Write-Ok 'BrowserDoh = OFF (Chrome & Edge DnsOverHttpsMode=off; DNS routed via TUN)'
+        } catch { }
+    }
+    else {
+        try {
+            if (Test-Path -LiteralPath $cPolKey) {
+                if ($dnsBackup -and ($dnsBackup.PSObject.Properties.Name -contains 'ChromeDohMode') -and $null -ne $dnsBackup.ChromeDohMode) {
+                    New-ItemProperty -Path $cPolKey -Name 'DnsOverHttpsMode' -Value ([string]$dnsBackup.ChromeDohMode) -PropertyType String -Force | Out-Null
+                }
+                else {
+                    Remove-ItemProperty -Path $cPolKey -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
+                }
+            }
+            if (Test-Path -LiteralPath $ePolKey) {
+                if ($dnsBackup -and ($dnsBackup.PSObject.Properties.Name -contains 'EdgeDohMode') -and $null -ne $dnsBackup.EdgeDohMode) {
+                    New-ItemProperty -Path $ePolKey -Name 'DnsOverHttpsMode' -Value ([string]$dnsBackup.EdgeDohMode) -PropertyType String -Force | Out-Null
+                }
+                else {
+                    Remove-ItemProperty -Path $ePolKey -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
+                }
+            }
+        } catch { }
+        Write-Ok 'BrowserDoh = RESTORED (Chrome & Edge built-in DoH restored)'
+    }
+
     # 2b. DisableSmhnr & DisableLlmnrNetbios (guard New-Item with Test-Path!)
     $dnsPolKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
     $dnsSvcKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters'
@@ -718,6 +769,9 @@ else {
 
     if ($policy.DisableLlmnrNetbios) {
         New-ItemProperty -Path $dnsPolKey -Name 'EnableMulticast' -Value 0 -PropertyType DWord -Force | Out-Null
+        if (Test-Path -LiteralPath $dnsSvcKey) {
+            New-ItemProperty -Path $dnsSvcKey -Name 'EnableMDNS' -Value 0 -PropertyType DWord -Force | Out-Null
+        }
         foreach ($pa in (Get-PhysicalAdaptersAll)) {
             if ($pa.InterfaceGuid) {
                 $nbk = 'HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_' + $pa.InterfaceGuid
@@ -726,7 +780,7 @@ else {
                 }
             }
         }
-        Write-Ok 'DisableLlmnrNetbios = ON (LLMNR & NetBIOS disabled)'
+        Write-Ok 'DisableLlmnrNetbios = ON (LLMNR, mDNS & NetBIOS disabled)'
     }
     else {
         if ($dnsBackup -and $null -ne $dnsBackup.Llmnr) {
@@ -734,6 +788,14 @@ else {
         }
         else {
             Remove-ItemProperty -Path $dnsPolKey -Name 'EnableMulticast' -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $dnsSvcKey) {
+            if ($dnsBackup -and ($dnsBackup.PSObject.Properties.Name -contains 'MdnsEnabled') -and $null -ne $dnsBackup.MdnsEnabled) {
+                New-ItemProperty -Path $dnsSvcKey -Name 'EnableMDNS' -Value ([int]$dnsBackup.MdnsEnabled) -PropertyType DWord -Force | Out-Null
+            }
+            else {
+                Remove-ItemProperty -Path $dnsSvcKey -Name 'EnableMDNS' -ErrorAction SilentlyContinue
+            }
         }
         if ($dnsBackup -and $dnsBackup.Netbios) {
             foreach ($nb in @($dnsBackup.Netbios)) {
@@ -1050,5 +1112,5 @@ if (Test-Path -LiteralPath $aclScript) {
 
 & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Status -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns
 Write-Host ''
-Write-Host '[SUCCESS] AI-Net-Guard v5.7.6 configuration applied successfully.' -ForegroundColor Green
+Write-Host '[SUCCESS] AI-Net-Guard v5.7.7 configuration applied successfully.' -ForegroundColor Green
 exit 0
