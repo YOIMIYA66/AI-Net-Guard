@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.7.7 · 显式物理境外硬阻断 + 浏览器 DoH/mDNS 防泄漏 + 零常驻）
+# AI-Net-Guard 实现方案与持续审查文档（v5.8.0 · 路由层 STUN 封锁 + 自愈快路径重构 + 显式物理境外硬阻断）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
-> 节点同步：**v5.7.7 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.7.7 正式版**（新增 Chrome/Edge `DnsOverHttpsMode=off` 防国内 DoH 旁路泄漏 + Windows `Dnscache EnableMDNS=0` 多播封堵，`16` 项防护开关完备）
+> 节点同步：**v5.8.0 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
+> 版本状态：**v5.8.0 正式版**（新增 v2rayN 路由层 `STUN/TURN` 端口封锁 + 自愈快路径 `5.8 s → 2.1 s` + `AI-Guard-Block-Foreign-Physical` 原地更新，`16` 项防护开关完备）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -366,5 +366,60 @@ v5.7.3 针对原生桌面 GUI 客户端进行了全链路深度美化与人机�
 2. **显式禁用 Windows 系统级 mDNS (`EnableMDNS = 0`)**：
    - 归属于 `DisableLlmnrNetbios`：除 `DNSClient\EnableMulticast=0`（LLMNR）与 NetBIOS 外，同步在 `HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters` 写入 `EnableMDNS = 0`，并在 `dns-*.json`（`MdnsEnabled`）保存原始基线，关闭开关或完整回滚时无损还原。
    - [`scripts/03-verify.ps1`](./scripts/03-verify.ps1)、[`scripts/12-regression.ps1`](./scripts/12-regression.ps1) 与 [`scripts/verify-leak-test.ps1`](./scripts/verify-leak-test.ps1) 同步增加 `DnsOverHttpsMode=off` 与 `EnableMDNS=0` 校验。
+
+---
+## 16. v5.8.0 升级版本：路由层 STUN 封锁与自愈快路径重构
+
+### 16.1 WebRTC 泄露的真实链路（推翻 v5.7.x 的结论）
+
+v5.7.x 把"防火墙 Block 规则已启用"当成 WebRTC 已封堵的证据，实测不成立。用**不经浏览器**的裸 UDP STUN 客户端（`System.Net.Sockets.UdpClient` 直接发 Binding Request）测量：
+
+| 目标 | 结果 | 判定 |
+| --- | --- | --- |
+| `stun.miwifi.com:3478`（111.206.174.x） | `mapped=183.188.38.12` | **泄露真实宽带 IP** |
+| `stun.chat.bilibili.com:3478`（106.12.x） | `mapped=183.188.38.12` | **泄露** |
+| `stun.l.google.com:19302` | `mapped=20.89.232.246` | 走代理，正常 |
+
+当时 8 条 `AI-Guard-Block-WebRTC-*` 全部 `Active=TRUE`，`xray.exe` 程序路径、12 个 STUN 端口、网卡 GUID 全部正确。真实链路是：
+
+```
+任意进程 -> xray_tun（默认路由 metric 0）-> xray.exe 路由命中 geoip:cn -> direct
+        -> xray.exe 从物理网卡重发，源 IP 192.168.1.165 -> NAT -> 183.188.38.12
+```
+
+根因不是"规则不够具体"。Windows 防火墙的仲裁是**显式 Block 一律压过 Allow**，与具体度无关。真正原因是 TUN 提供方在 `ALE_AUTH_CONNECT` 层对核心自身的出站安装 callout 并 **PERMIT + 终结分类**，防火墙的 Block 过滤器根本没有被求值。旁证：同一个探针若显式绑定物理地址（`verify-leak-test.ps1` 第 3 段即如此）规则一定生效，失效的只是"核心自己发包"这一跳。**任何防火墙规则都堵不住这一跳**。
+
+### 16.2 `18-route-stun-guard.ps1`：在核心路由表里丢弃 STUN/TURN
+
+唯一能在重发前看到包的层次是核心自己的路由表。v2rayN 本身就用这个手法阻断 QUIC（生成的 `config.json` 里带 `{"port":"135,137-139,5353","network":"udp","outboundTag":"block"}`），因此沿用同一形状，在当前生效路由集**顶部**插入两条：
+
+```json
+{"Port":"3478,3479,5349,5350,19302,19303,19304,19305,19306,19307,19308,19309","Network":"udp","OutboundTag":"block","Remarks":"STUN-GUARD: ..."}
+{"Port":"... 同上 ...","Network":"tcp","OutboundTag":"block","Remarks":"STUN-GUARD: ..."}
+```
+
+- **国内直连规则一行不动**，`geoip:cn` / `geosite:cn` 位置与语义不变，代理流量零增加，配额不受影响。
+- **确定性**：包在核心内被丢弃，不产生任何出站，不依赖 WFP 仲裁与第三方驱动行为。
+- **安全性**：`-Verify`（默认）只读；`-Apply` 先把 `guiNDB.db` 备份到 `backup\v2rayn-routing\<时间戳>\` 再写；`-Restore` 一键回滚；**v2rayN 运行中拒绝执行**（其内存副本会在退出时覆盖数据库）；以 `STUN-GUARD:` 前缀做幂等剥离，重复执行不会叠加规则；写入后回读校验，读不到即视为失败（exit 3）。
+- **代价**：网页版 WebRTC 通话彻底拿不到 `srflx` 候选，可能只能走 TURN 中转或直接建连失败。这是"宁可不通也不泄露"的显式取舍，可随时 `-Restore` 撤销。
+
+### 16.3 `verify-leak-test.ps1` 第 9 段：从"数规则"改为"测行为"
+
+新增活体 STUN 探针（`stun.miwifi.com` / `stun.chat.bilibili.com` / `stun.qq.com` + `stun.l.google.com` 对照）。判定标准改为行为：**TUN 在线时，境内 STUN 服务器不得有任何应答**；境外 STUN 应答机场落地 IP 属正常。超时判定改为按 `SocketErrorCode`（`TimedOut` / `ConnectionRefused` / `HostUnreachable` / `NetworkUnreachable`），不再依赖会被本地化的异常文本。
+
+### 16.4 `07-mode.ps1` 自愈快路径：5.8 s → 2.1 s
+
+| 缺陷 | 机制 | 修法 |
+| --- | --- | --- |
+| `Test-ShieldDriftFast` 用 `IF=\{GUID\}` 匹配，而 `NetworkInterface.Id` 自带花括号，拼成双层 `IF=\{\{...}}` 永不匹配 | 每轮自检都判"漂移"，每次都拉起 `15-webrtc-browser-shield.ps1` 子进程（约 3.5 s） | 统一为带花括号形式后逐字比较；门控两向验证（注入幻影网卡 GUID 立刻跳回 5.6 s，证明修复路径没有被关掉） |
+| `backup\foreign-block.meta` 用 `-Encoding ASCII` 写签名，而签名含网卡别名（`以太网`） | 别名被写成 `???`，签名永远不等 → 只要以太网 Up 就 `Remove-` + `New-NetFirewallRule` 整条重建上千条 `RemoteAddress` 的 `AI-Guard-Block-Foreign-Physical`，且**删除到重建之间存在无显式 BLOCK 的 fail-open 窗口** | meta 改 UTF-8；已有规则改用 `Set-NetFirewallRule -RemoteAddress` 原地更新，空窗消失 |
+
+实测（非提权、同机、各 3 次取最小值）：`5789 / 6310 / 6012 ms` → `2113 / 2210 / 2168 ms`。剩余 2.1 s 中约 1.33 s 是 PowerShell 进程启动 + 148 KB 脚本解析，已到地板。
+
+### 16.5 规则集缓存层（`07` / `15` 各自独立实现）
+
+`Get-NetFirewallRule` 单次约 1233 ms（加不加 `-Name` 都一样，模块先做全量 CIM 往返再客户端过滤），每个 `Get-NetFirewall*Filter` 约 290~337 ms。新增 `RuleIndex`（Name / DisplayName 双键）+ `RuleFilterCache`（`Kind|Key`）两层缓存，并提供 `Reset-RuleCache`：**任何 `Set-/New-/Remove-/Disable-/Enable-NetFirewallRule` 之后必须失效缓存**，否则会拿陈旧对象去"修复"它刚修好的漂移。
+
+对健康路径收益接近零（健康路径本就不怎么调这些命令），但对 `15` 自身显著：`-Verify` 45.1 s → 11.9 s，`-Apply` 12.4 s → 6.6 s，`-DryRun` 32.4 s → 7.8 s。
 
 

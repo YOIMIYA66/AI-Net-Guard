@@ -25,8 +25,8 @@
 #   - -Restore puts the newest backup back.
 #
 # .PARAMETER Root
-#   Guard root, used only for the backup destination. Defaults to the script folder
-#   or C:\AI-Net-Guard.
+#   Guard root, used only for the backup destination. Defaults to the parent of this
+#   script folder, otherwise C:\AI-Net-Guard.
 #
 # .PARAMETER V2rayNRoot
 #   v2rayN install folder that holds guiConfigs\guiNDB.db.
@@ -55,7 +55,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Root = $(if ($PSScriptRoot) { $PSScriptRoot } else { 'C:\AI-Net-Guard' }),
+    [string]$Root = '',
     [string]$V2rayNRoot = 'D:\v2rayN-windows-64-desktop\v2rayN-windows-64',
     [switch]$Apply,
     [switch]$Verify,
@@ -64,6 +64,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Same convention as 13/17: the install root is the PARENT of the script folder, so a run
+# from C:\AI-Net-Guard\scripts puts backups in C:\AI-Net-Guard\backup instead of nesting a
+# backup tree inside the shipped scripts directory.
+if (-not $Root) {
+    $selfDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+    if ((Split-Path -Leaf $selfDir) -eq 'scripts') { $Root = Split-Path -Parent $selfDir } else { $Root = $selfDir }
+}
+$Root = $Root.TrimEnd('\')
 
 # The routing database stores localised remarks. Child stdout is decoded with the console
 # code page by default, which turns those into mojibake on a zh-CN host, so force UTF-8
