@@ -8,6 +8,19 @@
 param([string]$V2rayNRoot = '')
 
 $ErrorActionPreference = 'Continue'
+
+# Exit-code contract. The desktop app's "leak check" button reads nothing but the exit
+# code, so a report that ends in [FAIL] must not leave it at 0 - that is how the app came
+# to show a green "self-test passed" dialog over a failing report. A report is not a
+# result.
+#   0 = every check passed
+#   1 = at least one hard failure: a leak, a missing rule, or a STUN endpoint answering
+#   2 = nothing failed, but the decisive checks were undecidable (INCONCLUSIVE)
+# Section 4b stays out of the total on purpose: identical egress addresses are ambiguous
+# by nature (both-direct and both-proxied look the same), so it can never decide the suite.
+$script:HardFail = 0
+$script:Unresolved = 0
+
 Write-Host '===============================================================================' -ForegroundColor Cyan
 Write-Host '               AI-Net-Guard Post-Optimization Leak & Health Test               ' -ForegroundColor Cyan
 Write-Host '===============================================================================' -ForegroundColor Cyan
@@ -16,6 +29,7 @@ Write-Host ''
 # 1. Check for dangerous rogue blanket allow rule
 $rogueRule = Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-TUN-Xray' -ErrorAction SilentlyContinue
 if ($rogueRule) {
+    $script:HardFail++
     Write-Host '[FAIL] Dangerous rogue blanket rule AI-Guard-Allow-TUN-Xray is STILL PRESENT in firewall!' -ForegroundColor Red
 } else {
     Write-Host '[PASS] Rogue blanket rule AI-Guard-Allow-TUN-Xray is ABSENT (Firewall secured)' -ForegroundColor Green
@@ -30,6 +44,7 @@ if ($wrtcUdp -and $wrtcUdp.Enabled -eq 'True' -and $wrtcTcp -and $wrtcTcp.Enable
     $wrtcLocalUdp -and $wrtcLocalUdp.Enabled -eq 'True' -and $wrtcLocalTcp -and $wrtcLocalTcp.Enabled -eq 'True') {
     Write-Host '[PASS] WebRTC physical NIC + LocalIP block rules (UDP+TCP STUN/TURN) are ACTIVE' -ForegroundColor Green
 } else {
+    $script:HardFail++
     Write-Host '[FAIL] WebRTC block rules AI-Guard-Block-WebRTC-(LocalIP-)UDP/TCP missing or disabled!' -ForegroundColor Red
 }
 
@@ -78,6 +93,7 @@ if ($physNics.Count -gt 0) {
             $async = $sock.BeginConnect($targetForeignIp, 443, $null, $null)
             if ($async.AsyncWaitHandle.WaitOne(2000, $false)) {
                 $sock.EndConnect($async)
+                $script:HardFail++
                 Write-Host ('[LEAK DETECTED!] Direct physical connection via ' + $pNic.Name + ' (' + $pIp + ') to ' + $targetForeignIp + ':443 SUCCEEDED!') -ForegroundColor Red
                 Write-Host '                 The firewall default outbound block is not enforcing!' -ForegroundColor Red
             } else {
@@ -98,6 +114,7 @@ if ($physNics.Count -gt 0) {
             $rem = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
             $resp = $udp.Receive([ref]$rem)
             if ($resp -and $resp.Length -gt 0) {
+                $script:HardFail++
                 Write-Host ('[LEAK DETECTED!] Physical ' + $pNic.Name + ' (' + $pIp + ') WebRTC STUN UDP to 74.125.250.129:19302 SUCCEEDED (' + $resp.Length + ' bytes)!') -ForegroundColor Red
             } else {
                 Write-Host ('[PASS] Physical ' + $pNic.Name + ' (' + $pIp + ') WebRTC STUN UDP to 74.125.250.129:19302 BLOCKED / empty.') -ForegroundColor Green
@@ -474,6 +491,7 @@ foreach ($t in $stunTargets) {
 }
 
 Write-Host ''
+$script:HardFail += $stunFail
 if ($stunFail -gt 0) {
     Write-Host ('[FAIL] ' + $stunFail + '/' + $stunTargets.Count + ' STUN endpoint(s) still answered - B1 is not in effect') -ForegroundColor Red
     Write-Host '       fix: close v2rayN, run scripts\18-route-stun-guard.ps1 -Apply, start v2rayN again' -ForegroundColor Yellow
@@ -484,6 +502,7 @@ elseif ($stunPass -eq $stunTargets.Count) {
     Write-Host '       no srflx candidate can carry the real address. webRTC calls may need a relay.' -ForegroundColor Green
 }
 else {
+    $script:Unresolved++
     Write-Host ('[INCONCLUSIVE] ' + $stunPass + ' silent / ' + $stunInc + ' undecided / ' + $stunTargets.Count + ' probed') -ForegroundColor Yellow
     Write-Host '       no endpoint answered, but the preconditions for claiming a drop are not met.' -ForegroundColor Yellow
     Write-Host '       start v2rayN so a TUN is up and run scripts\18-route-stun-guard.ps1 to confirm' -ForegroundColor Yellow
@@ -493,4 +512,16 @@ else {
 }
 
 Write-Host ''
+if ($script:HardFail -gt 0) {
+    Write-Host ('RESULT: FAILED (' + $script:HardFail + ' hard failure(s))') -ForegroundColor Red
+    Write-Host 'Verification completed.' -ForegroundColor Cyan
+    exit 1
+}
+if ($script:Unresolved -gt 0) {
+    Write-Host 'RESULT: INCONCLUSIVE - nothing failed, but the decisive check could not decide' -ForegroundColor Yellow
+    Write-Host 'Verification completed.' -ForegroundColor Cyan
+    exit 2
+}
+Write-Host 'RESULT: PASSED - no leak, no reply, guard pair loaded' -ForegroundColor Green
 Write-Host 'Verification completed.' -ForegroundColor Cyan
+exit 0
