@@ -1,4 +1,4 @@
-# AI-Net-Guard - v2rayN routing-level STUN/TURN block (WebRTC leak guard, layer B)
+# AI-Net-Guard - v2rayN routing-level STUN/TURN block (WebRTC leak guard, layer B1)
 # Pure ASCII script.
 #
 # Why this exists:
@@ -12,37 +12,88 @@
 #   filters are never evaluated. Windows Firewall cannot win that comparison.
 #
 #   The only layer that sees the packet before it is re-sent is the core's own
-#   routing table. v2rayN already ships a rule of exactly this shape ("block udp:443")
-#   to kill QUIC, so the same mechanism is used here for the STUN/TURN port set:
+#   routing table. v2rayN already ships a rule of exactly this shape - its generated
+#   binConfigs\config.json starts with
+#       {"port": "135,137-139,5353", "network": "udp", "outboundTag": "block"}
+#   and the user set's first entry is {"Port":"443","Network":"udp",
+#   "OutboundTag":"block"} - and QUIC really is dead on this host, so the mechanism
+#   is proven. The same shape is used here for the STUN/TURN port set:
 #   the packet is dropped inside the core, nothing is sent anywhere, domestic direct
 #   rules are untouched and proxy quota does not move by a single byte.
+#
+#   DESIGN CHOICE - B1 (global port block), not B2 (per-target list):
+#     These rules match on DESTINATION PORT ONLY and match every address. Consequence,
+#     stated plainly because it drives the acceptance test: after -Apply, *no* STUN
+#     server answers, foreign ones included. stun.l.google.com:19302 is dropped the
+#     same way stun.miwifi.com:3478 is. WebRTC can therefore no longer gather any
+#     srflx candidate at all; calls fall back to relay or fail. That is the intended
+#     trade: closing the real-IP leak matters more than keeping WebRTC fully working.
+#     A B2 variant (match CN STUN ip/domain, block only those) would keep foreign STUN
+#     alive but needs a maintained target list and leaves a fail-open path whenever the
+#     list goes stale, so it is deliberately not implemented.
 #
 # Safety:
 #   - Never writes while v2rayN or a core is running: v2rayN keeps the routing rules
 #     in memory and would overwrite the database on exit.
-#   - Backs up guiNDB.db to <Root>\backup\v2rayn-routing\<stamp>\ before touching it.
+#   - Refuses to touch a database that still has a non-empty -wal sidecar, and checks this
+#     before opening it at all: measured on this host, opening guiNDB.db with sqlite3 is
+#     enough to delete a leftover -wal, so a check placed after the first read would never
+#     fire. The newest routing edits can live only in that sidecar, and a plain file copy
+#     would take the stale main file. guiNDB.db normally runs journal_mode=delete, so this
+#     is a "v2rayN did not exit cleanly" alarm, not the common path.
+#   - Backs up guiNDB.db to <Root>\backup\v2rayn-routing\<stamp>\ before touching it,
+#     then proves the copy is readable (PRAGMA quick_check + per-rule JSON equality)
+#     before the first write. A failed backup aborts the run.
+#   - Refuses to guess which routing set is active: exactly one row may have
+#     IsActive=1, otherwise -RoutingId is required. A wrong pick silently edits the
+#     wrong set.
+#   - Refuses to write when a rule that is not ours already owns one of the two fixed
+#     guard Ids. Reusing an occupied Id would make v2rayN treat two rows as the same
+#     rule and could drop or corrupt the other one.
 #   - Idempotent: rules tagged 'STUN-GUARD:' are stripped and re-inserted at the top.
-#   - -Restore puts the newest backup back.
+#   - After the write it re-reads the database and asserts (a) the two guard rules sit
+#     at index 0 and 1, (b) every other rule still carries exactly the same keys and
+#     values as in the backup, in the same order, so "nothing else was touched" is a
+#     checked fact. The comparison is on parsed objects, not raw bytes: the RuleSet is
+#     re-serialised as a whole when written, so the formatting of untouched rules may
+#     change while their content does not.
+#   - -Restore snapshots the live database to <Root>\backup\v2rayn-restore-pre\<stamp>\
+#     first, so a restore that turns out to be unwanted is itself undoable. It then
+#     copies the newest backup that does NOT already contain guard rules back, and
+#     verifies the result the same way; success is never printed unless the live
+#     database matches that backup. Picking the newest backup blindly would restore a
+#     state that still carries the block, which looks like a rollback but changes nothing.
 #
 # .PARAMETER Root
 #   Guard root, used only for the backup destination. Defaults to the parent of this
 #   script folder, otherwise C:\AI-Net-Guard.
 #
 # .PARAMETER V2rayNRoot
-#   v2rayN install folder that holds guiConfigs\guiNDB.db.
+#   v2rayN install folder that holds guiConfigs\guiNDB.db and binConfigs\config.json.
 #
 # .PARAMETER Apply
 #   Insert the STUN/TURN block rules at the top of the active routing set.
 #
 # .PARAMETER Verify
-#   Default action. Read-only: show the active routing set and whether the guard
-#   rules are present.
+#   Default action. Read-only: show the active routing set, whether the guard rules
+#   are in the database, and whether the running core config actually carries both of
+#   them with the complete port set.
 #
 # .PARAMETER Restore
-#   Copy the newest backup of guiNDB.db back over the live database.
+#   Copy the newest backup (or -BackupDir) of guiNDB.db back over the live database
+#   and verify the restore. The pre-restore state is snapshotted first.
+#
+# .PARAMETER RoutingId
+#   Target this routing set by Id instead of relying on IsActive. Needed only when
+#   the database reports more than one active set.
+#
+# .PARAMETER BackupDir
+#   Explicit backup folder to restore from. Defaults to the newest under
+#   <Root>\backup\v2rayn-routing.
 #
 # .PARAMETER Force
-#   Skip the "v2rayN is running" refusal. Only for a database you know is idle.
+#   Skip the "v2rayN is running" and "WAL is not empty" refusals. Only for a database
+#   you know is idle and consistent.
 #
 # .EXAMPLE
 #   .\18-route-stun-guard.ps1
@@ -51,7 +102,8 @@
 #
 # .NOTES
 #   Requires python 3 on PATH (sqlite3 is not available from PowerShell 5.1).
-#   Exit codes: 0 ok, 1 error, 2 refused / not applicable, 3 verification failed.
+#   Exit codes: 0 ok, 1 error, 2 refused / not applicable, 3 verification failed,
+#   4 a guard rule Id is already used by another rule.
 
 [CmdletBinding()]
 param(
@@ -60,6 +112,8 @@ param(
     [switch]$Apply,
     [switch]$Verify,
     [switch]$Restore,
+    [string]$RoutingId = '',
+    [string]$BackupDir = '',
     [switch]$Force
 )
 
@@ -83,6 +137,7 @@ try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 # Kept in sync with 15-webrtc-browser-shield.ps1 and the AI-Guard-Block-WebRTC-* rules.
 $StunPorts = '3478,3479,5349,5350,19302,19303,19304,19305,19306,19307,19308,19309'
 $GuardTag = 'STUN-GUARD:'
+$V2Config = Join-Path $V2rayNRoot 'binConfigs\config.json'
 
 function Say($msg, $color = 'Gray') { Write-Host $msg -ForegroundColor $color }
 
@@ -95,76 +150,194 @@ function Get-PythonExe {
 }
 
 function Invoke-DbOp {
-    param([string]$Op)
+    param([string]$Op, [string]$Extra = '', [string]$Mode = '')
 
     $py = Get-PythonExe
     if (-not $py) { Say '[!] python 3 not found on PATH - cannot read guiNDB.db from PowerShell 5.1' 'Red'; exit 1 }
 
     $payload = @'
-import json, sqlite3, sys
+import hashlib
+import json
+import sqlite3
+import sys
 
 db, op, ports, tag = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+extra = sys.argv[5] if len(sys.argv) > 5 else ''
 
-def connect():
-    return sqlite3.connect(db, timeout=5)
+wanted = set(int(p) for p in ports.split(',') if p.strip())
+GUARD_IDS = ('8800000000000000001', '8800000000000000002')
+# Everything except the one UPDATE runs on a read-only connection, so "does not touch your
+# database" is enforced by SQLite rather than by careful coding.
+READONLY_OPS = ('dump', 'compare')
 
-def active_item(con):
+
+def open_db(path, readonly=False):
+    if readonly:
+        uri = 'file:%s?mode=ro' % path.replace('%', '%25').replace('?', '%3f').replace('#', '%23')
+        con = sqlite3.connect(uri, uri=True, timeout=5)
+    else:
+        con = sqlite3.connect(path, timeout=5)
+    con.row_factory = sqlite3.Row
+    # A structurally broken file has to be caught HERE, before it is copied over the live
+    # database or before a restore overwrites anything. quick_check is the cheap sibling of
+    # integrity_check: exactly one row holding 'ok' when sound, otherwise one row per
+    # complaint. Note this is a real check, not a comment describing one.
+    rows = [tuple(r) for r in con.execute('PRAGMA quick_check').fetchall()]
+    if rows != [('ok',)]:
+        con.close()
+        raise RuntimeError('quick_check: %s' % (rows[:3],))
+    return con
+
+
+def read_rows(con):
     cur = con.cursor()
-    cur.execute("SELECT Id, Remarks, RuleSet, RuleNum FROM RoutingItem WHERE IsActive=1")
-    rows = cur.fetchall()
-    if not rows:
-        return None
-    for r in rows:
-        if 'Whit' in (r[1] or ''):
-            return r
-    return rows[0]
+    cur.execute('SELECT Id, Remarks, RuleSet, RuleNum, Enabled, Locked, Url, Sort, IsActive FROM RoutingItem')
+    return cur.fetchall()
 
-con = connect()
-item = active_item(con)
-if not item:
-    print('NO_ACTIVE_ITEM')
+
+def pick(rows):
+    """Return (row, how) without ever guessing when the database is ambiguous."""
+    if extra and op in ('dump', 'apply'):
+        for r in rows:
+            if str(r['Id']) == extra:
+                return r, 'explicit-id'
+        return None, 'ID_NOT_FOUND'
+    active = [r for r in rows if r['IsActive'] == 1]
+    if len(active) == 1:
+        return active[0], 'isactive'
+    if len(active) > 1:
+        return active, 'AMBIGUOUS'
+    return None, 'NO_ACTIVE_ITEM'
+
+
+def guard(rules):
+    return [i for i, x in enumerate(rules) if str(x.get('Remarks') or '').startswith(tag)]
+
+
+def canon(x):
+    return json.dumps(x, ensure_ascii=False, sort_keys=True)
+
+
+try:
+    con = open_db(db, readonly=(op in READONLY_OPS))
+    rows = read_rows(con)
+except (RuntimeError, sqlite3.Error) as exc:
+    print('DB_UNUSABLE\t%s' % exc)
+    sys.exit(3)
+
+row, how = pick(rows)
+
+if how in ('NO_ACTIVE_ITEM', 'ID_NOT_FOUND'):
+    print(how)
+    sys.exit(2)
+if how == 'AMBIGUOUS':
+    print('AMBIGUOUS\t' + ' ; '.join('%s (%s)' % (r['Id'], r['Remarks']) for r in row))
     sys.exit(2)
 
-item_id, remarks, ruleset, rule_num = item
-rules = json.loads(ruleset or '[]')
+item_id = str(row['Id'])
+remarks = row['Remarks'] or ''
+rules = json.loads(row['RuleSet'] or '[]')
+idx = guard(rules)
 
 if op == 'dump':
-    print('ITEM\t%s\t%s\t%d' % (item_id, remarks, len(rules)))
+    print('ITEM\t%s\t%s\t%d\t%d\t%d\t%s\t%s' % (
+        item_id, remarks, len(rules), row['Enabled'], row['Locked'], row['Url'] or '', how))
     for i, x in enumerate(rules):
         print('RULE\t%d\t%s\t%s\t%s\t%s' % (
-            i, x.get('OutboundTag') or '-', x.get('Remarks') or '-',
-            x.get('Port') or '-', x.get('Network') or '-'))
-    has = any(str(x.get('Remarks') or '').startswith(tag) for x in rules)
-    print('GUARD\t%d' % (1 if has else 0))
+            i, x.get('OutboundTag') or '-', x.get('Network') or '-',
+            x.get('Port') or '-', x.get('Remarks') or '-'))
+    print('GUARD\t%s' % (','.join(str(i) for i in idx) if idx else 'none'))
     sys.exit(0)
 
 if op == 'apply':
     kept = [x for x in rules if not str(x.get('Remarks') or '').startswith(tag)]
     removed = len(rules) - len(kept)
+    # Ids are reused on every apply so a second apply replaces rather than duplicates.
+    # That is only safe while nobody else owns them.
+    for x in kept:
+        xid = str(x.get('Id') or '')
+        if xid in GUARD_IDS:
+            print('ID_CONFLICT\t%s\t%s' % (xid, canon(x)[:200]))
+            sys.exit(4)
     block = [
         {
-            'Id': '8800000000000000001',
-            'Port': ports,
+            'Enabled': True,
+            'Id': GUARD_IDS[0],
             'Network': 'udp',
             'OutboundTag': 'block',
-            'Enabled': True,
-            'Remarks': tag + ' block STUN/TURN UDP (anti WebRTC leak)',
+            'Port': ports,
+            'Remarks': tag + ' block STUN/TURN UDP (anti WebRTC leak, B1 all hosts)',
         },
         {
-            'Id': '8800000000000000002',
-            'Port': ports,
+            'Enabled': True,
+            'Id': GUARD_IDS[1],
             'Network': 'tcp',
             'OutboundTag': 'block',
-            'Enabled': True,
-            'Remarks': tag + ' block STUN/TURN TCP (anti WebRTC leak)',
+            'Port': ports,
+            'Remarks': tag + ' block STUN/TURN TCP (anti WebRTC leak, B1 all hosts)',
         },
     ]
     final = block + kept
     cur = con.cursor()
-    cur.execute("UPDATE RoutingItem SET RuleSet=?, RuleNum=? WHERE Id=?",
-                (json.dumps(final, ensure_ascii=False), len(final), item_id))
+    cur.execute('UPDATE RoutingItem SET RuleSet=?, RuleNum=? WHERE Id=?',
+                (json.dumps(final, ensure_ascii=False, sort_keys=True), len(final), item_id))
     con.commit()
     print('APPLIED\t%s\t%d\t%d' % (item_id, len(final), removed))
+    sys.exit(0)
+
+if op == 'compare':
+    # extra = backup database path. 'applied' asserts two guard rules on top plus every
+    # other rule identical to the backup; 'restored' asserts the live set is identical to
+    # the backup in full (guard included or not - restoring a backup that was taken after
+    # an earlier apply legitimately brings the guard rules back).
+    mode = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else 'restored'
+    try:
+        bak = open_db(extra, readonly=True)
+        brows = read_rows(bak)
+    except (RuntimeError, sqlite3.Error) as exc:
+        print('BACKUP_UNUSABLE\t%s' % exc)
+        sys.exit(3)
+    brow, bhow = pick(brows)
+    if brow is None or bhow == 'AMBIGUOUS':
+        print('BACKUP_UNREADABLE\t%s' % bhow)
+        sys.exit(3)
+    brules = json.loads(brow['RuleSet'] or '[]')
+    bguard = len(guard(brules))
+
+    if mode == 'applied':
+        if len(rules) < 2 or idx[:2] != [0, 1]:
+            print('GUARD_NOT_ON_TOP\t%s' % (','.join(str(i) for i in idx) or 'none'))
+            sys.exit(3)
+        for pos, net in ((0, 'udp'), (1, 'tcp')):
+            g = rules[pos]
+            got = set(int(p) for p in str(g.get('Port') or '').split(',') if p.strip())
+            if (g.get('OutboundTag') != 'block' or g.get('Network') != net
+                    or g.get('Enabled') is not True or got != wanted):
+                print('GUARD_RULE_BAD\t%d\t%s' % (pos, canon(g)))
+                sys.exit(3)
+            if str(g.get('Id') or '') != GUARD_IDS[pos]:
+                print('GUARD_ID_BAD\t%d\t%s' % (pos, g.get('Id')))
+                sys.exit(3)
+        if len(idx) != 2:
+            print('GUARD_EXTRA_COPIES\t%s' % ','.join(str(i) for i in idx[2:]))
+            sys.exit(3)
+        # The backup may itself carry guard rules from an earlier apply, so both sides of
+        # the comparison are taken without them: the claim under test is "the user's own
+        # rules are untouched", not "the backup was pristine".
+        rest = [x for x in rules if not str(x.get('Remarks') or '').startswith(tag)]
+        ref = [x for x in brules if not str(x.get('Remarks') or '').startswith(tag)]
+    else:
+        rest = rules
+        ref = brules
+
+    if len(rest) != len(ref):
+        print('RULE_COUNT_DIFFERS\t%d\t%d' % (len(rest), len(ref)))
+        sys.exit(3)
+    for i, (a, b) in enumerate(zip(rest, ref)):
+        if canon(a) != canon(b):
+            print('RULE_DIFFERS\t%d\t%s\t%s' % (i, canon(a)[:120], canon(b)[:120]))
+            sys.exit(3)
+    print('MATCH\t%d\t%d' % (len(rest), bguard))
     sys.exit(0)
 
 print('UNKNOWN_OP')
@@ -174,7 +347,8 @@ sys.exit(2)
     $tmp = Join-Path $env:TEMP ('aiguard-routing-' + [guid]::NewGuid().ToString('N') + '.py')
     try {
         [System.IO.File]::WriteAllText($tmp, $payload, (New-Object System.Text.UTF8Encoding($false)))
-        $out = & $py $tmp $script:DbPath $Op $StunPorts $GuardTag 2>&1
+        $argv = @($tmp, $script:DbPath, $Op, $StunPorts, $GuardTag, $Extra, $Mode)
+        $out = & $py @argv 2>&1
         return [pscustomobject]@{ Code = $LASTEXITCODE; Lines = @($out) }
     }
     finally {
@@ -190,34 +364,188 @@ function Get-RunningBlocker {
     return ''
 }
 
+function Get-FileSha([string]$Path) {
+    try { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLower() } catch { return '' }
+}
+
+# ---------------------------------------------------------------- core config checks
+# A database row proves nothing until v2rayN has regenerated the core config from it, so
+# the loaded table is checked directly. "One block rule mentions 3478" was too weak: a
+# single rule, or one with half the port list, would have been reported as B1 ACTIVE.
+function Get-ExpectedPortSet {
+    return @($StunPorts.Split(',') | ForEach-Object { [int]$_.Trim() } | Sort-Object -Unique)
+}
+
+function Get-PortSpecSet([string]$Spec) {
+    $set = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($tok in ($Spec -split ',')) {
+        $t = $tok.Trim()
+        if (-not $t) { continue }
+        if ($t -match '^(\d+)\s*-\s*(\d+)$') {
+            $lo = [int]$Matches[1]; $hi = [int]$Matches[2]
+            if ($hi -lt $lo) { $swap = $lo; $lo = $hi; $hi = $swap }
+            for ($x = $lo; $x -le $hi; $x++) { [void]$set.Add($x) }
+        }
+        elseif ($t -match '^\d+$') { [void]$set.Add([int]$t) }
+    }
+    return , $set
+}
+
+function Test-StunBlockRule($Rule, [string]$Network, [int[]]$Expected) {
+    if (-not $Rule) { return $false }
+    if ([string]$Rule.outboundTag -ne 'block') { return $false }
+    if ([string]$Rule.network -ne $Network) { return $false }
+    $got = Get-PortSpecSet ([string]$Rule.port)
+    if ($got.Count -ne $Expected.Count) { return $false }
+    foreach ($p in $Expected) { if (-not $got.Contains($p)) { return $false } }
+    return $true
+}
+
+function Test-RuleIsScoped($Rule) {
+    # A preceding rule can only swallow the guard pair if it matches every destination.
+    # 'network' alone is not a scope: a rule with only network=udp matches all UDP.
+    foreach ($k in @('port', 'domain', 'ip', 'process', 'inboundTag', 'protocol', 'sourcePort', 'user')) {
+        if ($Rule.PSObject.Properties.Name -contains $k) { return $true }
+    }
+    return $false
+}
+
+function Get-CoreGuardState {
+    $res = [pscustomobject]@{ State = 'no-config'; Index = -1; Preceding = 0; Shadow = 0; Detail = '' }
+    if (-not (Test-Path -LiteralPath $V2Config)) { return $res }
+    try { $cfg = Get-Content -LiteralPath $V2Config -Raw -Encoding UTF8 | ConvertFrom-Json }
+    catch { $res.State = 'unparsable'; $res.Detail = $V2Config; return $res }
+    $rules = @($cfg.routing.rules | Where-Object { $_ })
+    $exp = Get-ExpectedPortSet
+
+    # The pair must be adjacent and in this order: a udp rule then a tcp rule, each
+    # blocking the complete port set. Xray routing is first-match, so "somewhere in the
+    # table" is not good enough either - but v2rayN prefixes its own built-in rules, so
+    # the guard pair is not necessarily at index 0 of the generated file.
+    for ($i = 0; $i -lt $rules.Count - 1; $i++) {
+        if ((Test-StunBlockRule $rules[$i] 'udp' $exp) -and (Test-StunBlockRule $rules[$i + 1] 'tcp' $exp)) {
+            $res.State = 'present'
+            $res.Index = $i
+            if ($i -gt 0) {
+                $before = @(0..($i - 1) | ForEach-Object { $rules[$_] } |
+                    Where-Object { [string]$_.outboundTag -ne 'block' })
+                $res.Preceding = $before.Count
+                # A rule that blocks is harmless (it drops too). A rule that routes to
+                # direct/proxy and matches everything would hide the pair behind it, which
+                # looks identical to "loaded" unless it is checked.
+                $res.Shadow = @($before | Where-Object { -not (Test-RuleIsScoped $_) }).Count
+            }
+            return $res
+        }
+    }
+
+    # Not a complete pair - report what is actually loaded so "partial" is diagnosable
+    # instead of looking identical to "nothing at all".
+    for ($i = 0; $i -lt $rules.Count; $i++) {
+        $r = $rules[$i]
+        if ([string]$r.outboundTag -ne 'block') { continue }
+        if (([string]$r.port) -notmatch '(^|,)3478(,|$)') { continue }
+        $got = Get-PortSpecSet ([string]$r.port)
+        $missing = @($exp | Where-Object { -not $got.Contains($_) })
+        $res.State = 'partial'
+        $res.Index = $i
+        $res.Detail = 'rule #' + $i + ' net=' + $r.network + ' carries ' + $got.Count + '/' + $exp.Count + ' ports'
+        if ($missing.Count -gt 0) { $res.Detail += ', missing ' + (($missing | Select-Object -First 6) -join ',') }
+        return $res
+    }
+
+    $res.State = 'absent'
+    return $res
+}
+
 # ------------------------------------------------------------------ main
 $dbDir = Join-Path $V2rayNRoot 'guiConfigs'
 $script:DbPath = Join-Path $dbDir 'guiNDB.db'
 
 Say ' '
-Say '=== AI-Net-Guard STUN routing guard (v2rayN layer) ===' 'Cyan'
+Say '=== AI-Net-Guard STUN routing guard (v2rayN layer, B1) ===' 'Cyan'
 Say ('v2rayN root : ' + $V2rayNRoot)
 Say ('database    : ' + $script:DbPath)
 Say ('STUN ports  : ' + $StunPorts)
+Say 'design      : B1, port-only match on every host - foreign STUN is dropped too'
 
 if (-not (Test-Path -LiteralPath $script:DbPath)) {
     Say '[!] guiNDB.db not found - check -V2rayNRoot' 'Red'
     exit 1
 }
 
+# ------------------------------------------------------------------ pending WAL
+# This has to come before ANY sqlite connection, including the read-only dump. Measured on
+# this host: merely opening guiNDB.db with sqlite3 deletes a leftover -wal sidecar, so a
+# check placed after the first read would always report "no WAL" and never fire. It also
+# guards -Verify and -Restore: reading or overwriting a database whose newest transactions
+# sit in the WAL is exactly what must not happen silently.
+$walPath = $script:DbPath + '-wal'
+$walSize = 0
+if (Test-Path -LiteralPath $walPath) { $walSize = (Get-Item -LiteralPath $walPath).Length }
+if ($walSize -gt 0) {
+    if (-not $Force) {
+        Say ' '
+        Say ('[!] guiNDB.db-wal is present and not empty (' + $walSize + ' bytes)') 'Red'
+        Say '    v2rayN did not close cleanly, so the newest routing edits may live only in' 'Yellow'
+        Say '    that sidecar file and not in the main database.' 'Yellow'
+        Say '    start v2rayN once and exit it from the tray icon so the WAL is checkpointed,' 'Yellow'
+        Say '    then re-run. Nothing has been read or written yet.' 'Yellow'
+        exit 2
+    }
+    Say ('[!] WAL is not empty (' + $walSize + ' bytes) - -Force given, continuing anyway') 'Yellow'
+}
+
+# ------------------------------------------------------------------ restore
 if ($Restore) {
-    $bkRoot = Join-Path $Root 'backup\v2rayn-routing'
-    $newest = Get-ChildItem -Path $bkRoot -Directory -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending | Select-Object -First 1
-    if (-not $newest) {
-        Say '[!] no backup found under:' 'Red'
-        Say ('    ' + $bkRoot) 'Red'
+    $liveDb = $script:DbPath
+
+    function Get-GuardCount([string]$DbFile) {
+        $keep = $script:DbPath
+        $script:DbPath = $DbFile
+        $d = Invoke-DbOp 'dump'
+        $script:DbPath = $keep
+        if ($d.Code -ne 0) { return -1 }
+        $g = [string](@($d.Lines | ForEach-Object { [string]$_ } | Where-Object { $_ -like 'GUARD*' })[0])
+        if ($g -like '*none') { return 0 }
+        return (@(($g -replace '^GUARD\s*', '') -split ',') | Where-Object { $_ }).Count
+    }
+
+    $bkDir = $BackupDir
+    if (-not $bkDir) {
+        # Prefer the newest backup that does NOT already contain the guard rules: restoring
+        # the newest one after two applies just brings the block straight back, which looks
+        # like a successful rollback while changing nothing.
+        $bkRoot = Join-Path $Root 'backup\v2rayn-routing'
+        $cands = @(Get-ChildItem -Path $bkRoot -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+        $clean = $null
+        $anyOk = $null
+        foreach ($c in $cands) {
+            $p = Join-Path $c.FullName 'guiNDB.db'
+            if (-not (Test-Path -LiteralPath $p)) { continue }
+            if ($null -eq $anyOk) { $anyOk = $c }
+            if ((Get-GuardCount $p) -eq 0) { $clean = $c; break }
+        }
+        if ($clean) {
+            $bkDir = $clean.FullName
+        }
+        elseif ($anyOk) {
+            $bkDir = $anyOk.FullName
+            Say '[!] every backup already carries STUN-GUARD rules - the newest one is used,' 'Yellow'
+            Say '    so the guard will still be in place after this restore.' 'Yellow'
+        }
+        if ($clean -and $anyOk -and $clean.FullName -ne $anyOk.FullName) {
+            Say ('[i] newest backup ' + $anyOk.Name + ' already had the guard; using the clean one ' + $clean.Name) 'DarkGray'
+        }
+    }
+    if (-not $bkDir -or -not (Test-Path -LiteralPath $bkDir)) {
+        Say '[!] no backup folder found.' 'Red'
+        Say ('    looked under: ' + (Join-Path $Root 'backup\v2rayn-routing')) 'Red'
         exit 1
     }
-    $src = Join-Path $newest.FullName 'guiNDB.db'
+    $src = Join-Path $bkDir 'guiNDB.db'
     if (-not (Test-Path -LiteralPath $src)) {
-        Say '[!] backup folder has no guiNDB.db:' 'Red'
-        Say ('    ' + $src) 'Red'
+        Say ('[!] backup folder has no guiNDB.db: ' + $src) 'Red'
         exit 1
     }
 
@@ -226,49 +554,189 @@ if ($Restore) {
         Say ('[!] ' + $blocker + ' is running - close v2rayN first (its memory copy would overwrite the restore)') 'Red'
         exit 2
     }
-    Copy-Item -LiteralPath $src -Destination $script:DbPath -Force
-    Say ('[+] restored guiNDB.db from ' + $newest.Name) 'Green'
+
+    # Prove the backup opens and parses before it replaces anything. This runs quick_check
+    # too, so a corrupt file is rejected here rather than discovered afterwards with the
+    # live database already gone.
+    $script:DbPath = $src
+    $probe = Invoke-DbOp 'dump'
+    $script:DbPath = $liveDb
+    if ($probe.Code -ne 0) {
+        Say '[!] backup is not a usable routing database - restore aborted, live database untouched' 'Red'
+        $probe.Lines | ForEach-Object { Say ('    ' + $_) 'DarkGray' }
+        exit 3
+    }
+    Say ' '
+    Say ('[*] backup    : ' + $bkDir) 'DarkGray'
+    Say ('    sha256   : ' + (Get-FileSha $src)) 'DarkGray'
+
+    # Snapshot the live database before overwriting it. Without this, a restore that has to
+    # be undone leaves no way back: the "backup" being restored is the older state, and the
+    # current state would exist nowhere. Kept in a sibling tree so the "newest clean backup"
+    # discovery above never picks a snapshot up as a restore source.
+    $preDir = Join-Path $Root ('backup\v2rayn-restore-pre\' + (Get-Date).ToString('yyyyMMdd-HHmmss'))
+    $preFile = Join-Path $preDir 'guiNDB.db'
+    try {
+        New-Item -ItemType Directory -Path $preDir -Force | Out-Null
+        Copy-Item -LiteralPath $liveDb -Destination $preFile -Force
+    }
+    catch {
+        Say '[!] cannot snapshot the current database - restore aborted, nothing was written' 'Red'
+        Say ('    ' + $_.Exception.Message) 'DarkGray'
+        exit 2
+    }
+    Say ('[+] pre-restore snapshot: ' + $preFile) 'DarkGray'
+
+    $liveBefore = Get-FileSha $liveDb
+    try { Copy-Item -LiteralPath $src -Destination $liveDb -Force }
+    catch {
+        Say '[!] cannot write guiNDB.db - a core process still holds it' 'Red'
+        Say ('    ' + $_.Exception.Message) 'DarkGray'
+        Say ('    the live database was not modified; snapshot at ' + $preFile) 'DarkGray'
+        exit 2
+    }
+    Say '[+] copied backup over the live database' 'Green'
+
+    $v = Invoke-DbOp 'compare' $src
+    $lines = @($v.Lines | ForEach-Object { [string]$_ })
+    if ($v.Code -ne 0 -or -not ($lines -match '^MATCH')) {
+        Say '[!] restore verification FAILED - the live database does not match the backup' 'Red'
+        $lines | ForEach-Object { Say ('    ' + $_) 'DarkGray' }
+        Say ('    pre-restore sha256   : ' + $liveBefore) 'DarkGray'
+        Say ('    pre-restore snapshot : ' + $preFile) 'DarkGray'
+        Say ('    to go back: copy that file over ' + $liveDb) 'Yellow'
+        exit 3
+    }
+    $m = ($lines | Where-Object { $_ -match '^MATCH' }) -split "`t"
+    Say ('[+] verified: ' + $m[1] + ' rule(s) identical in content to the backup') 'Green'
+    if ([int]$m[2] -gt 0) {
+        Say ('[!] this backup still contained ' + $m[2] + ' STUN-GUARD rule(s) - the guard is back in place') 'Yellow'
+    }
+    else {
+        Say '[+] the restored set carries no STUN-GUARD rule - the block is fully undone' 'Green'
+    }
+    Say ('    live sha256: ' + (Get-FileSha $liveDb)) 'DarkGray'
+    Say ('    undo this restore by copying ' + $preFile) 'DarkGray'
     Say '    reopen v2rayN so the core regenerates its config' 'DarkGray'
     exit 0
 }
 
-$r = Invoke-DbOp 'dump'
+# ------------------------------------------------------------------ read
+$r = Invoke-DbOp 'dump' $RoutingId
 if ($r.Code -ne 0) {
-    Say ('[!] cannot read routing set (exit ' + $r.Code + ')') 'Red'
-    $r.Lines | ForEach-Object { Say ('    ' + $_) 'DarkGray' }
-    exit 1
+    $first = [string](@($r.Lines)[0])
+    if ($first -eq 'NO_ACTIVE_ITEM') {
+        Say '[!] no routing set is marked active in the database' 'Red'
+        Say '    open v2rayN, select a routing set, close v2rayN, re-run' 'Yellow'
+    }
+    elseif ($first -like 'AMBIGUOUS*') {
+        Say '[!] more than one routing set reports IsActive=1 - refusing to guess' 'Red'
+        Say ('    ' + $first.Split("`t")[1]) 'DarkGray'
+        Say '    pick the one you actually use and pass -RoutingId <id>' 'Yellow'
+    }
+    elseif ($first -eq 'ID_NOT_FOUND') {
+        Say ('[!] -RoutingId ' + $RoutingId + ' does not exist in guiNDB.db') 'Red'
+    }
+    elseif ($first -like 'DB_UNUSABLE*') {
+        Say '[!] guiNDB.db failed SQLite quick_check - the file is damaged' 'Red'
+        Say ('    ' + $first) 'DarkGray'
+        Say '    restore a backup with -Restore before changing anything else' 'Yellow'
+    }
+    else {
+        Say ('[!] cannot read routing set (exit ' + $r.Code + ')') 'Red'
+        $r.Lines | ForEach-Object { Say ('    ' + $_) 'DarkGray' }
+    }
+    exit 2
 }
 
-$itemId = ''; $itemName = ''; $ruleCount = 0; $hasGuard = $false
+$itemId = ''; $itemName = ''; $ruleCount = 0; $itemEnabled = 1; $itemLocked = 0
+$itemUrl = ''; $pickedBy = ''; $guardIdx = ''
 $rows = @()
 foreach ($line in $r.Lines) {
     $f = ([string]$line) -split "`t"
     switch ($f[0]) {
-        'ITEM' { $itemId = $f[1]; $itemName = $f[2]; $ruleCount = [int]$f[3] }
+        'ITEM' {
+            $itemId = $f[1]; $itemName = $f[2]; $ruleCount = [int]$f[3]
+            $itemEnabled = [int]$f[4]; $itemLocked = [int]$f[5]
+            $itemUrl = $f[6]; $pickedBy = $f[7]
+        }
         'RULE' { $rows += , $f }
-        'GUARD' { $hasGuard = ([int]$f[1] -eq 1) }
-        'NO_ACTIVE_ITEM' { Say '[!] no active routing item in the database' 'Red'; exit 2 }
+        'GUARD' { $guardIdx = $f[1] }
     }
 }
 
+function Format-PortList([string]$p) {
+    if (-not $p) { return '-' }
+    if ($p.Length -le 28) { return $p }
+    return $p.Substring(0, 25) + '...'
+}
+
 Say ' '
-Say ('active set  : ' + $itemName + '  (id ' + $itemId + ', ' + $ruleCount + ' rules)') 'Cyan'
+Say ('active set  : ' + $itemName + '  (id ' + $itemId + ', ' + $ruleCount + ' rules, picked by ' + $pickedBy + ')') 'Cyan'
+if ($itemLocked -eq 1) { Say '[!] this routing set is LOCKED in v2rayN - it may be reverted on start' 'Yellow' }
+if ($itemUrl) { Say ('[!] this routing set has a remote Url and may be re-downloaded: ' + $itemUrl) 'Yellow' }
+if ($itemEnabled -eq 0) { Say '[!] this routing set is DISABLED' 'Yellow' }
 Say 'top rules   :'
 $i = 0
 foreach ($f in $rows) {
     if ($i -ge 6) { Say '    ...' 'DarkGray'; break }
-    Say ('    [' + $f[1] + '] out=' + $f[2].PadRight(8) + ' net=' + $f[5].PadRight(5) + ' port=' + $f[4].PadRight(6) + ' ' + $f[3]) 'Gray'
+    Say ('    [' + $f[1] + '] out=' + $f[2].PadRight(7) + ' net=' + $f[3].PadRight(4) + ' port=' + (Format-PortList $f[4]).PadRight(29) + ' ' + $f[5]) 'Gray'
     $i++
 }
 
+$core = Get-CoreGuardState
+$dbSome = [bool]($guardIdx -and $guardIdx -ne 'none')
+$dbTop = ($guardIdx -eq '0,1')
+
 if (-not $Apply) {
     Say ' '
-    if ($hasGuard) {
-        Say '[+] STUN-GUARD rules present' 'Green'
-        Say '    note: the running core only picks them up after a v2rayN restart' 'DarkGray'
+    if ($dbTop) { Say 'database    : STUN-GUARD pair at index 0/1 (udp then tcp)' 'Green' }
+    elseif ($dbSome) { Say ('database    : STUN-GUARD present but NOT at index 0/1 (found at ' + $guardIdx + ')') 'Yellow' }
+    else { Say 'database    : no STUN-GUARD rule' 'Yellow' }
+
+    switch ($core.State) {
+        'present' {
+            Say ('core config : both rules loaded at routing index ' + $core.Index + '/' + ($core.Index + 1) + ', complete port set') 'Green'
+            if ($core.Shadow -gt 0) {
+                Say ('[!] ' + $core.Shadow + ' rule(s) ahead of the pair match every destination -') 'Yellow'
+                Say '    the pair may never be reached. Inspect binConfigs\config.json.' 'Yellow'
+            }
+            elseif ($core.Preceding -gt 0) {
+                Say ('              ' + $core.Preceding + ' non-block rule(s) precede them (v2rayN built-ins),') 'DarkGray'
+                Say '              each scoped by port / process / inbound, so none can swallow the pair' 'DarkGray'
+            }
+        }
+        'partial' { Say ('core config : PARTIAL - ' + $core.Detail) 'Yellow' }
+        'absent' { Say 'core config : NO STUN block rule - the running core still egresses STUN' 'Yellow' }
+        'no-config' { Say 'core config : binConfigs\config.json not found (v2rayN never started here?)' 'DarkGray' }
+        'unparsable' { Say ('core config : unparsable - ' + $core.Detail) 'Yellow' }
+        default { Say ('core config : ' + $core.State) 'DarkGray' }
+    }
+    Say ' '
+    if ($dbTop -and $core.State -eq 'present' -and $core.Shadow -eq 0) {
+        Say 'verdict: B1 ACTIVE - both rules loaded, every STUN/TURN port dropped inside' 'Green'
+        Say '         the core, foreign servers included, so no srflx candidate can exist.' 'Green'
         exit 0
     }
-    Say '[i] STUN-GUARD rules absent - run: .\18-route-stun-guard.ps1 -Apply' 'Yellow'
+    if ($core.State -eq 'present' -and $core.Shadow -gt 0) {
+        Say 'verdict: SHADOWED - the pair is loaded but preceded by a rule that matches' 'Yellow'
+        Say '         every destination, so packets may never reach it. Fix the rule order' 'Yellow'
+        Say '         in v2rayN before trusting this guard.' 'Yellow'
+        exit 0
+    }
+    if ($dbSome -and $core.State -eq 'present') {
+        Say 'verdict: INCONSISTENT - the core loaded the pair but the database does not hold' 'Yellow'
+        Say '         it at index 0/1. Re-run -Apply to normalise, then restart v2rayN.' 'Yellow'
+        exit 0
+    }
+    if ($dbSome) {
+        Say 'verdict: PENDING - rules are in the database but the core has not loaded a' 'Yellow'
+        Say '         complete pair yet. Restart v2rayN, then re-run this script.' 'Yellow'
+        exit 0
+    }
+    Say 'verdict: NOT APPLIED - the core can still reach a mainland STUN server and' 'Yellow'
+    Say '         answer with the real ISP address.' 'Yellow'
+    Say '         run: .\18-route-stun-guard.ps1 -Apply  (with v2rayN closed)' 'Yellow'
     exit 0
 }
 
@@ -285,15 +753,52 @@ if ($blocker -and -not $Force) {
 
 $bkDir = Join-Path $Root ('backup\v2rayn-routing\' + (Get-Date).ToString('yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Path $bkDir -Force | Out-Null
-Copy-Item -LiteralPath $script:DbPath -Destination (Join-Path $bkDir 'guiNDB.db') -Force
+$bkFile = Join-Path $bkDir 'guiNDB.db'
+try {
+    Copy-Item -LiteralPath $script:DbPath -Destination $bkFile -Force
+}
+catch {
+    # v2rayN takes the database with no write share, so an unnoticed background instance
+    # (including one started after Get-RunningBlocker ran) lands here instead of a crash.
+    Say '[!] cannot read guiNDB.db - a core process still holds it' 'Red'
+    Say ('    ' + $_.Exception.Message) 'DarkGray'
+    Say '    close v2rayN (tray icon -> exit), then re-run -Apply' 'Yellow'
+    exit 2
+}
+
+$srcSha = Get-FileSha $script:DbPath
+$bkSha = Get-FileSha $bkFile
+if (-not $srcSha -or $srcSha -ne $bkSha) {
+    Say '[!] backup copy does not match the source - aborting before any write' 'Red'
+    Say ('    source: ' + $srcSha) 'DarkGray'
+    Say ('    backup: ' + $bkSha) 'DarkGray'
+    exit 3
+}
+$script:DbPath = $bkFile
+$chk = Invoke-DbOp 'dump'
+$script:DbPath = Join-Path $dbDir 'guiNDB.db'
+if ($chk.Code -ne 0) {
+    Say '[!] backup is not readable by sqlite (quick_check or parse failed) - aborting before any write' 'Red'
+    $chk.Lines | ForEach-Object { Say ('    ' + $_) 'DarkGray' }
+    exit 3
+}
 Say ' '
-Say ('[+] backup: ' + $bkDir) 'Green'
+Say ('[+] backup    : ' + $bkDir) 'Green'
+Say ('    sha256   : ' + $bkSha + '  (identical to the live database)') 'DarkGray'
 
 $a = Invoke-DbOp 'apply'
+if ($a.Code -eq 4) {
+    Say ' '
+    Say '[!] a rule that is not ours already uses one of the two guard rule Ids' 'Red'
+    $a.Lines | ForEach-Object { Say ('    ' + $_) 'DarkGray' }
+    Say '    writing now would make v2rayN treat two different rules as one.' 'Yellow'
+    Say ('    live database unchanged; backup kept at ' + $bkDir) 'Yellow'
+    exit 4
+}
 if ($a.Code -ne 0) {
     Say ('[!] apply failed (exit ' + $a.Code + ')') 'Red'
     $a.Lines | ForEach-Object { Say ('    ' + $_) 'DarkGray' }
-    Say ('    database untouched: ' + $script:DbPath) 'DarkGray'
+    Say ('    live database unchanged; backup kept at ' + $bkDir) 'DarkGray'
     exit 1
 }
 foreach ($line in $a.Lines) {
@@ -304,19 +809,27 @@ foreach ($line in $a.Lines) {
     }
 }
 
-$v = Invoke-DbOp 'dump'
-$ok = $false
-foreach ($line in $v.Lines) {
-    $f = ([string]$line) -split "`t"
-    if ($f[0] -eq 'GUARD' -and [int]$f[1] -eq 1) { $ok = $true }
-}
-if (-not $ok) { Say '[!] read-back did not find the guard rules - treat as failed' 'Red'; exit 3 }
+# Post-write assertions: guard on top AND nothing else moved. Both are read back from
+# the database, not assumed.
+$v = Invoke-DbOp 'compare' $bkFile 'applied'
 
+$lines = @($v.Lines | ForEach-Object { [string]$_ })
+if ($v.Code -ne 0 -or -not ($lines -match '^MATCH')) {
+    Say '[!] post-write verification FAILED' 'Red'
+    $lines | ForEach-Object { Say ('    ' + $_) 'DarkGray' }
+    Say ('    roll back with: .\18-route-stun-guard.ps1 -Restore -BackupDir "' + $bkDir + '"') 'Yellow'
+    exit 3
+}
+$m = ($lines | Where-Object { $_ -match '^MATCH' }) -split "`t"
+Say ('[+] verified: guard rules at index 0/1, the other ' + $m[1] + ' rule(s) unchanged in content') 'Green'
+
+$core2 = Get-CoreGuardState
 Say ' '
 Say 'next steps:' 'Cyan'
 Say '  1. start v2rayN again (it regenerates the core config from the database)'
-Say '  2. confirm the core config carries the rule:'
-Say ('       Select-String -Path "' + (Join-Path $V2rayNRoot 'binConfigs\config.json') + '" -Pattern "3478"')
-Say '  3. re-run the leak probe; CN STUN servers must stop answering with the real IP'
-Say 'to roll back: .\18-route-stun-guard.ps1 -Restore' 'DarkGray'
+Say '  2. run scripts\18-route-stun-guard.ps1 (no switch) - expect "B1 ACTIVE"'
+Say '  3. run scripts\verify-leak-test.ps1 - section 9 must show every STUN endpoint'
+Say '     silent, foreign ones included. Any reply at all, domestic or foreign, fails.'
+Say ('to roll back: .\18-route-stun-guard.ps1 -Restore -BackupDir "' + $bkDir + '"') 'DarkGray'
+Say ('    (core config currently on disk: ' + $core2.State + ' - restart v2rayN to load the change)') 'DarkGray'
 exit 0

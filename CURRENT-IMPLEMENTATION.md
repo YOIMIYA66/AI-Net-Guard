@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.8.1 · 路由层 STUN 封锁 + 自愈快路径重构 + 显式物理境外硬阻断）
+# AI-Net-Guard 实现方案与持续审查文档（v5.8.2 · 路由层 STUN 封锁 + 自愈快路径重构 + 显式物理境外硬阻断）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.8.1 正式版**（新增 v2rayN 路由层 `STUN/TURN` 端口封锁 + 自愈快路径提权实测 `20.7 s → 5.1 s` + `AI-Guard-Block-Foreign-Physical` 原地更新 + `17 -SelfTest` 补齐兜底腿，`16` 项防护开关完备）
+> 版本状态：**v5.8.2 正式版**（v5.8.1 全部内容 + 按外部审查修正 `18` 的库写入守卫与 `verify-leak-test` 第 9 段的验收逻辑，详见 16.7）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -400,12 +400,12 @@ v5.7.x 把"防火墙 Block 规则已启用"当成 WebRTC 已封堵的证据，�
 
 - **国内直连规则一行不动**，`geoip:cn` / `geosite:cn` 位置与语义不变，代理流量零增加，配额不受影响。
 - **确定性**：包在核心内被丢弃，不产生任何出站，不依赖 WFP 仲裁与第三方驱动行为。
-- **安全性**：`-Verify`（默认）只读；`-Apply` 先把 `guiNDB.db` 备份到 `backup\v2rayn-routing\<时间戳>\` 再写；`-Restore` 一键回滚；**v2rayN 运行中拒绝执行**（其内存副本会在退出时覆盖数据库）；以 `STUN-GUARD:` 前缀做幂等剥离，重复执行不会叠加规则；写入后回读校验，读不到即视为失败（exit 3）。
+- **安全性**：`-Verify`（默认）只读；`-Apply` 先把 `guiNDB.db` 备份到 `backup\v2rayn-routing\<时间戳>\` 再写；`-Restore` 一键回滚且恢复前先快照当前库；**v2rayN 运行中拒绝执行**（其内存副本会在退出时覆盖数据库）；以 `STUN-GUARD:` 前缀做幂等剥离，重复执行不会叠加规则；写入后回读校验，读不到即视为失败（exit 3）。
 - **代价**：网页版 WebRTC 通话彻底拿不到 `srflx` 候选，可能只能走 TURN 中转或直接建连失败。这是"宁可不通也不泄露"的显式取舍，可随时 `-Restore` 撤销。
 
 ### 16.3 `verify-leak-test.ps1` 第 9 段：从"数规则"改为"测行为"
 
-新增活体 STUN 探针（`stun.miwifi.com` / `stun.chat.bilibili.com` / `stun.qq.com` + `stun.l.google.com` 对照）。判定标准改为行为：**TUN 在线时，境内 STUN 服务器不得有任何应答**；境外 STUN 应答机场落地 IP 属正常。超时判定改为按 `SocketErrorCode`（`TimedOut` / `ConnectionRefused` / `HostUnreachable` / `NetworkUnreachable`），不再依赖会被本地化的异常文本。
+新增活体 STUN 探针（`stun.miwifi.com` / `stun.chat.bilibili.com` / `stun.qq.com` + `stun.l.google.com` / `stun.cloudflare.com` 对照）。判定标准改为行为，且**与 B1 语义严格一致：任何应答都算失败，境内境外同等对待**——B1 只匹配目的端口、不看目标地址，境外能应答就说明这条端口没有被丢弃，不存在"境外应答属正常"这一说。探针错误按 `SocketErrorCode` 分类（`TimedOut` / `ConnectionRefused` / `ConnectionReset` / `HostUnreachable` / `NetworkUnreachable` / `HostNotFound`），不依赖会被本地化的异常文本；其中只有 `TimedOut` 可以配合配置检查算"已丢弃"，其余一律 INCONCLUSIVE。详见 16.7。
 
 ### 16.4 `07-mode.ps1` 自愈快路径：5.8 s → 2.1 s
 
@@ -430,5 +430,54 @@ v5.7.x 把"防火墙 Block 规则已启用"当成 WebRTC 已封堵的证据，�
 
 1. `-Status` 的 `cost` 行原本硬编码「fallback ~17 s, event repair ~21 s per fire」，优化后已失真。**静态耗时数字写进输出必然会腐烂**，改为只描述触发模型，耗时一律以 `-Install -SelfTest` 实测为准。
 2. `-Install -SelfTest` 原本只验证事件任务（跑两次），**兜底任务在全新安装上永远是 `last run: never / result: 267011`**，等于从没被证明过能用。现在追加一次兜底任务实跑（`-Mode Auto -Quiet`，与定时器触发完全同一路径），三条退出码全为 0 才判定通过。
+
+### 16.7 外部审查后的修正（v5.8.2）
+
+v5.8.1 的两个脚本经过一次逐行审查，暴露出 7 个问题，其中 2 个会造成**假阳性**（报告防护有效而实际无效）。以下按优先级记录结论，不接受"看起来没问题"作为证据。
+
+**P0 —— 第 9 段把境外 STUN 应答判成 PASS（最严重）**
+
+旧逻辑是 `if ($isCn) { FAIL } else { WARN }`，汇总时只统计 `$stunLeaks`（境内应答数）。B1 是纯端口匹配、不看目标，境外应答恰恰证明端口没被丢弃；旧逻辑却把唯一能证伪的情况降级成一条 WARN，然后照样打印 PASS。实测现场就能复现：`stun.l.google.com:19302` 返回 `20.89.232.246`（机场落地 IP），旧代码判 PASS。
+
+现在判定收敛为三态，且**失败优先级最高**：
+
+| 探针结果 | 判定 |
+| --- | --- |
+| 任一目标有应答（境内或境外） | `FAIL` |
+| 目标静默 + 两条规则已完整加载 + TUN 在线 | `PASS` |
+| 静默但配置未加载 / 无 TUN / 拒绝 / 重置 / 不可达 / DNS 失败 | `INCONCLUSIVE` |
+
+**静默本身不是证据**：被丢弃的端口和断掉的网络对 UDP socket 完全一样，所以 PASS 必须同时满足"配置检查通过"，否则只能说 INCONCLUSIVE。汇总规则是 `FAIL > INCONCLUSIVE > PASS`，且不允许多数掩盖少数——1 个应答就是 FAIL。
+
+**P1 —— `-Verify` 的配置检查太弱，会把"部分配置"报成 B1 ACTIVE**
+
+旧实现只找"`outboundTag=block` 且 `port` 含 `3478`"的第一条规则。这意味着：只有 UDP 一条、或端口列表只写了 `3478,3479`、或 TCP/UDP 顺序颠倒，都会被判成已生效。现在要求**相邻的 udp 规则紧跟 tcp 规则、两条都携带完整 11 个端口**；不满足时输出 `PARTIAL` 并列出缺哪些端口，绝不输出 ACTIVE。`18` 侧同一套检查（`Get-CoreGuardState`）共用同样判据，并额外校验两条规则的固定 `Id`。
+
+**P1 —— 固定规则 `Id` 可能与既有规则冲突**
+
+两条守卫规则复用固定 `Id`（`8800000000000000001/2`）以实现幂等替换。若用户自己的某条规则恰好占用同一 `Id`，v2rayN 会把两条当成同一条，可能丢弃或覆盖对方。现在 `apply` 前先扫描非守卫规则，命中即 `exit 4` 并打印冲突规则的 JSON 摘要，库一个字节都不写。（实测真库 9 条规则的 `Id` 均为 19 位随机数字，当前无冲突。）
+
+**P1 —— `-Restore` 没有恢复前快照**
+
+`-Restore` 直接覆盖当前库。如果恢复后才发现选错了备份，恢复前那份状态就再也没有了。现在先把当前库复制到 `backup\v2rayn-restore-pre\<时间戳>\guiNDB.db`，并单独放一棵目录树——否则这个快照会被 `-Restore` 自己"取最新干净备份"的逻辑挑中，造成"回滚到回滚前"的循环。
+
+**P2 —— 注释声称的 `PRAGMA quick_check` 并不存在**
+
+原注释写了 quick_check，Python 里只是打开库、读表、解析 JSON。现在 `open_db()` 真的执行 `PRAGMA quick_check`，要求恰好返回一行 `ok`，否则抛错并以 `DB_UNUSABLE` / `BACKUP_UNUSABLE` 退出（exit 3）。用被抹掉 200 字节的副本验证过：`-Restore` 拒绝执行，真库不动。
+
+**P2 —— WAL 检查的位置本身就是错的（这条是演练才发现的）**
+
+最初把 `-wal` 检查放在 apply 段，位于读库之后。实测发现：**只要 sqlite 打开过 `guiNDB.db`，残留的 `-wal` 就会被删掉**——所以那个检查永远看到"没有 WAL"，是彻底的死代码。现在检查前移到任何 sqlite 连接之前，并且覆盖 `-Verify` / `-Apply` / `-Restore` 全部分支。`guiNDB.db` 本身是 `journal_mode=delete`，这条警报正常情况不会触发，它针对的是"v2rayN 没干净退出"。
+
+**P2 —— 补 `stun.cloudflare.com` 探针**
+
+境外端点从 1 个增到 2 个，避免单一端点被墙/被机场特殊处理时误判。
+
+**顺带修掉的两个自身缺陷（演练抓出，非审查提出）**
+
+1. ID 冲突分支写成 `Say '...' + $bkDir 'Yellow'`，PowerShell 按 4 个位置参数绑定而抛终止性错误——正好发生在需要给人看提示的那条路径上。
+2. Windows 对 UDP 收到的 ICMP port-unreachable 报的是 `ConnectionReset`（10054）而不是 `ConnectionRefused`，未分类时会落到 `error`。现在归入"包已离开主机"，与 refused 同等处理。
+
+**验收方式**：沙箱副本 + 假 v2rayN 根目录，11 个场景 35 条断言全绿（WAL 拒绝、进程拒绝、apply、配置四态、幂等、restore、ID 冲突、损坏备份），全过程 **真库 `guiNDB.db` 的 SHA-256 与规则数（9 条、guard=0）未被改动**。
 
 
