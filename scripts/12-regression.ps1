@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.1 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
+    AI-Net-Guard v5.8.2 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
 
 .DESCRIPTION
     Verifies the v5.4 static guard end-to-end. Read-only, except for a temporary
@@ -249,7 +249,7 @@ function Get-ConfiguredNodeInfo {
     }
 }
 
-W ('=== AI-Net-Guard v5.8.1 regression ' + (Get-Date -Format 'o') + ' ===')
+W ('=== AI-Net-Guard v5.8.2 regression ' + (Get-Date -Format 'o') + ' ===')
 function Get-ActiveIpPhysicalNics {
     @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
         $_.OperationalStatus -eq 'Up' -and

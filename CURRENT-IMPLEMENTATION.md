@@ -3,7 +3,7 @@
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.8.2 正式版**（v5.8.1 全部内容 + 按外部审查修正 `18` 的库写入守卫与 `verify-leak-test` 第 9 段的验收逻辑，详见 16.7）
+> 版本状态：**v5.8.2 正式版**（v5.8.1 全部内容 + 删除 `-Force` 旁路、`-RoutingId` 贯穿读写、遮蔽判定改为按 STUN 流量逐条求值、守卫校验抽取共用 `lib-stun-guard.ps1`、恢复前后补 SHA-256，详见 16.7 / 16.8）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -479,5 +479,53 @@ v5.8.1 的两个脚本经过一次逐行审查，暴露出 7 个问题，其中 
 2. Windows 对 UDP 收到的 ICMP port-unreachable 报的是 `ConnectionReset`（10054）而不是 `ConnectionRefused`，未分类时会落到 `error`。现在归入"包已离开主机"，与 refused 同等处理。
 
 **验收方式**：沙箱副本 + 假 v2rayN 根目录，11 个场景 35 条断言全绿（WAL 拒绝、进程拒绝、apply、配置四态、幂等、restore、ID 冲突、损坏备份），全过程 **真库 `guiNDB.db` 的 SHA-256 与规则数（9 条、guard=0）未被改动**。
+
+### 16.8 第二轮审查后的修正（v5.8.2 修订）
+
+第一轮修完又发现 6 处，其中 3 处属于"会写错数据"或"会给出错误结论"。以下仍按优先级记录。
+
+**P0 —— `-Force` 能绕过两条数据完整性闸门**
+
+`-Force` 原本同时跳过"WAL 非空"与"进程在跑"。后者只是"请关掉 v2rayN"的便利，前者却是数据完整性问题：WAL 里可能是尚未 checkpoint 的新路由，只复制 `guiNDB.db` 会静默丢掉它们；`-Restore` 在有 WAL 的环境覆盖文件，等于把未合并的事务抹掉。**该参数已整体删除**，两处判定改为无条件拒绝，连参数名都不再存在（传 `-Force` 会直接报 `A parameter cannot be found`）。理由写在脚本头：这两条的唯一解法是关掉 v2rayN（关掉即 checkpoint 并释放文件），没有任何"我确定没事"的场景需要旁路。
+
+**P0 —— `-RoutingId` 只作用于读库，写库时被丢弃**
+
+`dump` 用 `extra` 当 RoutingId，`apply` 却不传；Python 侧又只有 `dump` / `apply` 会解释 `extra`。两个后果：库里有多个 `IsActive=1` 时，前面的检查通过了、实际写入却再报 `AMBIGUOUS`；更糟的是**读了 A 规则集、写了 B 规则集**。根因之二是一个隐性 bug：PowerShell 把数组 splat 到原生命令时会丢弃空字符串参数，于是"只填后面几个位置参数"的调用会把值整体左移一位。
+
+修法两层：
+1. Python 侧改为**具名参数**（`--backup=` / `--mode=` / `--routing-id=`），位置不再参与语义，空值也无需占位；
+2. `pick()` 里 `routing_id` 对**所有操作**生效，`apply` / `compare` / restore 后的比对全部携带同一个 Id，`compare` 另外断言两侧是同一个 `Id`（`BACKUP_OTHER_ITEM`），否则"其余规则未变"是在比对两张不同的表。
+
+**P0 —— 遮蔽判定靠"字段是否存在"，判不出真遮蔽**
+
+旧逻辑：前置规则只要带 `port` / `domain` / `ip` / `process` / `inboundTag` 任一字段，就认为"不是全匹配规则"。反例就是审查给的 `{"inboundTag":["tun"],"outboundTag":"direct"}`——STUN 恰恰来自 tun 入站，这条会把守卫对整条链路遮住，而旧逻辑判它无影响。
+
+现在按 STUN 探针的真实形态逐条求值（目标为 IP 字面量、命中十二个端口之一、udp 或 tcp、经 TUN 入站），结果三分：
+
+| 判定 | 条件 | 后果 |
+| --- | --- | --- |
+| `excluded` | 有 `domain`（目标已是 IP，域名规则不匹配）／`port` 与本端口集无交集／`network` 不含 udp 也不含 tcp／`inboundTag` 不含实际 TUN 入站标签 | 不可能匹配，安全 |
+| `matches` | 无任何收窄字段，或 `ip` 规则可能覆盖 STUN 目标，或 `inboundTag` 含 TUN 入站（**即上述反例**） | 报 `SHADOWED`，两侧脚本都记 FAIL |
+| `restricted` | 仅由 `process` / `user` / `source` 等来源限定 | 报 caveat：任意应用的 STUN 它遮不住，但该来源的 STUN 不在守卫覆盖内。**显式打印，不隐藏** |
+
+TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编码 `tun-in`。
+
+**P1 —— 两个脚本各写一套校验，会对同一份配置给出不同结论**
+
+`18` 有前置规则检查、`verify-leak-test` 没有，于是完全可能出现"18 说 SHADOWED、验收说 PASS"。现在抽出 [`scripts/lib-stun-guard.ps1`](./scripts/lib-stun-guard.ps1)（纯 ASCII），两侧同时 dot-source；缺库时直接 `exit 1`，不允许悄悄退化成"没检查"。`verify-leak-test` 的 PASS 前置条件因此与 `18` 的 `B1 ACTIVE` 完全一致：`State=present` **且** `Shadow=0`。
+
+**P1 —— `Test-StunBlockRule` 不检查"是否纯端口匹配"**
+
+第一轮只校验 `outboundTag` / `network` / `port`，于是带 `domain` 或 `inboundTag` 的规则也会被认成 B1 守卫——那不是 B1，它只挡一个子集。现在 `lib` 里维护收窄字段清单（`domain`/`ip`/`process`/`inboundTag`/`protocol`/`sourcePort`/`user`/`source`/`localIP`/`localPort`/`attrs`），命中任一即判"不是守卫规则"；`enabled=false` 同样不算。
+
+**P1 —— `-Restore` 的快照与恢复结果只比内容、不比文件**
+
+恢复前快照原先只要 `Copy-Item` 不抛异常就算成功。现在先算活库 SHA-256 → 复制 → 再算快照 SHA-256，不一致即 `exit 3` 并声明"快照不可信、未覆盖任何文件"。恢复完成后除逐条规则比对，**再加一次整库文件 SHA-256 相等**——恢复是文件复制，字节必须一致，逐条比对只能证明规则内容一致。
+
+**P1 —— 文档把 B1 说成"STUN 全封"**
+
+端口集合只有 `3478,3479,5349,5350,19302-19309`。STUN/TURN 并不强制用这些端口（`udp/443` 很常见），所以"no srflx candidate can exist / 任何 STUN 都不通"是过度承诺。现在脚本、验收输出、文档统一为：**配置端口集合内、对所有目标地址阻断；非标准端口的 STUN/TURN 不在本规则覆盖范围**。这不削弱 B1，只是把边界说准——要在 `udp/443` 上也封，代价是 QUIC / HTTP/3 一起断，属于另一个决策。
+
+**验收方式（本轮）**：共用库判定 24 条断言全绿（含审查给的反例、`geoip:cn`、端口区间、半套规则、`enabled=false`）；数据库操作层 13 条断言全绿（歧义拒绝、按 Id 读取/写入/比对、写 A 不动 B、Id 冲突、损坏库）；端到端用合成配置跑通两条新路径（`present` + 1 条 process caveat + 0 shadow；以及 tun 入站规则被判 `SHADOWED` 并使验收记 FAIL）。真库仍为 `9 rules, guard=0`，只读打开。
 
 

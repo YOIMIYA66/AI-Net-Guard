@@ -23,14 +23,22 @@
 #
 #   DESIGN CHOICE - B1 (global port block), not B2 (per-target list):
 #     These rules match on DESTINATION PORT ONLY and match every address. Consequence,
-#     stated plainly because it drives the acceptance test: after -Apply, *no* STUN
-#     server answers, foreign ones included. stun.l.google.com:19302 is dropped the
-#     same way stun.miwifi.com:3478 is. WebRTC can therefore no longer gather any
-#     srflx candidate at all; calls fall back to relay or fail. That is the intended
-#     trade: closing the real-IP leak matters more than keeping WebRTC fully working.
-#     A B2 variant (match CN STUN ip/domain, block only those) would keep foreign STUN
-#     alive but needs a maintained target list and leaves a fail-open path whenever the
-#     list goes stale, so it is deliberately not implemented.
+#     stated plainly because it drives the acceptance test: after -Apply, no STUN server
+#     reachable on one of these ports answers, foreign ones included.
+#     stun.l.google.com:19302 is dropped the same way stun.miwifi.com:3478 is.
+#
+#     SCOPE, stated just as plainly, because "STUN is blocked" would be an overclaim:
+#     this guard covers the twelve ports below - 3478, 3479, 5349, 5350 and 19302-19309 -
+#     over udp and tcp, for every destination. STUN/TURN carried on any other port (udp/443
+#     is the common one) is NOT covered by these rules and remains reachable through the
+#     normal routing table. Closing that class needs a different mechanism (a server list,
+#     or blocking udp/443 outright, which breaks QUIC and HTTP/3 as well).
+#
+#     Within that scope WebRTC cannot gather a srflx candidate, so calls fall back to
+#     relay or fail. That is the intended trade: closing the real-IP leak matters more
+#     than keeping WebRTC fully working. A B2 variant (match CN STUN ip/domain, block only
+#     those) would keep foreign STUN alive but needs a maintained target list and leaves a
+#     fail-open path whenever the list goes stale, so it is deliberately not implemented.
 #
 # Safety:
 #   - Never writes while v2rayN or a core is running: v2rayN keeps the routing rules
@@ -46,7 +54,9 @@
 #     before the first write. A failed backup aborts the run.
 #   - Refuses to guess which routing set is active: exactly one row may have
 #     IsActive=1, otherwise -RoutingId is required. A wrong pick silently edits the
-#     wrong set.
+#     wrong set. The resolved Id is then carried through every later call - apply,
+#     compare and the restore comparison - so the row that was inspected is always the
+#     row that is written, even if IsActive changes in between.
 #   - Refuses to write when a rule that is not ours already owns one of the two fixed
 #     guard Ids. Reusing an occupied Id would make v2rayN treat two rows as the same
 #     rule and could drop or corrupt the other one.
@@ -91,9 +101,16 @@
 #   Explicit backup folder to restore from. Defaults to the newest under
 #   <Root>\backup\v2rayn-routing.
 #
-# .PARAMETER Force
-#   Skip the "v2rayN is running" and "WAL is not empty" refusals. Only for a database
-#   you know is idle and consistent.
+# There is deliberately NO -Force switch. Two of the refusals below are not preferences
+# but data-integrity gates, and a switch that skips them turns "the script protects your
+# routing table" into "the script protects it unless you are in a hurry":
+#   - a non-empty guiNDB.db-wal means the newest transactions are not in the main file,
+#     so a backup or a restore that copies guiNDB.db alone would silently drop them;
+#   - a running v2rayN/core holds the routing set in memory and rewrites the database on
+#     exit, so any write made past it is reverted, and any restore made under it can be
+#     overwritten mid-flight.
+# Both are fixed by closing v2rayN (which checkpoints the WAL and releases the file), so
+# there is nothing a bypass could rescue.
 #
 # .EXAMPLE
 #   .\18-route-stun-guard.ps1
@@ -113,8 +130,7 @@ param(
     [switch]$Verify,
     [switch]$Restore,
     [string]$RoutingId = '',
-    [string]$BackupDir = '',
-    [switch]$Force
+    [string]$BackupDir = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -150,7 +166,7 @@ function Get-PythonExe {
 }
 
 function Invoke-DbOp {
-    param([string]$Op, [string]$Extra = '', [string]$Mode = '')
+    param([string]$Op, [string]$Extra = '', [string]$Mode = '', [string]$Id = '')
 
     $py = Get-PythonExe
     if (-not $py) { Say '[!] python 3 not found on PATH - cannot read guiNDB.db from PowerShell 5.1' 'Red'; exit 1 }
@@ -162,7 +178,20 @@ import sqlite3
 import sys
 
 db, op, ports, tag = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-extra = sys.argv[5] if len(sys.argv) > 5 else ''
+
+# Options are NAMED, not positional, on purpose. PowerShell drops empty-string arguments
+# when it splats an array onto a native command, so a positional tail where only some slots
+# are filled silently shifts every value one place left: the routing id would arrive where
+# the backup path is expected, and the write would then target whatever row happened to be
+# active instead of the row that was inspected. Named options cannot be shifted.
+opts = {}
+for a in sys.argv[5:]:
+    if a.startswith('--') and '=' in a:
+        k, v = a[2:].split('=', 1)
+        opts[k] = v
+extra = opts.get('backup', '')
+mode_arg = opts.get('mode', '')
+routing_id = opts.get('routing-id', '')
 
 wanted = set(int(p) for p in ports.split(',') if p.strip())
 GUARD_IDS = ('8800000000000000001', '8800000000000000002')
@@ -196,10 +225,16 @@ def read_rows(con):
 
 
 def pick(rows):
-    """Return (row, how) without ever guessing when the database is ambiguous."""
-    if extra and op in ('dump', 'apply'):
+    """Return (row, how) without ever guessing when the database is ambiguous.
+
+    routing_id wins for EVERY operation, not just for the first read. Resolving it only in
+    dump/apply meant a run could inspect set A and then write set B: the ambiguity check
+    passed, the read picked the id the operator named, and the UPDATE re-derived the target
+    from IsActive and edited whatever was active instead.
+    """
+    if routing_id:
         for r in rows:
-            if str(r['Id']) == extra:
+            if str(r['Id']) == routing_id:
                 return r, 'explicit-id'
         return None, 'ID_NOT_FOUND'
     active = [r for r in rows if r['IsActive'] == 1]
@@ -290,7 +325,7 @@ if op == 'compare':
     # other rule identical to the backup; 'restored' asserts the live set is identical to
     # the backup in full (guard included or not - restoring a backup that was taken after
     # an earlier apply legitimately brings the guard rules back).
-    mode = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else 'restored'
+    mode = mode_arg if mode_arg else 'restored'
     try:
         bak = open_db(extra, readonly=True)
         brows = read_rows(bak)
@@ -300,6 +335,11 @@ if op == 'compare':
     brow, bhow = pick(brows)
     if brow is None or bhow == 'AMBIGUOUS':
         print('BACKUP_UNREADABLE\t%s' % bhow)
+        sys.exit(3)
+    # Both sides must be the same routing set, otherwise "the other rules are unchanged"
+    # is comparing two different tables and the assertion means nothing.
+    if str(brow['Id']) != item_id:
+        print('BACKUP_OTHER_ITEM\t%s\t%s' % (item_id, brow['Id']))
         sys.exit(3)
     brules = json.loads(brow['RuleSet'] or '[]')
     bguard = len(guard(brules))
@@ -347,7 +387,10 @@ sys.exit(2)
     $tmp = Join-Path $env:TEMP ('aiguard-routing-' + [guid]::NewGuid().ToString('N') + '.py')
     try {
         [System.IO.File]::WriteAllText($tmp, $payload, (New-Object System.Text.UTF8Encoding($false)))
-        $argv = @($tmp, $script:DbPath, $Op, $StunPorts, $GuardTag, $Extra, $Mode)
+        $argv = @($tmp, $script:DbPath, $Op, $StunPorts, $GuardTag)
+        if ($Extra) { $argv += ('--backup=' + $Extra) }
+        if ($Mode) { $argv += ('--mode=' + $Mode) }
+        if ($Id) { $argv += ('--routing-id=' + $Id) }
         $out = & $py @argv 2>&1
         return [pscustomobject]@{ Code = $LASTEXITCODE; Lines = @($out) }
     }
@@ -370,92 +413,27 @@ function Get-FileSha([string]$Path) {
 
 # ---------------------------------------------------------------- core config checks
 # A database row proves nothing until v2rayN has regenerated the core config from it, so
-# the loaded table is checked directly. "One block rule mentions 3478" was too weak: a
-# single rule, or one with half the port list, would have been reported as B1 ACTIVE.
+# the loaded table is checked directly. The checks themselves live in lib-stun-guard.ps1
+# because verify-leak-test.ps1 asks the same questions: two copies of this logic is how
+# one script reports SHADOWED while the other reports PASS for the same config file.
+$libPath = Join-Path $(if ($PSScriptRoot) { $PSScriptRoot } else { (Split-Path -Parent $PSCommandPath) }) 'lib-stun-guard.ps1'
+if (-not (Test-Path -LiteralPath $libPath)) {
+    Say ('[!] lib-stun-guard.ps1 not found next to this script: ' + $libPath) 'Red'
+    Say '    the guard checks are shared with verify-leak-test.ps1 and cannot be skipped' 'Yellow'
+    exit 1
+}
+. $libPath
+
 function Get-ExpectedPortSet {
     return @($StunPorts.Split(',') | ForEach-Object { [int]$_.Trim() } | Sort-Object -Unique)
 }
 
-function Get-PortSpecSet([string]$Spec) {
-    $set = New-Object 'System.Collections.Generic.HashSet[int]'
-    foreach ($tok in ($Spec -split ',')) {
-        $t = $tok.Trim()
-        if (-not $t) { continue }
-        if ($t -match '^(\d+)\s*-\s*(\d+)$') {
-            $lo = [int]$Matches[1]; $hi = [int]$Matches[2]
-            if ($hi -lt $lo) { $swap = $lo; $lo = $hi; $hi = $swap }
-            for ($x = $lo; $x -le $hi; $x++) { [void]$set.Add($x) }
-        }
-        elseif ($t -match '^\d+$') { [void]$set.Add([int]$t) }
-    }
-    return , $set
-}
-
-function Test-StunBlockRule($Rule, [string]$Network, [int[]]$Expected) {
-    if (-not $Rule) { return $false }
-    if ([string]$Rule.outboundTag -ne 'block') { return $false }
-    if ([string]$Rule.network -ne $Network) { return $false }
-    $got = Get-PortSpecSet ([string]$Rule.port)
-    if ($got.Count -ne $Expected.Count) { return $false }
-    foreach ($p in $Expected) { if (-not $got.Contains($p)) { return $false } }
-    return $true
-}
-
-function Test-RuleIsScoped($Rule) {
-    # A preceding rule can only swallow the guard pair if it matches every destination.
-    # 'network' alone is not a scope: a rule with only network=udp matches all UDP.
-    foreach ($k in @('port', 'domain', 'ip', 'process', 'inboundTag', 'protocol', 'sourcePort', 'user')) {
-        if ($Rule.PSObject.Properties.Name -contains $k) { return $true }
-    }
-    return $false
+function Get-CoreGuardState {
+    return Get-StunGuardAnalysis -ConfigPath $V2Config -Expected (Get-ExpectedPortSet)
 }
 
 function Get-CoreGuardState {
-    $res = [pscustomobject]@{ State = 'no-config'; Index = -1; Preceding = 0; Shadow = 0; Detail = '' }
-    if (-not (Test-Path -LiteralPath $V2Config)) { return $res }
-    try { $cfg = Get-Content -LiteralPath $V2Config -Raw -Encoding UTF8 | ConvertFrom-Json }
-    catch { $res.State = 'unparsable'; $res.Detail = $V2Config; return $res }
-    $rules = @($cfg.routing.rules | Where-Object { $_ })
-    $exp = Get-ExpectedPortSet
-
-    # The pair must be adjacent and in this order: a udp rule then a tcp rule, each
-    # blocking the complete port set. Xray routing is first-match, so "somewhere in the
-    # table" is not good enough either - but v2rayN prefixes its own built-in rules, so
-    # the guard pair is not necessarily at index 0 of the generated file.
-    for ($i = 0; $i -lt $rules.Count - 1; $i++) {
-        if ((Test-StunBlockRule $rules[$i] 'udp' $exp) -and (Test-StunBlockRule $rules[$i + 1] 'tcp' $exp)) {
-            $res.State = 'present'
-            $res.Index = $i
-            if ($i -gt 0) {
-                $before = @(0..($i - 1) | ForEach-Object { $rules[$_] } |
-                    Where-Object { [string]$_.outboundTag -ne 'block' })
-                $res.Preceding = $before.Count
-                # A rule that blocks is harmless (it drops too). A rule that routes to
-                # direct/proxy and matches everything would hide the pair behind it, which
-                # looks identical to "loaded" unless it is checked.
-                $res.Shadow = @($before | Where-Object { -not (Test-RuleIsScoped $_) }).Count
-            }
-            return $res
-        }
-    }
-
-    # Not a complete pair - report what is actually loaded so "partial" is diagnosable
-    # instead of looking identical to "nothing at all".
-    for ($i = 0; $i -lt $rules.Count; $i++) {
-        $r = $rules[$i]
-        if ([string]$r.outboundTag -ne 'block') { continue }
-        if (([string]$r.port) -notmatch '(^|,)3478(,|$)') { continue }
-        $got = Get-PortSpecSet ([string]$r.port)
-        $missing = @($exp | Where-Object { -not $got.Contains($_) })
-        $res.State = 'partial'
-        $res.Index = $i
-        $res.Detail = 'rule #' + $i + ' net=' + $r.network + ' carries ' + $got.Count + '/' + $exp.Count + ' ports'
-        if ($missing.Count -gt 0) { $res.Detail += ', missing ' + (($missing | Select-Object -First 6) -join ',') }
-        return $res
-    }
-
-    $res.State = 'absent'
-    return $res
+    return Get-StunGuardAnalysis -ConfigPath $V2Config -Expected (Get-ExpectedPortSet)
 }
 
 # ------------------------------------------------------------------ main
@@ -483,17 +461,19 @@ if (-not (Test-Path -LiteralPath $script:DbPath)) {
 $walPath = $script:DbPath + '-wal'
 $walSize = 0
 if (Test-Path -LiteralPath $walPath) { $walSize = (Get-Item -LiteralPath $walPath).Length }
+# Unconditional, with no switch to pass it. A non-empty WAL means the newest routing edits
+# are NOT in guiNDB.db, so neither the backup taken by -Apply nor the overwrite done by
+# -Restore can be correct: one would miss the edits, the other would erase them. There is
+# no "I know better" case here, because closing v2rayN is what checkpoints the WAL.
 if ($walSize -gt 0) {
-    if (-not $Force) {
-        Say ' '
-        Say ('[!] guiNDB.db-wal is present and not empty (' + $walSize + ' bytes)') 'Red'
-        Say '    v2rayN did not close cleanly, so the newest routing edits may live only in' 'Yellow'
-        Say '    that sidecar file and not in the main database.' 'Yellow'
-        Say '    start v2rayN once and exit it from the tray icon so the WAL is checkpointed,' 'Yellow'
-        Say '    then re-run. Nothing has been read or written yet.' 'Yellow'
-        exit 2
-    }
-    Say ('[!] WAL is not empty (' + $walSize + ' bytes) - -Force given, continuing anyway') 'Yellow'
+    Say ' '
+    Say ('[!] guiNDB.db-wal is present and not empty (' + $walSize + ' bytes)') 'Red'
+    Say '    v2rayN did not close cleanly, so the newest routing edits may live only in' 'Yellow'
+    Say '    that sidecar file and not in the main database.' 'Yellow'
+    Say '    start v2rayN once and exit it from the tray icon so the WAL is checkpointed,' 'Yellow'
+    Say '    then re-run. Nothing has been read or written yet.' 'Yellow'
+    Say '    (this refusal has no bypass: a backup or a restore taken now would be wrong)' 'Yellow'
+    exit 2
 }
 
 # ------------------------------------------------------------------ restore
@@ -550,8 +530,12 @@ if ($Restore) {
     }
 
     $blocker = Get-RunningBlocker
-    if ($blocker -and -not $Force) {
+    # No bypass. A restore under a running v2rayN is not merely likely to be reverted: the
+    # core holds guiNDB.db open and writes the in-memory routing set back on exit, so the
+    # restored file can be overwritten seconds later with the state we just removed.
+    if ($blocker) {
         Say ('[!] ' + $blocker + ' is running - close v2rayN first (its memory copy would overwrite the restore)') 'Red'
+        Say '    this refusal has no bypass' 'Yellow'
         exit 2
     }
 
@@ -566,6 +550,13 @@ if ($Restore) {
         $probe.Lines | ForEach-Object { Say ('    ' + $_) 'DarkGray' }
         exit 3
     }
+    # The routing set inside the backup is the one this restore is about; every later
+    # comparison is pinned to it instead of re-deriving the target from IsActive.
+    $bkItemId = ''
+    foreach ($ln in $probe.Lines) {
+        $f = ([string]$ln) -split "`t"
+        if ($f[0] -eq 'ITEM') { $bkItemId = $f[1] }
+    }
     Say ' '
     Say ('[*] backup    : ' + $bkDir) 'DarkGray'
     Say ('    sha256   : ' + (Get-FileSha $src)) 'DarkGray'
@@ -576,6 +567,11 @@ if ($Restore) {
     # discovery above never picks a snapshot up as a restore source.
     $preDir = Join-Path $Root ('backup\v2rayn-restore-pre\' + (Get-Date).ToString('yyyyMMdd-HHmmss'))
     $preFile = Join-Path $preDir 'guiNDB.db'
+    # Hash the live file BEFORE copying, then prove the copy carries the same hash. A
+    # Copy-Item that returns without an exception is not evidence: a partial read, a
+    # concurrent writer or a locked file can all leave a shortened copy behind, and this
+    # snapshot is the only way back if the restore turns out to be wrong.
+    $liveBefore = Get-FileSha $liveDb
     try {
         New-Item -ItemType Directory -Path $preDir -Force | Out-Null
         Copy-Item -LiteralPath $liveDb -Destination $preFile -Force
@@ -585,9 +581,17 @@ if ($Restore) {
         Say ('    ' + $_.Exception.Message) 'DarkGray'
         exit 2
     }
+    $preSha = Get-FileSha $preFile
+    if (-not $liveBefore -or -not $preSha -or $liveBefore -ne $preSha) {
+        Say '[!] pre-restore snapshot does not match the live database - restore aborted' 'Red'
+        Say ('    live     : ' + $liveBefore) 'DarkGray'
+        Say ('    snapshot : ' + $preSha) 'DarkGray'
+        Say '    nothing was overwritten; the snapshot is incomplete and cannot be trusted' 'Yellow'
+        exit 3
+    }
     Say ('[+] pre-restore snapshot: ' + $preFile) 'DarkGray'
+    Say ('    sha256   : ' + $preSha + '  (identical to the live database)') 'DarkGray'
 
-    $liveBefore = Get-FileSha $liveDb
     try { Copy-Item -LiteralPath $src -Destination $liveDb -Force }
     catch {
         Say '[!] cannot write guiNDB.db - a core process still holds it' 'Red'
@@ -597,7 +601,20 @@ if ($Restore) {
     }
     Say '[+] copied backup over the live database' 'Green'
 
-    $v = Invoke-DbOp 'compare' $src
+    # Whole-file identity first: the restore is a file copy, so the bytes must be equal.
+    # The per-rule comparison below says the rules match; this says the file does.
+    $srcSha = Get-FileSha $src
+    $liveAfter = Get-FileSha $liveDb
+    if (-not $srcSha -or -not $liveAfter -or $srcSha -ne $liveAfter) {
+        Say '[!] restored file is not byte-identical to the backup - restore FAILED' 'Red'
+        Say ('    backup   : ' + $srcSha) 'DarkGray'
+        Say ('    live     : ' + $liveAfter) 'DarkGray'
+        Say ('    pre-restore snapshot : ' + $preFile) 'DarkGray'
+        Say ('    to go back: copy that file over ' + $liveDb) 'Yellow'
+        exit 3
+    }
+
+    $v = Invoke-DbOp 'compare' -Extra $src -Id $bkItemId
     $lines = @($v.Lines | ForEach-Object { [string]$_ })
     if ($v.Code -ne 0 -or -not ($lines -match '^MATCH')) {
         Say '[!] restore verification FAILED - the live database does not match the backup' 'Red'
@@ -622,7 +639,7 @@ if ($Restore) {
 }
 
 # ------------------------------------------------------------------ read
-$r = Invoke-DbOp 'dump' $RoutingId
+$r = Invoke-DbOp 'dump' -Id $RoutingId
 if ($r.Code -ne 0) {
     $first = [string](@($r.Lines)[0])
     if ($first -eq 'NO_ACTIVE_ITEM') {
@@ -698,12 +715,21 @@ if (-not $Apply) {
         'present' {
             Say ('core config : both rules loaded at routing index ' + $core.Index + '/' + ($core.Index + 1) + ', complete port set') 'Green'
             if ($core.Shadow -gt 0) {
-                Say ('[!] ' + $core.Shadow + ' rule(s) ahead of the pair match every destination -') 'Yellow'
-                Say '    the pair may never be reached. Inspect binConfigs\config.json.' 'Yellow'
+                Say ('[!] ' + $core.Shadow + ' rule(s) ahead of the pair can match STUN traffic -') 'Yellow'
+                Say '    the pair may never be reached. Inspect binConfigs\config.json:' 'Yellow'
+                $core.ShadowRules | ForEach-Object { Say ('      [shadow] ' + $_) 'Yellow' }
             }
             elseif ($core.Preceding -gt 0) {
-                Say ('              ' + $core.Preceding + ' non-block rule(s) precede them (v2rayN built-ins),') 'DarkGray'
-                Say '              each scoped by port / process / inbound, so none can swallow the pair' 'DarkGray'
+                Say ('              ' + $core.Preceding + ' non-block rule(s) precede them (v2rayN built-ins);') 'DarkGray'
+                Say '              each is provably unable to swallow the pair (port / inbound / domain)' 'DarkGray'
+            }
+            if ($core.Caveat -gt 0) {
+                # Not silent, not fatal: these rules fire only for a named origin, so they
+                # cannot hide STUN from an arbitrary application, but traffic from that
+                # origin does bypass the pair. Printing them is the point.
+                Say ('[i] ' + $core.Caveat + ' rule(s) ahead of the pair are origin-scoped (caveat, not') 'DarkGray'
+                Say '    a blanket match) - STUN they originate is not covered by this guard:' 'DarkGray'
+                $core.CaveatRules | ForEach-Object { Say ('      [caveat] ' + $_) 'DarkGray' }
             }
         }
         'partial' { Say ('core config : PARTIAL - ' + $core.Detail) 'Yellow' }
@@ -714,14 +740,16 @@ if (-not $Apply) {
     }
     Say ' '
     if ($dbTop -and $core.State -eq 'present' -and $core.Shadow -eq 0) {
-        Say 'verdict: B1 ACTIVE - both rules loaded, every STUN/TURN port dropped inside' 'Green'
-        Say '         the core, foreign servers included, so no srflx candidate can exist.' 'Green'
+        Say 'verdict: B1 ACTIVE - both rules loaded, every port in the configured STUN/TURN' 'Green'
+        Say '         set is dropped inside the core for ALL destinations, foreign included.' 'Green'
+        Say '         scope: these twelve ports over udp+tcp. STUN/TURN over any other port' 'Green'
+        Say '         (udp/443, vendor ports) is outside this guard by design.' 'Green'
         exit 0
     }
     if ($core.State -eq 'present' -and $core.Shadow -gt 0) {
-        Say 'verdict: SHADOWED - the pair is loaded but preceded by a rule that matches' 'Yellow'
-        Say '         every destination, so packets may never reach it. Fix the rule order' 'Yellow'
-        Say '         in v2rayN before trusting this guard.' 'Yellow'
+        Say 'verdict: SHADOWED - the pair is loaded but a rule ahead of it can match STUN' 'Yellow'
+        Say '         traffic, so packets may never reach it. Fix the rule order in v2rayN' 'Yellow'
+        Say '         before trusting this guard.' 'Yellow'
         exit 0
     }
     if ($dbSome -and $core.State -eq 'present') {
@@ -742,12 +770,15 @@ if (-not $Apply) {
 
 # ------------------------------------------------------------------ apply
 $blocker = Get-RunningBlocker
-if ($blocker -and -not $Force) {
+# No bypass, same reason as the restore path: v2rayN rewrites guiNDB.db from memory when it
+# exits, so an edit written under it is not "risky", it is discarded.
+if ($blocker) {
     Say ' '
     Say ('[!] ' + $blocker + ' is running') 'Red'
     Say '    v2rayN keeps the routing set in memory and overwrites guiNDB.db on exit,' 'Yellow'
     Say '    so the edit would be silently reverted. Close v2rayN completely, re-run' 'Yellow'
     Say '    this script, then start v2rayN again.' 'Yellow'
+    Say '    this refusal has no bypass' 'Yellow'
     exit 2
 }
 
@@ -786,7 +817,9 @@ Say ' '
 Say ('[+] backup    : ' + $bkDir) 'Green'
 Say ('    sha256   : ' + $bkSha + '  (identical to the live database)') 'DarkGray'
 
-$a = Invoke-DbOp 'apply'
+# -Id pins the write to the row that was inspected above. Without it the UPDATE re-derives
+# its target from IsActive, which is exactly how a run can read set A and edit set B.
+$a = Invoke-DbOp 'apply' -Id $itemId
 if ($a.Code -eq 4) {
     Say ' '
     Say '[!] a rule that is not ours already uses one of the two guard rule Ids' 'Red'
@@ -811,7 +844,7 @@ foreach ($line in $a.Lines) {
 
 # Post-write assertions: guard on top AND nothing else moved. Both are read back from
 # the database, not assumed.
-$v = Invoke-DbOp 'compare' $bkFile 'applied'
+$v = Invoke-DbOp 'compare' -Extra $bkFile -Mode 'applied' -Id $itemId
 
 $lines = @($v.Lines | ForEach-Object { [string]$_ })
 if ($v.Code -ne 0 -or -not ($lines -match '^MATCH')) {

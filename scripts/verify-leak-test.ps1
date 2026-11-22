@@ -342,67 +342,26 @@ function Find-CoreConfig {
 # Same port set as 18-route-stun-guard.ps1 and 15-webrtc-browser-shield.ps1.
 $expectedPorts = @(3478, 3479, 5349, 5350, 19302, 19303, 19304, 19305, 19306, 19307, 19308, 19309)
 
-function Get-PortSpecSet([string]$Spec) {
-    $set = New-Object 'System.Collections.Generic.HashSet[int]'
-    foreach ($tok in ($Spec -split ',')) {
-        $t = $tok.Trim()
-        if (-not $t) { continue }
-        if ($t -match '^(\d+)\s*-\s*(\d+)$') {
-            $lo = [int]$Matches[1]; $hi = [int]$Matches[2]
-            if ($hi -lt $lo) { $swap = $lo; $lo = $hi; $hi = $swap }
-            for ($x = $lo; $x -le $hi; $x++) { [void]$set.Add($x) }
-        }
-        elseif ($t -match '^\d+$') { [void]$set.Add([int]$t) }
-    }
-    return , $set
+# The guard checks are SHARED with 18-route-stun-guard.ps1 rather than reimplemented here.
+# A second copy is exactly how one script reports SHADOWED while the other reports PASS for
+# the same config file, leaving the operator no way to tell which one is lying.
+$libPath = Join-Path $(if ($PSScriptRoot) { $PSScriptRoot } else { (Split-Path -Parent $PSCommandPath) }) 'lib-stun-guard.ps1'
+if (-not (Test-Path -LiteralPath $libPath)) {
+    Write-Host '[FAIL] lib-stun-guard.ps1 is missing next to this script - cannot judge the guard' -ForegroundColor Red
+    Write-Host ('       expected: ' + $libPath) -ForegroundColor Red
+    exit 1
 }
-
-function Test-StunBlockRule($Rule, [string]$Network) {
-    if (-not $Rule) { return $false }
-    if ([string]$Rule.outboundTag -ne 'block') { return $false }
-    if ([string]$Rule.network -ne $Network) { return $false }
-    $got = Get-PortSpecSet ([string]$Rule.port)
-    if ($got.Count -ne $expectedPorts.Count) { return $false }
-    foreach ($p in $expectedPorts) { if (-not $got.Contains($p)) { return $false } }
-    return $true
-}
+. $libPath
 
 function Get-StunGuardLoaded {
-    # The database row proves nothing; only the config the core actually loaded does. The
-    # check requires the udp and tcp rules to be ADJACENT and each to carry the complete
-    # port set - "a block rule that mentions 3478" would accept a half-written table, which
-    # is precisely the false "B1 ACTIVE" this function exists to prevent.
-    $res = [pscustomobject]@{ State = 'nofile'; Index = -1; Detail = ''; Config = '' }
     $cfg = Find-CoreConfig
-    if (-not $cfg) { return $res }
-    $res.Config = $cfg
-    try { $j = Get-Content -LiteralPath $cfg -Raw -Encoding UTF8 | ConvertFrom-Json }
-    catch { $res.State = 'unparsable'; $res.Detail = $_.Exception.Message; return $res }
-    $rules = @($j.routing.rules | Where-Object { $_ })
-
-    for ($i = 0; $i -lt $rules.Count - 1; $i++) {
-        if ((Test-StunBlockRule $rules[$i] 'udp') -and (Test-StunBlockRule $rules[$i + 1] 'tcp')) {
-            $res.State = 'loaded'
-            $res.Index = $i
-            return $res
+    if (-not $cfg) {
+        return [pscustomobject]@{
+            State = 'nofile'; Index = -1; Preceding = 0; Shadow = 0; Caveat = 0
+            ShadowRules = @(); CaveatRules = @(); Detail = ''; Config = ''; TunTags = @()
         }
     }
-
-    for ($i = 0; $i -lt $rules.Count; $i++) {
-        $r = $rules[$i]
-        if ([string]$r.outboundTag -ne 'block') { continue }
-        if (([string]$r.port) -notmatch '(^|,)3478(,|$)') { continue }
-        $got = Get-PortSpecSet ([string]$r.port)
-        $missing = @($expectedPorts | Where-Object { -not $got.Contains($_) })
-        $res.State = 'partial'
-        $res.Index = $i
-        $res.Detail = 'rule #' + $i + ' net=' + $r.network + ' has ' + $got.Count + '/' + $expectedPorts.Count + ' ports'
-        if ($missing.Count -gt 0) { $res.Detail += ', missing ' + (($missing | Select-Object -First 6) -join ',') }
-        return $res
-    }
-
-    $res.State = 'absent'
-    return $res
+    return Get-StunGuardAnalysis -ConfigPath $cfg -Expected $expectedPorts
 }
 
 Write-Host ''
@@ -411,9 +370,23 @@ $tunIsUp = ($activeTuns.Count -gt 0)
 $guard = Get-StunGuardLoaded
 
 switch ($guard.State) {
-    'loaded' {
-        Write-Host ('[i] core config : both guard rules loaded at routing index ' + $guard.Index + '/' + ($guard.Index + 1) + ',') -ForegroundColor DarkGray
+    'present' {
+        Write-Host ('[i] core config : pair loaded at routing index ' + $guard.Index + '/' + ($guard.Index + 1) + ',') -ForegroundColor DarkGray
         Write-Host ('                  complete ' + $expectedPorts.Count + '-port set, udp then tcp') -ForegroundColor DarkGray
+        # Loaded is not the same as reachable. A rule ahead of the pair that can match STUN
+        # traffic hides it completely, and this is the same judgement 18 makes, from the
+        # same code, so the two scripts cannot disagree.
+        if ($guard.Shadow -gt 0) {
+            $script:HardFail++
+            Write-Host ('[FAIL] ' + $guard.Shadow + ' rule(s) ahead of the pair can match STUN traffic,') -ForegroundColor Red
+            Write-Host '       so the pair may never be reached:' -ForegroundColor Red
+            $guard.ShadowRules | ForEach-Object { Write-Host ('       [shadow] ' + $_) -ForegroundColor Red }
+        }
+        if ($guard.Caveat -gt 0) {
+            Write-Host ('[i] ' + $guard.Caveat + ' origin-scoped rule(s) ahead of the pair - STUN they originate') -ForegroundColor DarkGray
+            Write-Host '    is not covered by this guard:' -ForegroundColor DarkGray
+            $guard.CaveatRules | ForEach-Object { Write-Host ('       [caveat] ' + $_) -ForegroundColor DarkGray }
+        }
     }
     'partial' {
         Write-Host ('[i] core config : PARTIAL - ' + $guard.Detail) -ForegroundColor Yellow
@@ -430,10 +403,13 @@ switch ($guard.State) {
         Write-Host ('[i] core config : unparsable - ' + $guard.Config) -ForegroundColor Yellow
     }
 }
+$guardOk = ($guard.State -eq 'present' -and $guard.Shadow -eq 0)
 if ($guard.Config) { Write-Host ('                  ' + $guard.Config) -ForegroundColor DarkGray }
 
 Write-Host '    B1 drops these ports for every destination, so a foreign STUN reply is a failure' -ForegroundColor DarkGray
-Write-Host '    exactly like a domestic one. webRTC may then fall back to relay, by design.' -ForegroundColor DarkGray
+Write-Host '    exactly like a domestic one. Scope is these twelve ports over udp+tcp: STUN on' -ForegroundColor DarkGray
+Write-Host '    a non-standard port (udp/443) is not covered by this guard. webRTC may fall back' -ForegroundColor DarkGray
+Write-Host '    to relay, by design.' -ForegroundColor DarkGray
 
 $stunTargets = @(
     @{ Name = 'miwifi (CN)'; Target = 'stun.miwifi.com'; Port = 3478 },
@@ -456,7 +432,7 @@ foreach ($t in $stunTargets) {
             Write-Host '       a reply here means the guard rule is not in effect for this traffic' -ForegroundColor DarkGray
         }
         'timeout' {
-            if ($guard.State -eq 'loaded' -and $tunIsUp) {
+            if ($guardOk -and $tunIsUp) {
                 $stunPass++
                 Write-Host ('[PASS] ' + $t.Name + ' silent - dropped by the guard pair in the core') -ForegroundColor Green
             }
@@ -466,8 +442,8 @@ foreach ($t in $stunTargets) {
             }
             else {
                 $stunInc++
-                Write-Host ('[INCONCLUSIVE] ' + $t.Name + ' silent, but the core carries no complete guard pair') -ForegroundColor Yellow
-                Write-Host '               silence cannot be attributed to a rule that is not loaded' -ForegroundColor DarkGray
+                Write-Host ('[INCONCLUSIVE] ' + $t.Name + ' silent, but the pair is not proven reachable') -ForegroundColor Yellow
+                Write-Host '               silence cannot be attributed to a rule that may not be reached' -ForegroundColor DarkGray
             }
         }
         'refused' {
