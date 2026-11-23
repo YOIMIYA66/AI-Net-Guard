@@ -1151,7 +1151,7 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
 
             ExpandConsole();
             SetBusy(true, "正在释放引擎组件并应用所选策略，请稍候...");
-            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] " + (LocalizationService.IsEnglish ? "Applying AI-Net-Guard v5.8.5 Guard Policy..." : "开始应用 AI-Net-Guard v5.8.5 防护配置...") + " ==========");
+            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] " + (LocalizationService.IsEnglish ? "Applying AI-Net-Guard v5.8.6 Guard Policy..." : "开始应用 AI-Net-Guard v5.8.6 防护配置...") + " ==========");
 
             try
             {
@@ -1319,34 +1319,71 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
                     args.Add(v2Root);
                 }
 
-                int code = await PayloadAndRunnerService.RunPowerShellScriptAsync(regScript, args, AppendLog);
+                // Capture the console stream as well as printing it: 12-regression.ps1 now
+                // emits grey [SKIP] lines and a SKIP=n counter. A skipped check is NOT a
+                // passed check, so exit 0 (which only means FAIL=0) must not produce a
+                // green "all checks passed / zero leak" banner when the core config was
+                // absent (e.g. v2rayN not running) and B1 was never inspected at all.
+                var regressionOutput = new System.Collections.Concurrent.ConcurrentQueue<string>();
+                Action<string> onRegressionLine = line =>
+                {
+                    AppendLog(line);
+                    if (!string.IsNullOrEmpty(line)) regressionOutput.Enqueue(line);
+                };
+                int code = await PayloadAndRunnerService.RunPowerShellScriptAsync(regScript, args, onRegressionLine);
                 RefreshDashboard(reloadPolicy: false);
 
-                if (code == 0)
+                string regOutput = string.Join("\n", regressionOutput);
+                int skipped = 0;
+                Match skipMatch = Regex.Match(regOutput, @"SKIP=(\d+)");
+                if (skipMatch.Success) int.TryParse(skipMatch.Groups[1].Value, out skipped);
+                if (skipped == 0) skipped = Regex.Matches(regOutput, @"\[SKIP\]").Count;
+
+                bool en = LocalizationService.IsEnglish;
+                if (code == 0 && skipped == 0)
                 {
                     SetFooterStatusPill(
-                        LocalizationService.IsEnglish ? "Regression PASS (FAIL=0)" : "全项体检通过 (PASS)",
-                        LocalizationService.IsEnglish ? "All kernel leak-defense checks passed (FAIL=0)" : "健康体检全部通过 (FAIL=0)！系统处于零泄漏健康状态",
+                        en ? "Regression complete (FAIL=0)" : "体检完成 (FAIL=0)",
+                        en ? "Every executed check passed. Non-standard STUN/TURN ports (incl. udp/443) and origin-scoped direct rules remain outside this guard."
+                           : "已执行项全部通过 (FAIL=0)；本结论不覆盖非常规 STUN/TURN 端口（含 udp/443）与 origin-scoped 直连规则，详见控制台",
                         StatusTone.Success);
                     await ShowNativeAlertAsync(
-                        "健康体检全部通过",
-                        "全链路内核防泄漏体检全部通过 (FAIL=0)！\n\nWindows 内核防火墙、WFP 过滤层、DNS 防泄漏与防篡改规则均处于健康状态。",
-                        okText: "完成",
+                        en ? "Regression complete" : "全链路体检完成",
+                        en ? "Every executed kernel leak-defense check passed (FAIL=0).\n\nThis result does not cover non-standard STUN/TURN ports (including udp/443) or origin-scoped direct rules. See the console for the full report and caveats."
+                           : "全链路内核防泄漏体检的已执行项全部通过 (FAIL=0)。\n\n本结论不覆盖非常规 STUN/TURN 端口（含 udp/443）与 origin-scoped 直连规则；完整报告与 caveat 披露见下方实时控制台。",
+                        okText: en ? "Done" : "完成",
                         isSuccess: true,
-                        subtitle: "零泄漏健康验证");
+                        subtitle: en ? "Regression report / FAIL=0" : "体检报告 / FAIL=0");
+                }
+                else if (code == 0)
+                {
+                    // Deliberately NOT a success tone: no failure does not mean full coverage.
+                    SetFooterStatusPill(
+                        en ? $"Completed, {skipped} check(s) skipped" : $"体检完成，{skipped} 项未执行",
+                        en ? $"{skipped} check(s) did not run, so they are not verified. A typical cause is v2rayN not running (B1 core routing table absent)."
+                           : $"有 {skipped} 项检查未执行，因此未获验证；常见原因是 v2rayN 未运行导致 B1 核心路由表不存在。详见控制台的 [SKIP] 行",
+                        StatusTone.Warning);
+                    await ShowNativeAlertAsync(
+                        en ? "Completed with skipped checks" : "体检完成（存在跳过项）",
+                        en ? $"No check failed (FAIL=0), but {skipped} check(s) were skipped and were NOT verified.\n\nA skipped check is not a passed check. Open the console for the [SKIP] lines; if B1 was skipped, start v2rayN and run the regression again."
+                           : $"本次体检没有失败项 (FAIL=0)，但有 {skipped} 项检查未执行（未获验证）。\n\n跳过不等于通过。请在下方控制台查看 [SKIP] 行；若 B1 被跳过，请先启动 v2rayN 再重跑体检。",
+                        okText: en ? "View console" : "查看控制台",
+                        isSuccess: false,
+                        subtitle: en ? "Incomplete verification" : "验证不完整");
                 }
                 else
                 {
                     SetFooterStatusPill(
-                        LocalizationService.IsEnglish ? $"Checks failed (exit={code})" : $"体检有未通过项 ({code})",
-                        LocalizationService.IsEnglish ? $"Regression found failures (exit={code}). Check console." : $"健康体检发现未通过项 (exit={code})，请查看控制台输出",
+                        en ? $"Checks failed (exit={code})" : $"体检有未通过项 ({code})",
+                        en ? $"Regression found failures (exit={code}). Check console." : $"健康体检发现未通过项 (exit={code})，请查看控制台输出",
                         StatusTone.Danger);
                     await ShowNativeAlertAsync(
-                        "健康体检报告",
-                        $"全链路体检检测到未通过项 (exit={code})。\n\n请在下方实时控制台中查看具体的未通过项目与诊断建议。",
-                        okText: "查看日志",
+                        en ? "Regression report" : "健康体检报告",
+                        en ? $"The regression found failing checks (exit={code}).\n\nSee the console below for the failed items and their remediation hints."
+                           : $"全链路体检检测到未通过项 (exit={code})。\n\n请在下方实时控制台中查看具体的未通过项目与诊断建议。",
+                        okText: en ? "View log" : "查看日志",
                         isSuccess: false,
-                        subtitle: "健康体检报告");
+                        subtitle: en ? "Regression report" : "健康体检报告");
                 }
             }
             catch (Exception ex)

@@ -1,6 +1,6 @@
 # AI-Net-Guard 仓库结构说明（Repository Layout）
 
-> 适用版本：v5.8.5 及之后。本文只描述**目录职责与边界**，不重复 [`README.md`](../README.md) 的功能介绍和 [`CURRENT-IMPLEMENTATION.md`](../CURRENT-IMPLEMENTATION.md) 的实现复盘。
+> 适用版本：v5.8.6 及之后。本文只描述**目录职责与边界**，不重复 [`README.md`](../README.md) 的功能介绍和 [`CURRENT-IMPLEMENTATION.md`](../CURRENT-IMPLEMENTATION.md) 的实现复盘。
 
 ## 1. 一句话分区
 
@@ -82,5 +82,6 @@ git tag v5.8.x ─> .github/workflows/release-exe.yml ─> GitHub Release（自�
 | [`docs/releases/v5.8.3.md`](releases/v5.8.3.md) | v5.8.3 发布说明（B1 漂移检测、端口单一定义、构建门禁） |
 | [`docs/releases/v5.8.4.md`](releases/v5.8.4.md) | v5.8.4 发布说明（第三方 review 复核与修复、B1 纳入全量体检、UTF-8 无 BOM 缓存、卸载闭环、门禁 19 项） |
 | [`docs/releases/v5.8.5.md`](releases/v5.8.5.md) | v5.8.5 发布说明（SKIP 归因修正、`protocol` 判定补全、路径兜底对齐、门禁 21 项、发布收尾） |
+| [`docs/releases/v5.8.6.md`](releases/v5.8.6.md) | v5.8.6 发布说明（GUI 跳过项三态归因、`ip` fall-through 与 `attrs` 判定、去除绝对化健康结论、门禁 24 项） |
 
 `dist/release-notes-v*.md` 是同样内容的工作副本，发版前需核对两者哈希一致；**以 `docs/releases/` 为权威来源**。

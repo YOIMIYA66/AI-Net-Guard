@@ -172,22 +172,24 @@ function Get-StunRuleVerdict {
     }
 
     # ip cannot be disproven cheaply: geoip:cn really does contain the mainland STUN hosts,
-    # so a preceding direct rule pinned to it would swallow them.
+    # so a preceding direct rule pinned ONLY to it is a full shadow. But an ip rule that
+    # also carries process / protocol / attrs fires only for that subset, so do not return
+    # here - let the narrowing loop below refine the verdict. Returning early used to turn
+    # 'ip + process' into a false SHADOWED alarm, the same bug pattern as the old
+    # inboundTag early return.
     if ($Rule.PSObject.Properties.Name -contains 'ip') {
         $res.Kind = 'matches'
         $res.Why = 'ip rule may contain the STUN destinations'
-        return $res
     }
 
-    # Process / user / source / protocol narrowing: the rule fires only for some origins
-    # or some sniffed protocols. It cannot swallow STUN from an arbitrary application,
-    # but it is also not harmless - traffic from that origin bypasses the guard, so it is
-    # surfaced rather than filtered out. 'protocol' matches a sniffing result (http/tls/
-    # bittorrent/...); a UDP STUN datagram is normally not one of those, but sniffing
-    # outcomes cannot be proven from config.json alone, so a protocol-scoped preceding
-    # rule is a caveat, never a proven 'matches' shadow. Leaving it out of this loop used
-    # to turn such a rule into a false SHADOWED alarm.
-    foreach ($k in @('process', 'user', 'source', 'sourcePort', 'localIP', 'localPort', 'protocol')) {
+    # Origin / sniffing / attribute narrowing: the rule fires only for some origins, some
+    # sniffed protocols, or some custom attributes. It cannot swallow STUN from an
+    # arbitrary application, but it is also not harmless - traffic from that origin
+    # bypasses the guard, so it is surfaced as a caveat rather than filtered out.
+    # 'protocol' matches a sniffing result (http/tls/bittorrent/...); 'attrs' is Xray's
+    # custom attribute match. Neither can be proven absent from a UDP STUN datagram using
+    # config.json alone, so such rules are never a proven 'matches' shadow.
+    foreach ($k in @('process', 'user', 'source', 'sourcePort', 'localIP', 'localPort', 'protocol', 'attrs')) {
         if ($Rule.PSObject.Properties.Name -contains $k) {
             $res.Kind = 'restricted'
             $res.Why = 'scoped by ' + $k + ' (' + ((@($Rule.$k) | ForEach-Object { [string]$_ }) -join '|') + ')'

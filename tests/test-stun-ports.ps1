@@ -25,7 +25,12 @@
       9. the regression suite actually checks B1 and the GUI no longer hard-codes a
          check count that goes stale the moment a new check is added;
      10. a skipped regression check is counted as SKIP, never as a PASS;
-     11. a protocol-scoped preceding rule is a caveat, never a false SHADOWED.
+     11. a protocol-scoped preceding rule is a caveat, never a false SHADOWED;
+     12. an ip rule narrowed by process / protocol is a caveat, while ip alone is still
+         a full shadow (the ip branch must not return before the narrowing loop);
+     13. an attrs-scoped rule agrees with StunNarrowingKeys and is a caveat;
+     14. the GUI captures SKIP=n, shows a warning tone for skipped checks, and never
+         claims an absolute zero-leak clean bill of health.
 
     Exit code 0 when every assertion passes, 1 otherwise. Run by gui\build.ps1 so a
     local copy can never reach a release.
@@ -168,7 +173,9 @@ Assert-True '09-rollback.ps1 points at 18 -Restore for the core routing table' `
 $reg = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') '12-regression.ps1') -Raw
 Assert-True '12-regression.ps1 checks B1 through the shared analysis' `
     (($reg -match "Check 'B1 STUN route guard") -and ($reg -match 'Get-StunGuardAnalysis'))
-$gui = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'gui') 'MainWindow.xaml.cs') -Raw
+# Read as UTF-8 so checks against CJK UI strings compare real characters instead of
+# mojibake: PowerShell 5.1 defaults to the ANSI code page for BOM-less files.
+$gui = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'gui') 'MainWindow.xaml.cs') -Raw -Encoding UTF8
 $xaml = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'gui') 'MainWindow.xaml') -Raw
 $loc = Get-Content -LiteralPath (Join-Path (Join-Path (Join-Path $repo 'gui') 'Services') 'LocalizationService.cs') -Raw
 $rd = Get-Content -LiteralPath (Join-Path $repo 'README.md') -Raw
@@ -196,6 +203,40 @@ $proto = [pscustomobject]@{ inboundTag = @('tun-in'); protocol = @('bittorrent')
 $v4 = Get-StunRuleVerdict $proto $tunTags $expected
 Assert-True 'protocol-scoped rule is restricted, not a full shadow' `
     ($v4.Kind -eq 'restricted') ('got ' + $v4.Kind + ' : ' + $v4.Why)
+
+# ---------------------------------------------------------------- 12. ip + narrowing is still a caveat
+# The ip branch used to 'return matches' BEFORE the narrowing loop, so a preceding rule
+# pinned to both geoip:cn and one process was reported as a full SHADOWED. ip alone must
+# stay a full shadow; ip + process / ip + protocol must become a scoped caveat.
+$ipOnly  = [pscustomobject]@{ ip = @('geoip:cn') }
+$ipProc  = [pscustomobject]@{ ip = @('geoip:cn'); process = @('curl.exe') }
+$ipProto = [pscustomobject]@{ ip = @('geoip:cn'); protocol = @('bittorrent') }
+$v5 = Get-StunRuleVerdict $ipOnly  $tunTags $expected
+$v6 = Get-StunRuleVerdict $ipProc  $tunTags $expected
+$v7 = Get-StunRuleVerdict $ipProto $tunTags $expected
+Assert-True 'ip alone is a shadow, but ip + narrowing field is a caveat' `
+    (($v5.Kind -eq 'matches') -and ($v6.Kind -eq 'restricted') -and ($v7.Kind -eq 'restricted')) `
+    ('got ip=' + $v5.Kind + ' ip+process=' + $v6.Kind + ' ip+protocol=' + $v7.Kind)
+
+# ---------------------------------------------------------------- 13. attrs is a narrowing key
+# StunNarrowingKeys already lists 'attrs', so a rule carrying it can never be a B1 guard
+# rule. The verdict must agree: an attrs-scoped preceding rule is a caveat, not a shadow.
+$attrsRule = [pscustomobject]@{ attrs = @{ ':method' = 'GET' } }
+$v8 = Get-StunRuleVerdict $attrsRule $tunTags $expected
+Assert-True 'attrs-scoped rule is restricted, consistent with StunNarrowingKeys' `
+    ($v8.Kind -eq 'restricted') ('got ' + $v8.Kind + ' : ' + $v8.Why)
+
+# ---------------------------------------------------------------- 14. GUI honours SKIP, avoids absolute claims
+# 12-regression.ps1 may exit 0 with skipped checks. The GUI used to treat exit 0 as an
+# unconditional "all checks passed / zero leak" success. It must capture SKIP=n, use a
+# warning tone when checks were skipped, and drop the absolute zero-leak wording that
+# contradicts the PASSED WITH CAVEAT acceptance verdict.
+$absZeroLeak = -join ([char[]]@(0x96F6, 0x6CC4, 0x6F0F, 0x5065, 0x5EB7))
+Assert-True 'GUI captures SKIP and no longer claims an absolute zero-leak result' `
+    (($gui.Contains('SKIP=(\d+)')) -and ($gui.Contains('[SKIP]')) -and `
+     ($gui.Contains('StatusTone.Warning')) -and ($gui.Contains('Incomplete verification')) -and `
+     (-not $gui.Contains('Regression PASS (FAIL=0)')) -and (-not $gui.Contains($absZeroLeak))) `
+    'SKIP capture, warning tone and no absolute zero-leak wording are all required'
 
 Write-Host ' '
 if ($script:fail -gt 0) {

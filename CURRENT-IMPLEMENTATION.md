@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.8.5 · SKIP 归因修正 + protocol 遮蔽判定补全 + 发布收尾）
+# AI-Net-Guard 实现方案与持续审查文档（v5.8.6 · GUI 跳过项归因 + ip/attrs 遮蔽判定补全 + 有限结论口径）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.8.5 正式版**（v5.8.4 全部内容 + 体检 `SKIP` 不再计为 `PASS`、`Get-StunRuleVerdict` 补齐 `protocol` 判定、`12` 的 v2rayN 路径候选与 `07` / `18` 对齐、构建门禁扩至 21 条、v5.8.4 发布说明与仓库文档收尾，详见 16.11）
+> 版本状态：**v5.8.6 正式版**（v5.8.5 全部内容 + GUI 识别 `[SKIP]` 并改用 Warning 中性格、`ip` 分支改为 fall-through 且收敛循环补 `attrs`、成功态去除「零泄漏健康状态」绝对化措辞、门禁扩至 24 条，详见 16.12）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -567,7 +567,7 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 
 #### 16.9.3 P1：回归门禁进构建，且测试脚本不进发行物
 
-新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11）。）
+新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12）。）
 
 #### 16.9.4 第二轮 review 修掉的 6 处
 
@@ -680,3 +680,47 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 4. **生产目录需重新同步**：`13-harden-acl.ps1 -SyncWorkspace` 只同步 `scripts\*.ps1`；在用户提权同步前，`C:\AI-Net-Guard` 实机跑的仍是 v5.8.4 脚本。
 5. **已发布的 v5.8.4 资产未改动**：Release body 仅做事实还原，4 个资产 digest 全部未变；v5.8.4 exe 内嵌的 README / 实现文档是收尾前文案，属文档级差异，不影响运行。
 6. **未改的同类 follow-up**：`09-rollback.ps1` 的 `Log` 仍用 `Add-Content -Encoding ASCII`，本地化日志文本会变 `?`；本版新增提示全为 ASCII，不受影响。
+
+---
+
+### 16.12 v5.8.6：GUI 跳过项归因与遮蔽判定同类缺口（2026-11-23）
+
+发版后终审发现 v5.8.5 有三处「修了一半」的痕迹，本版一并收口。**防护范围、12 端口 udp+tcp 阻断、WFP 规则、核心路由表 B1 写入逻辑与 `PASSED WITH CAVEAT` 三段披露全部未变。**
+
+#### 16.12.1 GUI 成功态不再越权宣称「全项通过 / 零泄漏」
+
+`MainWindow.xaml.cs` 的 `RegressionBtn_Click` 原本只判 `code == 0`。而 `12-regression.ps1` 在 B1 被跳过时 `exit` 仍是 0，于是 **v5.8.5 发布说明里列为症状的「GUI 弹出全项体检通过」实际并未消除**：绿色 pill、弹窗「系统处于零泄漏健康状态」、副标题「零泄漏健康验证」原样保留，与项目自 v5.8.2 起「不得绝对化归因」的口径冲突。
+
+本版在输出回调里同步捕获控制台流（`ConcurrentQueue<string>`，不阻塞 UI 线程），用 `SKIP=(\d+)` 读取结果行的跳过数，缺结果行时退回统计 `[SKIP]` 行数，形成三态：
+
+| 条件 | pill / 弹窗 | 色调 |
+| :--- | :--- | :--- |
+| `code == 0 && skipped == 0` | 「体检完成 (FAIL=0)」，正文显式说明**不覆盖**非常规 STUN/TURN 端口（含 udp/443）与 origin-scoped 直连规则 | `Success` |
+| `code == 0 && skipped > 0` | 「体检完成，N 项未执行」，明确「跳过不等于通过」，提示 v2rayN 未运行时先启动再重跑 | `Warning` |
+| `code != 0` | 「体检有未通过项」，指向控制台 | `Danger` |
+
+**`12` 的 exit code 语义未动**，因此 v5.8.5 发布说明所称「与既有 GUI 判定兼容」仍然成立，变化只在展示层。顺带把「成功 / 跳过 / 失败」三支弹窗的标题、正文、按钮、副标题全部改为中英双语，修掉英文模式下弹中文的本地化缺口。
+
+#### 16.12.2 `ip` 早返回与 `attrs` 漏判（与 16.11 同一模式）
+
+`Get-StunRuleVerdict()` 里 `ip` 分支在收敛循环**之前**就 `return matches`，而 `StunNarrowingKeys` 早已收录 `attrs`、收敛循环却没查它。行为探针实测：`ip + process`、`ip + protocol`、`attrs only` 三种形状都被判成 `matches`（假 `SHADOWED`），与 16.11 刚修的 `inboundTag` 早返回 / `protocol` 漏判是同一个 bug 模式。
+
+修法：`ip` 分支只设置 `matches` 初判、**不再 return**，让后续收敛循环继续判定；循环补入 `attrs`。因此 `ip` 单独仍是完整遮蔽（保守），`ip + 收敛字段` 变成 `restricted`（caveat），符合「无法证明排除就显式披露」的既定口径。
+
+#### 16.12.3 门禁与验证
+
+| 项目 | 结果 |
+| :--- | :--- |
+| `tests\test-stun-ports.ps1` | 21 → **24 条**，24/24 PASS（新增 `ip`+收敛、`attrs`、GUI 归因三条） |
+| 断言有效性 | 对第 14 条做**负向变异测试**：把旧「零泄漏健康」文案塞回内存副本后断言变 `False`，确认不是编码导致的假通过；同时把 `$gui` 读取显式改为 `-Encoding UTF8`，避免 PS 5.1 按 ANSI 读中文产生乱码 |
+| 规则形状探针 | 8 种：`ip only → matches`；`ip+process / ip+protocol / attrs / protocol / inboundTag+process → restricted`；`inboundTag only → matches`；非 TUN inbound `→ excluded` |
+| 真实核心配置 | `present / index=5 / shadow=0 / caveat=1 / preceding=3`，与 v5.8.5 一致，**未漂移** |
+| `gui\build.ps1 -RunSmokeTest` | 发版前统一验证：ASCII/AST 门禁、24/24 断言、payload 打包、WPF 编译、8 项冒烟；结果见 `docs/releases/v5.8.6.md` |
+
+#### 16.12.4 边界与未完成（如实披露）
+
+1. **本版仍未实跑 `12-regression.ps1` 全量体检**：需提权 + 10 秒 `pktmon` + 临时 WFP 导出。`PASS=27 FAIL=0` 是 v5.8.4 改动前的实机结果；本版靠门禁、行为探针、负向变异测试与配置级探针验证新增逻辑。生产同步后建议由用户在提权 PowerShell 里真机跑一次。
+2. **GUI 三态只读取脚本输出，不改写脚本结论**：若输出格式未来变化，`SKIP=n` 解析会退回 `[SKIP]` 行计数；两者都缺失时回到「体检完成 (FAIL=0)」。第 14 条门禁断言约束这段代码不得回退。
+3. **生产目录 `C:\AI-Net-Guard` 需提权同步**：本版真实逻辑差异集中在 `lib-stun-guard.ps1` 与 GUI exe；`12-regression.ps1` 的 SKIP 计数自 v5.8.5 起尚未在生产真机跑过。
+4. **未改的 follow-up**：`09-rollback.ps1` 的 `Log` 仍用 `Add-Content -Encoding ASCII`，本地化日志文本会变 `?`。
+5. **防护范围未变**：仍是 12 端口 udp+tcp，`udp/443` 与 origin-scoped direct 的 caveat 保持；`-Apply` / `-Restore` 一律人工，B1 不自动修复。
