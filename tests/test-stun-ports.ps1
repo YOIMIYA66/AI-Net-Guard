@@ -23,7 +23,9 @@
       7. the B1 verdict cache is UTF-8 without BOM on BOTH read and write;
       8. the uninstaller tells the operator to restore the core routing table;
       9. the regression suite actually checks B1 and the GUI no longer hard-codes a
-         check count that goes stale the moment a new check is added.
+         check count that goes stale the moment a new check is added;
+     10. a skipped regression check is counted as SKIP, never as a PASS;
+     11. a protocol-scoped preceding rule is a caveat, never a false SHADOWED.
 
     Exit code 0 when every assertion passes, 1 otherwise. Run by gui\build.ps1 so a
     local copy can never reach a release.
@@ -168,9 +170,32 @@ Assert-True '12-regression.ps1 checks B1 through the shared analysis' `
     (($reg -match "Check 'B1 STUN route guard") -and ($reg -match 'Get-StunGuardAnalysis'))
 $gui = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'gui') 'MainWindow.xaml.cs') -Raw
 $xaml = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'gui') 'MainWindow.xaml') -Raw
+$loc = Get-Content -LiteralPath (Join-Path (Join-Path (Join-Path $repo 'gui') 'Services') 'LocalizationService.cs') -Raw
+$rd = Get-Content -LiteralPath (Join-Path $repo 'README.md') -Raw
+$rde = Get-Content -LiteralPath (Join-Path $repo 'README_EN.md') -Raw
 # The check count is dynamic (loop-generated checks), so no UI string may hard-code it.
-Assert-True 'GUI no longer hard-codes a regression check count' `
-    (($gui -notmatch '24/24|24-check|All 24 |24\s*\u9879') -and ($xaml -notmatch '24\s*\u9879'))
+# Cover EVERY surface that once displayed '24': code-behind, XAML, both locale
+# dictionaries and both READMEs. A stale number can creep back through any one of them.
+$noCount = '24/24|24-check|All 24 |Full Regression \(24\)|24\s*\u9879'
+Assert-True 'GUI and docs no longer hard-code a regression check count' `
+    (($gui -notmatch $noCount) -and ($xaml -notmatch $noCount) -and ($loc -notmatch $noCount) -and ($rd -notmatch $noCount) -and ($rde -notmatch $noCount))
+
+# ---------------------------------------------------------------- 10. a SKIP is not a PASS
+# 12-regression.ps1 used to count every string-returning Check as a PASS, so a B1 check
+# that returned 'SKIP - core config not generated' still produced a green [PASS] line and
+# a FAIL=0 banner. It must now keep a separate SKIP counter and print [SKIP] instead.
+Assert-True '12-regression.ps1 counts SKIP separately instead of as a PASS' `
+    (($reg -match '\$script:skip\+\+') -and ($reg -match "StartsWith\('SKIP'\)") -and ($reg -match '\[SKIP\]')) `
+    'SKIP counter / opt-out branch / grey [SKIP] line must all be present'
+
+# ---------------------------------------------------------------- 11. protocol is a caveat, not a shadow
+# Xray routing rules may carry a sniffing-result 'protocol' field. A STUN datagram is not
+# http/tls/bittorrent, but sniffing outcomes cannot be proven from config.json, so such a
+# rule must be surfaced as 'restricted' rather than reported as a full SHADOWED.
+$proto = [pscustomobject]@{ inboundTag = @('tun-in'); protocol = @('bittorrent') }
+$v4 = Get-StunRuleVerdict $proto $tunTags $expected
+Assert-True 'protocol-scoped rule is restricted, not a full shadow' `
+    ($v4.Kind -eq 'restricted') ('got ' + $v4.Kind + ' : ' + $v4.Why)
 
 Write-Host ' '
 if ($script:fail -gt 0) {

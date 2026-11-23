@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.4 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
+    AI-Net-Guard v5.8.5 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
 
 .DESCRIPTION
     Verifies the v5.4 static guard end-to-end. Read-only, except for a temporary
@@ -91,7 +91,11 @@ if (-not $PSBoundParameters.ContainsKey('DnsServer')) {
 if (-not $V2rayNRoot) {
     if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
     else {
-        foreach ($cand in @('C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
+        # Keep this list in sync with 07-mode.ps1 and the default -V2rayNRoot of
+        # 18-route-stun-guard.ps1. Without the -desktop paths, a missing or archived
+        # guard-policy.json points the B1 check at a config.json that does not exist,
+        # which quietly degrades the guard check into a SKIP even though v2rayN is up.
+        foreach ($cand in @('D:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64-desktop', 'C:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
             if ($cand -and ((Test-Path -LiteralPath (Join-Path $cand 'v2rayN.exe')) -or (Test-Path -LiteralPath (Join-Path $cand 'binConfigs')))) { $V2rayNRoot = $cand; break }
         }
         if (-not $V2rayNRoot) { try { $vp = [System.Diagnostics.Process]::GetProcessesByName('v2rayN'); if ($vp.Length -gt 0 -and $vp[0].MainModule.FileName) { $V2rayNRoot = Split-Path -Parent $vp[0].MainModule.FileName } } catch { } }
@@ -135,6 +139,7 @@ if (-not $stunLibMissing) {
 
 $script:pass = 0
 $script:fail = 0
+$script:skip = 0
 $knownTunNames = @($TunName, 'xray_tun', 'singbox_tun', 'mihomo_tun', 'Meta', 'Mihomo') | Select-Object -Unique
 
 function W($t) {
@@ -146,6 +151,18 @@ function Check($name, [scriptblock]$body) {
     try {
         $r = & $body
         if ($r -is [bool] -and -not $r) { throw 'assertion returned false' }
+        # A body may opt out by returning a string starting with 'SKIP'. That is NEITHER
+        # a pass nor a failure: the check did not run. Counting it as PASS used to let the
+        # suite (and the GUI's FAIL=0 banner) claim a clean bill of health for a guard
+        # that was never inspected. B1 uses this when v2rayN is down and no core routing
+        # table exists yet - a legal fail-closed state, but not a verified one.
+        if ($r -is [string] -and $r.StartsWith('SKIP')) {
+            $script:skip++
+            $line = ('  [SKIP] ' + $name + ' : ' + $r.Substring(4).TrimStart(' ', '-'))
+            Write-Host $line -ForegroundColor DarkGray
+            $line | Add-Content -LiteralPath $script:log -Encoding UTF8
+            return
+        }
         $script:pass++
         $detail = ''
         if ($null -ne $r -and $r -isnot [bool]) { $detail = [string]$r }
@@ -265,7 +282,7 @@ function Get-ConfiguredNodeInfo {
     }
 }
 
-W ('=== AI-Net-Guard v5.8.4 regression ' + (Get-Date -Format 'o') + ' ===')
+W ('=== AI-Net-Guard v5.8.5 regression ' + (Get-Date -Format 'o') + ' ===')
 function Get-ActiveIpPhysicalNics {
     @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
         $_.OperationalStatus -eq 'Up' -and
@@ -867,6 +884,6 @@ if ($MaxReports -gt 0) {
 
 # ---------------------------------------------------------------- summary
 W ''
-W ('=== RESULT: PASS=' + $script:pass + ' FAIL=' + $script:fail + ' ===')
+W ('=== RESULT: PASS=' + $script:pass + ' FAIL=' + $script:fail + $(if ($script:skip -gt 0) { ' SKIP=' + $script:skip } else { '' }) + ' ===')
 Write-Host ('regression report: ' + $script:log) -ForegroundColor Cyan
 exit $(if ($script:fail -gt 0) { 1 } else { 0 })

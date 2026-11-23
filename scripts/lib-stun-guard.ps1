@@ -1,9 +1,9 @@
 # AI-Net-Guard - shared STUN/TURN guard validation (pure ASCII)
 #
-# One implementation, dot-sourced by both 18-route-stun-guard.ps1 and
-# verify-leak-test.ps1. Two copies of this logic is how the two scripts end up telling
-# different stories about the same file: 18 said "SHADOWED" while the acceptance test
-# said "PASS", and the operator has no way to tell which one to believe.
+# One implementation, dot-sourced by 02 / 07 / 12 / 14 / 15 / 18 and
+# verify-leak-test.ps1 (seven consumers). Two copies of this logic is how two scripts
+# end up telling different stories about the same file: 18 said "SHADOWED" while the
+# acceptance test said "PASS", and the operator has no way to tell which to believe.
 #
 # Two questions are answered here, and they are different questions:
 #
@@ -179,10 +179,15 @@ function Get-StunRuleVerdict {
         return $res
     }
 
-    # Process / user / source narrowing: the rule fires only for some origins. It cannot
-    # swallow STUN from an arbitrary application, but it is also not harmless - traffic
-    # from that origin bypasses the guard, so it is surfaced rather than filtered out.
-    foreach ($k in @('process', 'user', 'source', 'sourcePort', 'localIP', 'localPort')) {
+    # Process / user / source / protocol narrowing: the rule fires only for some origins
+    # or some sniffed protocols. It cannot swallow STUN from an arbitrary application,
+    # but it is also not harmless - traffic from that origin bypasses the guard, so it is
+    # surfaced rather than filtered out. 'protocol' matches a sniffing result (http/tls/
+    # bittorrent/...); a UDP STUN datagram is normally not one of those, but sniffing
+    # outcomes cannot be proven from config.json alone, so a protocol-scoped preceding
+    # rule is a caveat, never a proven 'matches' shadow. Leaving it out of this loop used
+    # to turn such a rule into a false SHADOWED alarm.
+    foreach ($k in @('process', 'user', 'source', 'sourcePort', 'localIP', 'localPort', 'protocol')) {
         if ($Rule.PSObject.Properties.Name -contains $k) {
             $res.Kind = 'restricted'
             $res.Why = 'scoped by ' + $k + ' (' + ((@($Rule.$k) | ForEach-Object { [string]$_ }) -join '|') + ')'

@@ -394,7 +394,7 @@ To whitelist specific developer tools or custom daemons from anti-drift quaranti
 | [`scripts/align-xray-egress.bat`](./scripts/align-xray-egress.bat) | Injects `/32` physical host route to eliminate dual-core double-hop relay overhead |
 | [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | Disables Windows 11 telemetry services (`DiagTrack`) to prevent foreign IP `connectex 10013` errors |
 | [`gui/`](./gui) | Native C# WPF desktop configurator project (`net48`, embeds payload archive and UAC manifest) |
-| [`scripts/lib-stun-guard.ps1`](./scripts/lib-stun-guard.ps1) | Shared guard-analysis library **and the single definition of the 12-port STUN/TURN set**; dot-sourced by `02` / `07` / `14` / `15` / `18` / `verify-leak-test`. A missing library is a hard stop, never a fallback to a local literal |
+| [`scripts/lib-stun-guard.ps1`](./scripts/lib-stun-guard.ps1) | Shared guard-analysis library **and the single definition of the 12-port STUN/TURN set**; dot-sourced by `02` / `07` / `12` / `14` / `15` / `18` / `verify-leak-test` (7 consumers). A missing library is a hard stop, never a fallback to a local literal |
 | [`scripts/verify-leak-test.ps1`](./scripts/verify-leak-test.ps1) | End-to-end leak & connectivity acceptance; reports `PASSED WITH CAVEAT` (silence alone does not prove a core-side drop; udp/443 is outside the 12-port guard) |
 | [`gui/build.ps1`](./gui/build.ps1) | Build gate: ASCII + AST checks, `tests/` regression, payload packing, exe compile, optional GUI smoke test |
 | [`tests/test-stun-ports.ps1`](./tests/test-stun-ports.ps1) | Build-time assertions for the single port set, consumer ordering, B1 verdict shape, cache codec and regression coverage; gate-only, **never packed** into `payload.zip` |

@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.8.4 · B1 路由守卫全链路体检 + UTF-8 缓存防破损 + 卸载闭环与 Review 修复）
+# AI-Net-Guard 实现方案与持续审查文档（v5.8.5 · SKIP 归因修正 + protocol 遮蔽判定补全 + 发布收尾）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.8.4 正式版**（v5.8.3 全部内容 + 第三方 review 4 项复核与修复：`lib-stun-guard` 移除 `inboundTag` 早返回消除假阳性、`07-mode` 缓存读写成对改为 UTF-8 无 BOM、`09-rollback` 提示手动还原 v2rayN 路由、`12-regression` 新增 B1 路由守卫体检项并清除 GUI/文档硬编码检查数、门禁扩充至 19 项、实机 27 项全绿通过，详见 16.10）
+> 版本状态：**v5.8.5 正式版**（v5.8.4 全部内容 + 体检 `SKIP` 不再计为 `PASS`、`Get-StunRuleVerdict` 补齐 `protocol` 判定、`12` 的 v2rayN 路径候选与 `07` / `18` 对齐、构建门禁扩至 21 条、v5.8.4 发布说明与仓库文档收尾，详见 16.11）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -271,7 +271,7 @@ v5.5 在底层 WFP 静态防护与零驻留自愈内核之上，引入了**纯 W
 3. **桌面一键运维与安全防篡改**：
    - 顶部提供 `v2rayN` 路径自动探测与配置校验徽章；
    - 自动检测并提供 **「一键关闭系统代理」**（`HKCU` WinINET `ProxyEnable=0` + `InternetSetOption` 实时刷新），实现仅通过 `v2rayN` 的「启用 Tun」单开关控制全局分流；
-   - 底部集成 **「一键部署」**、**「一键 24 项健康体检」**、**「一键完整卸载回滚」** 及可折叠的实时流式输出控制台。
+   - 底部集成 **「一键部署」**、**「一键全量健康体检」**、**「一键完整卸载回滚」** 及可折叠的实时流式输出控制台。
 
 ---
 
@@ -567,7 +567,7 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 
 #### 16.9.3 P1：回归门禁进构建，且测试脚本不进发行物
 
-新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。
+新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11）。）
 
 #### 16.9.4 第二轮 review 修掉的 6 处
 
@@ -634,7 +634,49 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 #### 16.10.5 边界与说明
 
 1. **实机回归通过**：已在 Windows 11 管理员权限下实际运行 `12-regression.ps1`，真实环境观测到 `PASS=27 FAIL=0`，证实 B1 检查项在动态网卡及核心路由联动下的健壮性。
-2. **生产目录已同步**：已通过 `13-harden-acl.ps1 -SyncWorkspace` 同步全部 29 个脚本至 `C:\AI-Net-Guard`，主机生产环境已即刻生效最新逻辑。
+2. **生产目录已同步**：已通过 `13-harden-acl.ps1 -SyncWorkspace` 同步 29 个文件（26 个 `scripts\*.ps1` + 三份根目录文档）至 `C:\AI-Net-Guard`，主机生产环境已即刻生效最新逻辑。
 3. **没有自动修复**：B1 检测仍是只读；`-Apply` / `-Restore` 一律人工。
 4. **防护范围未扩大**：仍是 12 端口 udp+tcp，`udp/443` 与 origin-scoped direct 的 caveat 保持原样。
 5. **同类 follow-up（未改）**：`09-rollback.ps1` 的 `Log` 仍用 `Add-Content -Encoding ASCII` 写日志，本地化文本同样会变 `?`；修复需单独验证 PS 5.1 下 `Add-Content -Encoding UTF8` 的 BOM/追加行为，本轮新增的提示全为 ASCII，不受影响。
+
+---
+
+### 16.11 v5.8.5：发布后复核补漏与两处运行时修正（2026-11-23）
+
+> 状态说明：本节记录 v5.8.4 正式发布（tag `736a910`）之后的复核与修正。v5.8.4 的 Release 资产未改动，本节内容随 v5.8.5 发布。
+
+#### 16.11.1 发版后复核发现的三处收尾缺口
+
+| 项 | 事实 | 处理 |
+| :--- | :--- | :--- |
+| `dist/release-notes-v5.8.4.md` 缺失 | `docs/releases/` 是权威副本，dist 是 `gh release edit --notes-file` 用的工作副本；v5.8.2 / v5.8.3 两份均哈希一致，v5.8.4 漏生成 | 补出工作副本，与权威副本逐字一致 |
+| `docs/REPO-LAYOUT.md` 未 bump | 仍写"适用版本：v5.8.3 及之后"，release 索引止于 v5.8.3 | 更新适用版本并补齐 v5.8.4 / v5.8.5 索引行 |
+| 发布说明引用日志被改写 | `docs/releases/v5.8.4.md` 把 `C:\AI-Net-Guard\logs\regression-20261123-120923.txt` 首行的 `v5.8.3` 改成了 `v5.8.4`；该日志采于版本号 bump 之前 | 还原原始版本号，加"采于 bump 前、代码一致仅展示串不同"的归因说明，并同步更新远端 Release body |
+
+另外修正 `README.md` / `README_EN.md` 中 `lib-stun-guard.ps1` 的消费方数量（6 → 7，漏了 v5.8.4 新增的 `12`），以及本文档 GUI 功能描述里的"24 项健康体检"（UI 已改为"全量回归体检"）。历史章节中的 `24/24`、`11 条断言` 是当时实测记录，保留不改。
+
+#### 16.11.2 两处运行时修正
+
+1. **`12-regression.ps1` 的 `Check()` 不再把 `SKIP` 计为 `PASS`**。原实现对任何非 bool 返回值都 `$script:pass++`；B1 检查在 `binConfigs\config.json` 不存在时返回 `SKIP - ...`，于是输出绿字 `[PASS]` 且 `FAIL=0`，GUI 弹"全项体检通过"——一个根本没被检查的守卫被算作已验证。现在 `Check()` 对以 `SKIP` 开头的返回值单独 `$script:skip++`、打印灰字 `[SKIP]`、不计入 PASS/FAIL；结果行仅在 `SKIP>0` 时追加 ` SKIP=n`，因此正常情况下仍是 `RESULT: PASS=x FAIL=y`，与既有文档和 GUI 判定兼容。复现：正常项 / SKIP 项 / 失败项各一 → `pass=1 fail=1 skip=1`。
+2. **`Get-StunRuleVerdict` 补齐 `protocol` 判定**。Xray 路由规则的 `protocol` 是 sniffing 结果匹配；`StunNarrowingKeys` 早已收录该键，但逐条求值函数没查它，带 `protocol` 的前置规则会被当成无条件 `matches` → 假 `SHADOWED`。现将其并入 `process` / `user` / `source` / … 的收敛循环，判为 `restricted`（caveat），符合"配置里无法证明排除就显式披露"，而不是擅自判定排除。当前生效配置未触发该形状，属防御性补齐。
+3. **顺带对齐路径兜底**：`12` 的 `$V2rayNRoot` 候选表原本缺少 `18` 的默认值 `D:\v2rayN-windows-64-desktop\v2rayN-windows-64`（`07` 已有）。`guard-policy.json` 一旦被回滚归档，`12` 会退回 `C:\v2rayN-windows-64` 并让 B1 检查静默退化成 SKIP。现与 `07` 保持一致。
+
+#### 16.11.3 门禁与验证
+
+| 项目 | 结果 |
+| :--- | :--- |
+| `tests\test-stun-ports.ps1` | 19 → **21 条**，21/21 PASS，exit 0（新增 SKIP 计数断言、`protocol` 形状断言） |
+| `Check()` 语义复现 | 正常 / SKIP / 失败三例 → `pass=1 fail=1 skip=1`，结果行 `PASS=1 FAIL=1 SKIP=1` |
+| 门禁第 9 条覆盖面 | 从 `MainWindow.xaml.cs` + `MainWindow.xaml` 扩到 5 个面（+ `LocalizationService.cs`、双 README），防止硬编码检查数从本地化字典或文档回流 |
+| 真实核心配置复验 | `present / index=5 / shadow=0 / caveat=1`，与 v5.8.4 一致；四种规则形状判定见 16.11.2 |
+| `gui\build.ps1 -RunSmokeTest` | exit 0；28 脚本纯 ASCII + 0 语法错；门禁 21/21；payload 38 文件 310.4 KB；编译 0 警告；冒烟 8 项 PASS；`tests\` 未打包 |
+| `git diff --check` | 干净；改动的 3 个 `.ps1` 全部纯 ASCII |
+
+#### 16.11.4 边界与未完成（如实披露）
+
+1. **本版没有实跑 `12-regression.ps1` 全量体检**：它含 10 秒 `pktmon` 抓包、临时 WFP 导出与 geo 文件写入，需提权且有系统副作用。v5.8.4 的 `PASS=27 FAIL=0` 是改动前的实机结果；本版用构建门禁、逻辑等价复现与配置级形状探针验证新增逻辑，**不等同于整份体检在 v5.8.5 真机跑过**。
+2. **防护范围未变**：仍是 12 端口 udp+tcp，`udp/443` 与 origin-scoped direct 的 caveat 保持；`PASSED WITH CAVEAT` 三段披露逐字未动。
+3. **检测仍只读**：`-Apply` / `-Restore` 一律人工，B1 不自动修复。
+4. **生产目录需重新同步**：`13-harden-acl.ps1 -SyncWorkspace` 只同步 `scripts\*.ps1`；在用户提权同步前，`C:\AI-Net-Guard` 实机跑的仍是 v5.8.4 脚本。
+5. **已发布的 v5.8.4 资产未改动**：Release body 仅做事实还原，4 个资产 digest 全部未变；v5.8.4 exe 内嵌的 README / 实现文档是收尾前文案，属文档级差异，不影响运行。
+6. **未改的同类 follow-up**：`09-rollback.ps1` 的 `Log` 仍用 `Add-Content -Encoding ASCII`，本地化日志文本会变 `?`；本版新增提示全为 ASCII，不受影响。
