@@ -161,11 +161,14 @@ function Get-StunRuleVerdict {
             $res.Why = 'inboundTag ' + ($tags -join '|') + ' is not the TUN inbound (' + ($TunTags -join '|') + ')'
             return $res
         }
-        if ($Expected.Count -gt 0) {
-            $res.Kind = 'matches'
-            $res.Why = 'inboundTag includes the TUN inbound, so it matches STUN traffic'
-            return $res
-        }
+        # Matching the TUN inbound only proves the rule is NOT excluded by its inbound.
+        # It does not prove the rule can swallow an arbitrary STUN probe: the ip test and
+        # the origin-scoped fields below still narrow it. Returning 'matches' here used to
+        # short-circuit those checks, so a direct rule pinned to inboundTag=tun AND
+        # process=curl.exe was reported as a full shadow instead of a scoped caveat -
+        # a false SHADOWED alarm on a rule that cannot hide the guard pair at all.
+        # Fall through and let the remaining fields decide.
+        $res.Why = 'inboundTag includes the TUN inbound'
     }
 
     # ip cannot be disproven cheaply: geoip:cn really does contain the mainland STUN hosts,

@@ -84,8 +84,8 @@ namespace AiNetGuard.Gui.Services
 
         private static readonly Dictionary<string, string> StringsZh = new Dictionary<string, string>
         {
-            ["AppTitle"] = "AI-Net-Guard v5.8.3 — Windows 内核级防泄漏与智能分流配置中心",
-            ["HeaderVersionBadge"] = "v5.8.3 原生桌面版",
+            ["AppTitle"] = "AI-Net-Guard v5.8.4 — Windows 内核级防泄漏与智能分流配置中心",
+            ["HeaderVersionBadge"] = "v5.8.4 原生桌面版",
             ["HeaderSubtitle"] = "Windows 内核级 WFP 失败关闭防泄漏 · 国内直连白名单 · 零内存事件自愈配置中心",
             ["RescueBtn"] = "应急脱困",
             ["RescueBtnToolTip"] = "若遇网络异常或急需上网，一键秒级重置 Windows 原生网络并解除所有内核拦截",
@@ -174,8 +174,8 @@ namespace AiNetGuard.Gui.Services
             // Bottom Actions
             ["UninstallBtn"] = "一键完整卸载",
             ["UninstallBtnToolTip"] = "完整还原 Windows 原始防火墙、DNS、IPv6 及系统计划任务",
-            ["RegressionBtn"] = "24项全量回归",
-            ["RegressionBtnToolTip"] = "运行 24 项全链路自动化防泄漏回归测试，含 10 秒实机网络抓包",
+            ["RegressionBtn"] = "全量回归体检",
+            ["RegressionBtnToolTip"] = "运行全链路自动化防泄漏回归测试，含 10 秒实机网络抓包",
             ["LeakCheckBtn"] = "极速体检 (5s)",
             ["LeakCheckBtnToolTip"] = "5秒极速检测：底层物理网卡 Socket 强绑定直接出站拦截、活跃 TUN 网卡与海外连通性",
             ["FooterHintReady"] = "就绪",
@@ -199,8 +199,8 @@ namespace AiNetGuard.Gui.Services
 
         private static readonly Dictionary<string, string> StringsEn = new Dictionary<string, string>
         {
-            ["AppTitle"] = "AI-Net-Guard v5.8.3 — Windows Kernel Leak Shield & Smart Split-Tunneling",
-            ["HeaderVersionBadge"] = "v5.8.3 Native Desktop",
+            ["AppTitle"] = "AI-Net-Guard v5.8.4 — Windows Kernel Leak Shield & Smart Split-Tunneling",
+            ["HeaderVersionBadge"] = "v5.8.4 Native Desktop",
             ["HeaderSubtitle"] = "Windows Kernel WFP Fail-Closed Leak Shield · Domestic Direct Whitelist · Zero-RAM Event-Triggered Center",
             ["RescueBtn"] = "Rescue",
             ["RescueBtnToolTip"] = "Instantly reset Windows native networking and release all kernel intercepts in an emergency",
@@ -289,8 +289,8 @@ namespace AiNetGuard.Gui.Services
             // Bottom Actions
             ["UninstallBtn"] = "Full Uninstall",
             ["UninstallBtnToolTip"] = "Reversibly restores original Windows firewall, DNS, IPv6, and scheduled tasks",
-            ["RegressionBtn"] = "Full Regression (24)",
-            ["RegressionBtnToolTip"] = "Run 24-check full regression suite with live 10-second packet capture",
+            ["RegressionBtn"] = "Full Regression",
+            ["RegressionBtnToolTip"] = "Run full regression suite with live 10-second packet capture",
             ["LeakCheckBtn"] = "Quick Check (5s)",
             ["LeakCheckBtnToolTip"] = "5-second quick check: physical NIC raw socket direct outbound block, active TUN adapter, and overseas connectivity",
             ["FooterHintReady"] = "Ready",

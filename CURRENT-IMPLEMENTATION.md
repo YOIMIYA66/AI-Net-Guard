@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.8.3 · B1 路由守卫漂移检测 + 端口清单单一来源 + 构建回归门禁）
+# AI-Net-Guard 实现方案与持续审查文档（v5.8.4 · B1 路由守卫全链路体检 + UTF-8 缓存防破损 + 卸载闭环与 Review 修复）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.8.3 正式版**（v5.8.2 全部内容 + `07-mode.ps1` 每周期只读检测 B1 路由守卫并显式告警、12 端口清单收敛到 `lib-stun-guard.ps1` 单一定义、`tests\test-stun-ports.ps1` 接入构建门禁、`b1-guard.meta` 双指纹缓存，详见 16.9）
+> 版本状态：**v5.8.4 正式版**（v5.8.3 全部内容 + 第三方 review 4 项复核与修复：`lib-stun-guard` 移除 `inboundTag` 早返回消除假阳性、`07-mode` 缓存读写成对改为 UTF-8 无 BOM、`09-rollback` 提示手动还原 v2rayN 路由、`12-regression` 新增 B1 路由守卫体检项并清除 GUI/文档硬编码检查数、门禁扩充至 19 项、实机 27 项全绿通过，详见 16.10）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -588,4 +588,53 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 
 1. **检测不是修复，也不是抓包**。9b 只回答"核心当前加载的路由表里还有没有这对规则"，不证明某个包被丢弃。修复仍需人工关掉 v2rayN 后跑 `18 -Apply`。
 2. **防护范围没有扩大**：仍是 12 个端口的 udp + tcp，`udp/443` 等非标 STUN/TURN 端口不在覆盖内；`CAVEAT` 里的 origin-scoped direct 规则依旧可能绕过 B1。本版没有为了"看起来更严"去动这些已验证的判定。
-3. **生产目录要同步才生效**。`-SyncWorkspace` 只同步 `scripts\*.ps1`；在同步完成前，`C:/AI-Net-Guard` 实机跑的仍是 v5.8.2 脚本，不会有 `B1 route guard` 行，也不会生成 `b1-guard.meta`。这不是故障，是发版与部署的时间差。
+3. **生产目录要同步才生效**。`-SyncWorkspace` 只同步 `scripts\*.ps1`；在同步完成前，`C:/AI-Net-Guard` 实机跑的仍是 v5.8.2 脚本，不会有 `B1 route guard` 行，也不会生成 `b1-guard.meta`。这不是故障，是发版与部署的时间差。（本节描述的是 v5.8.3 发版时刻；生产目录已于 2026-11-23 09:55 同步到 v5.8.3。）
+
+---
+
+### 16.10 第三方 review 复核与优化（v5.8.4 正式版，2026-11-23）
+
+> 版本状态：**v5.8.4 正式版**。本节记录针对第三方 review 意见的逐条复核与最终修法落地，经代码复核、针对性修法、构建门禁 19/19、生产目录同步与 Windows 11 真机实测全量回归 27/27 PASS 完整闭环。
+
+#### 16.10.1 逐条复核结论（不照单全收）
+
+| review 项 | 复核结论 | 依据 |
+| :--- | :--- | :--- |
+| P1 `lib-stun-guard.ps1` 的 `inboundTag` 过早 `return matches` | **属实**，但影响方向要澄清 | 原 L164-168 在 `$Expected.Count -gt 0`（几乎恒真）时直接返回 `matches`，跳过其后 `ip` 与 `process/user/source` 检查。后果是**假阳性**：把只影响单个进程的规则误报成完全遮蔽（`SHADOWED`），不是漏报防护。当前生效配置的前置规则带 `process`，修复前就已被判为 `restricted`，故实机结论未变。 |
+| P2 `b1-guard.meta` 用 `-Encoding ASCII` | **属实但只影响可读性**，且 review 的修法不完整 | 读写同为 ASCII，缓存 key 是 `(mtime,length)`，往返不失真；坏的只是缓存文件里的中文 Detail 变成 `?`。若只把写入改成 `Set-Content -Encoding UTF8`，PS 5.1 会写 BOM，使 `StartsWith($stamp)` 快路径**永久失效**；且读取端的 `-Encoding ASCII` 若不同步修改，中文仍会乱码。必须成对改为无 BOM API。 |
+| P3 `09-rollback.ps1` 未提示 `guiNDB.db` 的 B1 规则 | **属实** | 脚本删掉了 `b1-guard.meta` 缓存并输出 `rollback finished: 100% SUCCESS`，但 18 写入核心路由表的两条规则仍在。 |
+| P4 GUI 体检未覆盖 B1 | **属实**，但 "PASS=26" 的说法不成立 | `12-regression.ps1` 顶层只有 12 个 `Check`，其余在网卡循环里动态生成，PASS 数本来就是变量；`MainWindow.xaml.cs` 却把 "24" 硬编码了 7 处（XAML 与本地化各 2 处）。所以正解是**移除硬编码数字**，而不是把 24 改成 25。 |
+
+#### 16.10.2 四处修复
+
+1. **`Get-StunRuleVerdict` 去掉早返回**：`inboundTag` 命中 TUN 时只更新 `Why`，继续向下执行 `ip` 与 origin-scoped 判定。配置级验证：`inboundTag=tun-in + process=curl.exe` → `shadow=0 / caveat=1`；仅 `inboundTag=tun-in` → `shadow=1 / caveat=0`（真遮蔽仍能检出）。
+2. **`b1-guard.meta` 读写成对改为 UTF-8 无 BOM**：沿用 `lib-foreign-block.ps1` 已验证的 `[System.IO.File]::WriteAllText(..., UTF8Encoding($false))` 与 `ReadAllText(..., UTF8)`。真机往返：冷启动写出 9 段、首三字节 `54,51,57`（无 BOM）、中文 Detail 往返完整、ASCII 读会破坏它、篡改 state 后 `-Status` 确实读回、旧 7 段行自动失效。
+3. **`09-rollback.ps1` 加 10.5 段**：检测到 `backup\v2rayn-routing` 下有备份目录时，用 `Log` + 黄字 `Write-Host` 提示"关掉 v2rayN 后跑 `18 -Restore`"，并把收尾日志改成 `Windows guard state restored; manual v2rayN routing step listed above`。**绝不自动改 `guiNDB.db`**——v2rayN 运行时回滚可能被整体回写覆盖或留下半 checkpoint 的 WAL。
+4. **`12-regression.ps1` 新增 B1 检查项**：顶部 dot-source `lib-stun-guard.ps1`（脚本作用域，与 18/07 同一套判定），新增 `Check 'B1 STUN route guard present in core routing table'`。`no-config`（v2rayN 未运行）返回 `SKIP` 说明而不 FAIL，fail-closed 是合法状态；`absent` / `SHADOWED` 判 FAIL 并打印修复命令；**`CAVEAT` 不 FAIL**，与 `07 -Status` 的黄标和 `PASSED WITH CAVEAT` 口径保持一致。同步移除 GUI / XAML / 本地化 / 中英 README 里全部硬编码的检查数。
+
+#### 16.10.3 回归门禁
+
+`tests\test-stun-ports.ps1` 从 11 条扩到 **19 条**：把 `12-regression.ps1` 纳入"先 dot-source 再调用"的按行号比较；新增 3 条 `Get-StunRuleVerdict` 形状断言（scoped / plain / 非 TUN inbound）、1 条缓存编码断言、1 条卸载闭环断言、2 条 B1 体检与 GUI 文案断言。
+
+#### 16.10.4 验收结果
+
+| 项目 | 结果 |
+| :--- | :--- |
+| `tests\test-stun-ports.ps1` | **19/19 PASS**，exit 0 |
+| `18 -Verify` | exit 0，`B1 ACTIVE`，`caveat: 1`（口径未变） |
+| `07 -Status` | exit 0，`B1 route guard : loaded (12 ports, udp+tcp, #5 and #6) - caveat: ...` |
+| `verify-leak-test` | exit 0，`PASSED WITH CAVEAT` 三段披露逐字未变 |
+| `12-regression.ps1`（提权真机实跑） | **`=== RESULT: PASS=27 FAIL=0 ===`**（含新增 `[PASS] B1 STUN route guard present in core routing table`、10 秒 pktmon 抓包、WFP 规则判定、物理网卡 direct socket 拦截及 19302 STUN UDP 丢弃） |
+| 生产目录同步 | `13-harden-acl.ps1 -SyncWorkspace` 成功同步 29 个脚本至 `C:\AI-Net-Guard` 并锁定 ACL |
+| 缓存 UTF-8 真机往返 | 9 段、无 BOM、中文往返完整、篡改读回生效、旧格式自动失效 |
+| `gui\build.ps1 -RunSmokeTest` | exit 0；28 脚本纯 ASCII + 0 语法错；门禁 19/19；payload 38 文件 305.4 KB；编译 0 警告；冒烟 8 项 PASS（含 WPF 渲染、16 项开关、38 载荷解包） |
+| 打包边界 | payload 内 `12-regression.ps1` 含 B1 检查，`tests/` 未打包 |
+| `git diff --check` | 干净；所有改动 `.ps1` 全部纯 ASCII |
+
+#### 16.10.5 边界与说明
+
+1. **实机回归通过**：已在 Windows 11 管理员权限下实际运行 `12-regression.ps1`，真实环境观测到 `PASS=27 FAIL=0`，证实 B1 检查项在动态网卡及核心路由联动下的健壮性。
+2. **生产目录已同步**：已通过 `13-harden-acl.ps1 -SyncWorkspace` 同步全部 29 个脚本至 `C:\AI-Net-Guard`，主机生产环境已即刻生效最新逻辑。
+3. **没有自动修复**：B1 检测仍是只读；`-Apply` / `-Restore` 一律人工。
+4. **防护范围未扩大**：仍是 12 端口 udp+tcp，`udp/443` 与 origin-scoped direct 的 caveat 保持原样。
+5. **同类 follow-up（未改）**：`09-rollback.ps1` 的 `Log` 仍用 `Add-Content -Encoding ASCII` 写日志，本地化文本同样会变 `?`；修复需单独验证 PS 5.1 下 `Add-Content -Encoding UTF8` 的 BOM/追加行为，本轮新增的提示全为 ASCII，不受影响。

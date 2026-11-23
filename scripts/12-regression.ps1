@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.3 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
+    AI-Net-Guard v5.8.4 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
 
 .DESCRIPTION
     Verifies the v5.4 static guard end-to-end. Read-only, except for a temporary
@@ -117,6 +117,22 @@ $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
 $logDir = Join-Path $Root 'logs'
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 $script:log = Join-Path $logDir ('regression-' + $ts + '.txt')
+# ------------------------------------------------------------------ shared STUN guard analysis
+# B1 lives in the core routing table, not in the firewall, so the physical-NIC STUN
+# probes below cannot see it at all. Ask the same question 18 and 07 ask by
+# dot-sourcing the shared lib at script scope (its $script: variables and its
+# functions must stay in the same scope). A missing lib is a hard error for the
+# B1 check, not a silent skip.
+$libStun = ''
+if ($PSScriptRoot) { $libStun = Join-Path $PSScriptRoot 'lib-stun-guard.ps1' }
+if (-not $libStun -or -not (Test-Path -LiteralPath $libStun)) {
+    $libStun = Join-Path (Join-Path $Root 'scripts') 'lib-stun-guard.ps1'
+}
+$stunLibMissing = -not (Test-Path -LiteralPath $libStun)
+if (-not $stunLibMissing) {
+    . $libStun
+}
+
 $script:pass = 0
 $script:fail = 0
 $knownTunNames = @($TunName, 'xray_tun', 'singbox_tun', 'mihomo_tun', 'Meta', 'Mihomo') | Select-Object -Unique
@@ -249,7 +265,7 @@ function Get-ConfiguredNodeInfo {
     }
 }
 
-W ('=== AI-Net-Guard v5.8.3 regression ' + (Get-Date -Format 'o') + ' ===')
+W ('=== AI-Net-Guard v5.8.4 regression ' + (Get-Date -Format 'o') + ' ===')
 function Get-ActiveIpPhysicalNics {
     @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
         $_.OperationalStatus -eq 'Up' -and
@@ -441,6 +457,28 @@ Check 'WebRTC STUN/TURN leak-shield policy' {
     else {
         'WebRTC leak-shield disabled by user policy'
     }
+}
+
+Check 'B1 STUN route guard present in core routing table' {
+    if ($stunLibMissing) { throw ('lib-stun-guard.ps1 not found: ' + $libStun) }
+    $cfg = Join-Path $V2rayNRoot 'binConfigs\config.json'
+    if (-not (Test-Path -LiteralPath $cfg)) {
+        # v2rayN down is a legal fail-closed state: the WFP rules still hold and there
+        # is no core routing table to inspect. Report it, do not fail the whole suite.
+        return 'SKIP - core config not generated; B1 not checkable while v2rayN is down'
+    }
+    $a = Get-StunGuardAnalysis -ConfigPath $cfg -Expected @(Get-StunGuardPorts)
+    if ($a.State -ne 'present') {
+        throw ('B1 guard ' + $a.State + ' (rule #' + $a.Index + ') - close v2rayN, then run scripts\18-route-stun-guard.ps1 -Apply')
+    }
+    if ($a.Shadow -gt 0) {
+        throw ('B1 guard SHADOWED by ' + $a.Shadow + ' preceding rule(s): ' + (@($a.ShadowRules) -join '; '))
+    }
+    # A caveat is a known limitation, not a failure: 07-mode.ps1 shows it as a note and
+    # verify-leak-test.ps1 reports PASSED WITH CAVEAT. Keep the same verdict here.
+    $out = 'loaded (rules #' + $a.Index + '/' + ($a.Index + 1) + ', udp+tcp, ' + (@(Get-StunGuardPorts)).Count + ' ports)'
+    if ($a.Caveat -gt 0) { $out += ' - caveat: ' + $a.Caveat + ' origin-scoped rule(s) ahead may bypass it' }
+    $out
 }
 
 Check 'install directory ACL policy' {

@@ -1151,7 +1151,7 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
 
             ExpandConsole();
             SetBusy(true, "正在释放引擎组件并应用所选策略，请稍候...");
-            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] " + (LocalizationService.IsEnglish ? "Applying AI-Net-Guard v5.8.3 Guard Policy..." : "开始应用 AI-Net-Guard v5.8.3 防护配置...") + " ==========");
+            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] " + (LocalizationService.IsEnglish ? "Applying AI-Net-Guard v5.8.4 Guard Policy..." : "开始应用 AI-Net-Guard v5.8.4 防护配置...") + " ==========");
 
             try
             {
@@ -1304,8 +1304,8 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
             if (!EnsureAdminOrPromptElevate()) return;
 
             ExpandConsole();
-            SetBusy(true, "正在运行 24 项全链路内核回归体检（包含 10 秒网卡抓包防泄漏验证，约需 25 秒）...");
-            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] 启动 24 项全链路防泄漏回归体检 ==========");
+            SetBusy(true, "正在运行全量内核回归体检（包含 10 秒网卡抓包防泄漏验证，约需 25 秒）...");
+            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] 启动全量防泄漏回归体检 ==========");
 
             try
             {
@@ -1325,12 +1325,12 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
                 if (code == 0)
                 {
                     SetFooterStatusPill(
-                        LocalizationService.IsEnglish ? "Regression PASS (24/24)" : "24项体检全通 (PASS)",
-                        LocalizationService.IsEnglish ? "All 24 kernel leak-defense checks passed (FAIL=0)" : "健康体检全部通过 (FAIL=0)！系统处于零泄漏健康状态",
+                        LocalizationService.IsEnglish ? "Regression PASS (FAIL=0)" : "全项体检通过 (PASS)",
+                        LocalizationService.IsEnglish ? "All kernel leak-defense checks passed (FAIL=0)" : "健康体检全部通过 (FAIL=0)！系统处于零泄漏健康状态",
                         StatusTone.Success);
                     await ShowNativeAlertAsync(
                         "健康体检全部通过",
-                        "24 项全链路内核防泄漏体检全部通过 (FAIL=0)！\n\nWindows 内核防火墙、WFP 过滤层、DNS 防泄漏与防篡改规则均处于健康状态。",
+                        "全链路内核防泄漏体检全部通过 (FAIL=0)！\n\nWindows 内核防火墙、WFP 过滤层、DNS 防泄漏与防篡改规则均处于健康状态。",
                         okText: "完成",
                         isSuccess: true,
                         subtitle: "零泄漏健康验证");
@@ -1339,11 +1339,11 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
                 {
                     SetFooterStatusPill(
                         LocalizationService.IsEnglish ? $"Checks failed (exit={code})" : $"体检有未通过项 ({code})",
-                        LocalizationService.IsEnglish ? $"24-check regression found failures (exit={code}). Check console." : $"健康体检发现未通过项 (exit={code})，请查看控制台输出",
+                        LocalizationService.IsEnglish ? $"Regression found failures (exit={code}). Check console." : $"健康体检发现未通过项 (exit={code})，请查看控制台输出",
                         StatusTone.Danger);
                     await ShowNativeAlertAsync(
                         "健康体检报告",
-                        $"24 项全链路体检检测到未通过项 (exit={code})。\n\n请在下方实时控制台中查看具体的未通过项目与诊断建议。",
+                        $"全链路体检检测到未通过项 (exit={code})。\n\n请在下方实时控制台中查看具体的未通过项目与诊断建议。",
                         okText: "查看日志",
                         isSuccess: false,
                         subtitle: "健康体检报告");

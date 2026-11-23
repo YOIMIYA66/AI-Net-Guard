@@ -16,7 +16,14 @@
       2. all three getters (int[], string[], '3478,3479,...') agree;
       3. no executable (non-comment) line in any other script under scripts\ contains
          the first two ports back to back - the signature of a local copy;
-      4. every consumer that calls a lib getter also dot-sources the lib.
+      4. every consumer that calls a lib getter also dot-sources the lib;
+      5. rollback clears the B1 verdict cache;
+      6. a rule narrowed by inboundTag AND process is reported as 'restricted' (a scoped
+         caveat), never as a full 'matches' shadow;
+      7. the B1 verdict cache is UTF-8 without BOM on BOTH read and write;
+      8. the uninstaller tells the operator to restore the core routing table;
+      9. the regression suite actually checks B1 and the GUI no longer hard-codes a
+         check count that goes stale the moment a new check is added.
 
     Exit code 0 when every assertion passes, 1 otherwise. Run by gui\build.ps1 so a
     local copy can never reach a release.
@@ -89,7 +96,7 @@ Assert-True 'no other script keeps a local copy of the port list' ($badCopies.Co
 # while every getter call above it would run against an empty function table. Compare
 # line numbers so the gate actually enforces the ordering it claims to enforce.
 $consumers = @(
-    '02-killswitch.ps1', '07-mode.ps1', '14-apply-policy.ps1',
+    '02-killswitch.ps1', '07-mode.ps1', '12-regression.ps1', '14-apply-policy.ps1',
     '15-webrtc-browser-shield.ps1', '18-route-stun-guard.ps1', 'verify-leak-test.ps1'
 )
 foreach ($c in $consumers) {
@@ -118,6 +125,52 @@ foreach ($c in $consumers) {
 # 'present' verdict, so the cleanup list belongs in this gate.
 $rollback = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') '09-rollback.ps1') -Raw
 Assert-True '09-rollback.ps1 clears the B1 verdict cache' ($rollback -match "'b1-guard\.meta'")
+
+# ---------------------------------------------------------------- 6. origin-scoped rules are caveats, not shadows
+# An inboundTag matching the TUN inbound only proves the rule was NOT excluded. The old
+# early 'return matches' skipped the process/user/source checks below and turned a rule
+# scoped to a single process into a false SHADOWED alarm. Lock all three shapes.
+$tunTags = @('tun-in', 'tun')
+$scoped = [pscustomobject]@{ inboundTag = @('tun-in'); process = @('curl.exe') }
+$v1 = Get-StunRuleVerdict $scoped $tunTags $expected
+Assert-True 'inboundTag + process rule is restricted, not a full shadow' `
+    ($v1.Kind -eq 'restricted') ('got ' + $v1.Kind + ' : ' + $v1.Why)
+$plain = [pscustomobject]@{ inboundTag = @('tun-in') }
+$v2 = Get-StunRuleVerdict $plain $tunTags $expected
+Assert-True 'inboundTag-only rule still matches STUN traffic' `
+    ($v2.Kind -eq 'matches') ('got ' + $v2.Kind + ' : ' + $v2.Why)
+$otherIn = [pscustomobject]@{ inboundTag = @('socks-in') }
+$v3 = Get-StunRuleVerdict $otherIn $tunTags $expected
+Assert-True 'non-TUN inboundTag rule is excluded' `
+    ($v3.Kind -eq 'excluded') ('got ' + $v3.Kind)
+
+# ---------------------------------------------------------------- 7. B1 verdict cache codec
+# -Encoding ASCII flattened localised Detail to '?'. Set-Content -Encoding UTF8 on PS 5.1
+# writes a BOM that breaks the StartsWith(stamp) fast path forever, so the only safe form
+# is the explicit no-BOM API paired with a UTF-8 read (same as lib-foreign-block.ps1).
+$mode = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') '07-mode.ps1') -Raw
+$writeOk = $mode -match 'WriteAllText\(\$b1Meta, \$line, \(New-Object System\.Text\.UTF8Encoding\(\$false\)\)\)'
+$readOk = $mode -match 'ReadAllText\(\$b1Meta, \[System\.Text\.Encoding\]::UTF8\)'
+$noAscii = $mode -notmatch 'Set-Content -LiteralPath \$b1Meta'
+Assert-True '07-mode B1 cache is UTF-8 without BOM on read and write' `
+    ($writeOk -and $readOk -and $noAscii) `
+    ('write=' + $writeOk + ' read=' + $readOk + ' noAsciiWrite=' + $noAscii)
+
+# ---------------------------------------------------------------- 8. uninstaller closes the loop
+# It cannot rewrite guiNDB.db safely (v2rayN may be up), but it must not claim a fully
+# clean uninstall while the B1 rules are still live in the core routing table.
+Assert-True '09-rollback.ps1 points at 18 -Restore for the core routing table' `
+    ($rollback -match '18-route-stun-guard\.ps1 -Restore')
+
+# ---------------------------------------------------------------- 9. B1 is visible in the GUI regression path
+$reg = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') '12-regression.ps1') -Raw
+Assert-True '12-regression.ps1 checks B1 through the shared analysis' `
+    (($reg -match "Check 'B1 STUN route guard") -and ($reg -match 'Get-StunGuardAnalysis'))
+$gui = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'gui') 'MainWindow.xaml.cs') -Raw
+$xaml = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'gui') 'MainWindow.xaml') -Raw
+# The check count is dynamic (loop-generated checks), so no UI string may hard-code it.
+Assert-True 'GUI no longer hard-codes a regression check count' `
+    (($gui -notmatch '24/24|24-check|All 24 |24\s*\u9879') -and ($xaml -notmatch '24\s*\u9879'))
 
 Write-Host ' '
 if ($script:fail -gt 0) {

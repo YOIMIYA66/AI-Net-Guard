@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.8.3 - rollback & baseline restore (100% thorough uninstaller)
+# AI-Net-Guard v5.8.4 - rollback & baseline restore (100% thorough uninstaller)
 [CmdletBinding()]
 param(
     [string]$Root = 'C:\AI-Net-Guard',
@@ -22,7 +22,7 @@ function Log ($msg) {
 }
 
 $DohServer = '223.5.5.5'
-Log 'AI-Net-Guard v5.8.3 thorough rollback started'
+Log 'AI-Net-Guard v5.8.4 thorough rollback started'
 Log ('user: ' + [System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
 
 # ------------------------------------------------------------------ admin check
@@ -415,6 +415,31 @@ if (-not $KeepAclLocked -and $Root.Length -gt 3 -and $Root -notmatch '(?i)^[A-Z]
     catch { }
 }
 
-Log 'rollback finished: 100% SUCCESS'
+# ------------------------------------------------------------------ 10.5. v2rayN core routing guard
+# 18-route-stun-guard.ps1 writes two block rules into v2rayN's guiNDB.db. This
+# uninstaller deliberately never rewrites that database: v2rayN may still be running
+# and would overwrite the change on exit, or leave a half-checkpointed WAL. Removing
+# b1-guard.meta above only clears OUR verdict cache; the rules in the core's routing
+# table stay live. Print the manual step instead of claiming a fully clean uninstall.
+$routingBk = Join-Path $BackupDir 'v2rayn-routing'
+$hasRoutingBk = $false
+if (Test-Path -LiteralPath $routingBk) {
+    $hasRoutingBk = (@(Get-ChildItem -LiteralPath $routingBk -Directory -ErrorAction SilentlyContinue)).Count -gt 0
+}
+if ($hasRoutingBk) {
+    $notice = 'NOTE: v2rayN routing backups were found under ' + $routingBk
+    $fix = '      The B1 STUN block rules may still be live in guiNDB.db. Close v2rayN, then run scripts\18-route-stun-guard.ps1 -Restore to restore the original routing table.'
+    Log $notice
+    Log $fix
+    Write-Host $notice -ForegroundColor Yellow
+    Write-Host $fix -ForegroundColor Yellow
+}
+
+if ($hasRoutingBk) {
+    Log 'rollback finished: Windows guard state restored; manual v2rayN routing step listed above'
+}
+else {
+    Log 'rollback finished: 100% SUCCESS'
+}
 Write-Host ('rollback log: ' + $Log) -ForegroundColor Green
 exit 0

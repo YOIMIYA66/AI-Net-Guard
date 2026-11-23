@@ -240,7 +240,7 @@ Zero installation, zero runtime dependencies, single-click executable:
    - **Official Recommended Clean TUN Mode (ProxyEnable=0)**: Explicitly guides users to keep WinINET proxy cleared (`ProxyEnable = 0`) in TUN mode so network traffic is filtered strictly at kernel level by `xray_tun`, preventing loopback proxy conflicts. Includes 1-click dynamic switching between Clean TUN and System Proxy.
    - **🌐 Instant Bilingual Switching**: Full English and Chinese localization across all 16 policies, presets, telemetry cards, and modals with persistent preference saving.
    - **🛟 应急脱困 (Emergency Rescue)**: Instantly unlocks all firewall outbound blocks, resets NIC DNS to DHCP, clears stale loopback proxies, and flushes Winsock within 5 seconds.
-   - **一键健康体检 (Health Check)**: Runs the full 24-check regression suite (including live 10-second `pktmon` DNS capture).
+   - **一键健康体检 (Health Check)**: Runs the full regression suite (including live 10-second `pktmon` DNS capture).
    - **立即同步 (Sync Nodes)**: Dynamically extracts and authorizes new proxy node IPs/ports when switching servers in `v2rayN`.
    - **一键完整卸载 (Full Uninstall)**: Reversibly restores default Windows firewall, DNS, IPv6, prefix policy, NTP, and ACLs.
 
@@ -284,7 +284,7 @@ Provides an integrated 45-minute automatic rollback safety net:
    .\scripts\08-commit.ps1
    ```
 
-6. **Step 4 — Lock Directory ACLs & Run 24-Check Automated Regression Suite**:
+6. **Step 4 — Lock Directory ACLs & Run Full Automated Regression Suite**:
    ```powershell
    .\scripts\13-harden-acl.ps1
    ```
@@ -349,7 +349,7 @@ cd C:\AI-Net-Guard
 # 2. Elevated Administration (PowerShell Run as Administrator)
 # ==============================================================================
 .\scripts\07-mode.ps1                        # Run immediate health check and auto-sync (< 100ms)
-.\scripts\12-regression.ps1                  # Run complete 24-check automated regression suite
+.\scripts\12-regression.ps1                  # Run complete automated regression suite
 .\scripts\13-harden-acl.ps1 -SyncWorkspace   # Pull updates from git clone directory & re-lock ACLs
 .\scripts\09-rollback.ps1                    # Cleanly uninstall & restore factory Windows baseline
 ```
@@ -383,7 +383,7 @@ To whitelist specific developer tools or custom daemons from anti-drift quaranti
 | [`scripts/09-rollback.ps1`](./scripts/09-rollback.ps1) | Complete baseline restore: recovers firewall, isolated rules, DNS, IPv6, prefix policy, NTP, and cleans tasks |
 | [`scripts/10-sync-node-rule.ps1`](./scripts/10-sync-node-rule.ps1) | Manual / preview (`-WhatIfOnly`) multi-core node and port firewall synchronizer |
 | [`scripts/11-geo-cn.ps1`](./scripts/11-geo-cn.ps1) | Zero-allocation protobuf parser: normalizes and aggregates GeoIP into [`cn-ipv4.txt`](./cn-ipv4.txt) (6,516 prefixes) |
-| [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) | **24-Check Automated Regression Suite**: static state, ACL lock, 0 MB memory, fail-closed tests, 10s `pktmon` capture |
+| [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) | **Full Automated Regression Suite**: static state, ACL lock, 0 MB memory, fail-closed tests, 10s `pktmon` capture |
 | [`scripts/13-harden-acl.ps1`](./scripts/13-harden-acl.ps1) | Locks `C:\AI-Net-Guard` DACL to Administrators write-only (`-Undo` and `-SyncWorkspace` supported) |
 | [`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) | Declarative policy orchestrator: applies 16 feature switches idempotently from `backup\guard-policy.json` |
 | [`scripts/15-webrtc-browser-shield.ps1`](./scripts/15-webrtc-browser-shield.ps1) | **Per-process WebRTC egress block**: outbound UDP from `chrome.exe` / `msedge.exe` is dropped on physical NICs on every port (443 and custom TURN included); **plus STUN/TURN port blocks for the proxy core (`xray` / `sing-box` / `mihomo`)** - with a TUN up the core is what actually egresses the physical NIC, and a CN STUN server matched by `geoip:cn -> direct` returns the real ISP address; `-Apply / -Verify / -Remove / -DryRun`, `LocalAddress` stored as CIDR |
@@ -397,7 +397,7 @@ To whitelist specific developer tools or custom daemons from anti-drift quaranti
 | [`scripts/lib-stun-guard.ps1`](./scripts/lib-stun-guard.ps1) | Shared guard-analysis library **and the single definition of the 12-port STUN/TURN set**; dot-sourced by `02` / `07` / `14` / `15` / `18` / `verify-leak-test`. A missing library is a hard stop, never a fallback to a local literal |
 | [`scripts/verify-leak-test.ps1`](./scripts/verify-leak-test.ps1) | End-to-end leak & connectivity acceptance; reports `PASSED WITH CAVEAT` (silence alone does not prove a core-side drop; udp/443 is outside the 12-port guard) |
 | [`gui/build.ps1`](./gui/build.ps1) | Build gate: ASCII + AST checks, `tests/` regression, payload packing, exe compile, optional GUI smoke test |
-| [`tests/test-stun-ports.ps1`](./tests/test-stun-ports.ps1) | 11 build-time assertions; gate-only, **never packed** into `payload.zip` |
+| [`tests/test-stun-ports.ps1`](./tests/test-stun-ports.ps1) | Build-time assertions for the single port set, consumer ordering, B1 verdict shape, cache codec and regression coverage; gate-only, **never packed** into `payload.zip` |
 | [`docs/`](./docs) | Long-form docs and the authoritative release notes under [`docs/releases/`](./docs/releases) |
 
 > For deep architectural evolution logs and technical postmortems, see [`CURRENT-IMPLEMENTATION.md`](./CURRENT-IMPLEMENTATION.md).

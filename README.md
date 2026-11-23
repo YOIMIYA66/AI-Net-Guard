@@ -16,7 +16,7 @@
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Windows-10%20%7C%2011%2024H2-0078d4?logo=windows&logoColor=white" alt="Platform"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard"><img src="https://img.shields.io/badge/Resident%20RAM-0%20MB%20(Zero--Daemon)-059669?logo=speedtest&logoColor=white" alt="RAM"></a>
     <a href="https://github.com/YOIMIYA66/AI-Net-Guard/releases"><img src="https://img.shields.io/badge/Standalone%20GUI-~358%20KB-8b5cf6?logo=dotnet&logoColor=white" alt="GUI"></a>
-    <a href="./scripts/12-regression.ps1"><img src="https://img.shields.io/badge/Regression-24%2F24%20Passed-22c55e" alt="Tests"></a>
+    <a href="./scripts/12-regression.ps1"><img src="https://img.shields.io/badge/Regression-All%20Checks%20Passed-22c55e" alt="Tests"></a>
   </p>
 </p>
 
@@ -240,7 +240,7 @@ flowchart TD
    - **官方推荐系统代理模式 (ProxyEnable=0 纯 TUN 模式)**：对于 TUN 模式，推荐保持系统代理处于已清除状态（`ProxyEnable = 0`），所有出站流量在内核网络层直接由 `xray_tun` 虚拟网卡捕获与分流，彻底杜绝 WinINET HTTP 代理与本地应用程序抢占、冲突或死代理残留；GUI 支持一键在“清除系统代理（官方推荐）”与“临时开启系统代理”之间动态切换。
    - **🌐 中英双语一键切换**：原生桌面 GUI 支持中英文一键即时切换，配置与语言偏好自动持久化。
    - **🛟 应急脱困 (Emergency Rescue)**：突发断网或配置异常时，一键瞬间清除防火墙出站阻断、重置网卡 DNS 为 DHCP、清空回环代理并冲洗 Winsock，5 秒内恢复上网。
-   - **一键健康体检**：自动执行 24 项端到端内核与网络全回归测试（包含 10 秒实机 `pktmon` DNS 抓包）。
+   - **一键健康体检**：自动执行端到端内核与网络全量回归测试（包含 10 秒实机 `pktmon` DNS 抓包）。
    - **立即同步**：在客户端切换代理节点后，一键实时探测并放行新落地节点 IP 与端口。
    - **一键完整卸载**：完整还原 Windows 原始防火墙、DNS、IPv6、前缀表、时间服务与计划任务。
 
@@ -284,7 +284,7 @@ flowchart TD
    .\scripts\08-commit.ps1
    ```
 
-6. **Step 4 — 锁定生产目录 ACL 权限并执行 24 项全回归测试**：
+6. **Step 4 — 锁定生产目录 ACL 权限并执行全量回归测试**：
    ```powershell
    .\scripts\13-harden-acl.ps1
    ```
@@ -336,9 +336,9 @@ flowchart TD
 - **Win11 24H2 Xray TUN 核心修复与环境加固**：
   - 针对 Windows 11 24H2 内核变更导致 Xray Wintun 报错 `Error 5: Access is denied` 的深坑，深度集成了内核驱动级的接口 DNS 初始化修复，保证 Xray 原生 TUN 稳定拉起。
   - 内置一键关闭 Windows 11 后台高频遥测服务（`DiagTrack`）脚本，彻底消除微软遥测直连海外 IP 触发防火墙拦截产生的 `connectex 10013` 权限报错。
-- **权限防篡改加固与 24 项端到端全回归测试套件**：
+- **权限防篡改加固与端到端全量回归测试套件**：
   - 生产目录 `C:\AI-Net-Guard` 权限锁定为 `owner=Administrators`、`Administrators/SYSTEM=Full`、`Users=Read+Execute`，杜绝未提权进程篡改白名单或劫持任务。
-  - 完整回归测试套件 [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) 覆盖 24 项系统不变量测试，包含实机 10 秒 `pktmon` 端口 53 抓包校验（`phys_attempts=0, escaped=0`）、WFP 状态审计、直连 Socket 漏球探测等。
+  - 完整回归测试套件 [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) 覆盖全部系统不变量测试，包含实机 10 秒 `pktmon` 端口 53 抓包校验（`phys_attempts=0, escaped=0`）、WFP 状态审计、直连 Socket 漏球探测等。
 
 ---
 
@@ -358,7 +358,7 @@ cd C:\AI-Net-Guard
 # 2. 管理员终端维护命令 (PowerShell 以管理员身份运行)
 # ==============================================================================
 .\scripts\07-mode.ps1                        # 立即执行一次健康检查与自愈同步 (耗时 < 100ms)
-.\scripts\12-regression.ps1                  # 运行完整的 24 项自动化回归测试套件 (包含实机抓包)
+.\scripts\12-regression.ps1                  # 运行完整的自动化回归测试套件 (包含实机抓包)
 .\scripts\13-harden-acl.ps1 -SyncWorkspace   # 从 Git 仓库同步最新核心脚本至生产目录并重新加固 ACL
 .\scripts\09-rollback.ps1                    # 完整卸载防护，还原 Windows 原始出厂网络与防火墙基线
 ```
@@ -392,7 +392,7 @@ cd C:\AI-Net-Guard
 | [`scripts/09-rollback.ps1`](./scripts/09-rollback.ps1) | 完整复原卸载：还原 Windows 原始出厂防火墙规则集、恢复被隔离的规则、还原 DNS/IPv6/前缀表/NTP，注销全部计划任务 |
 | [`scripts/10-sync-node-rule.ps1`](./scripts/10-sync-node-rule.ps1) | 手动 / 预检（`-WhatIfOnly`）多内核节点与端口防火墙规则同步工具 |
 | [`scripts/11-geo-cn.ps1`](./scripts/11-geo-cn.ps1) | 零内存分配 Protobuf 流式解析器：解析 `geoip.dat`，完成 CIDR 归一化聚合为包含 6,516 行的 [`cn-ipv4.txt`](./cn-ipv4.txt) |
-| [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) | **24 项自动化回归测试套件**：覆盖静态规则、ACL 权限、0 MB 内存特征、TUN 启闭熔断、WFP 注入、10 秒真实 `pktmon` DNS 抓包 |
+| [`scripts/12-regression.ps1`](./scripts/12-regression.ps1) | **全量自动化回归测试套件**：覆盖静态规则、ACL 权限、0 MB 内存特征、TUN 启闭熔断、WFP 注入、10 秒真实 `pktmon` DNS 抓包 |
 | [`scripts/13-harden-acl.ps1`](./scripts/13-harden-acl.ps1) | 生产目录 ACL 权限防篡改锁定（支持 `-Undo` 权限还原与 `-SyncWorkspace` 源码目录热同步） |
 | [`scripts/14-apply-policy.ps1`](./scripts/14-apply-policy.ps1) | **声明式策略编排器**：读取 `backup\guard-policy.json` 实现 16 项特性的增量幂等应用 |
 | [`scripts/15-webrtc-browser-shield.ps1`](./scripts/15-webrtc-browser-shield.ps1) | **浏览器级 WebRTC 出口封锁**：按进程（`chrome.exe` / `msedge.exe`）在物理网卡上封锁全部出站 UDP（含 443 与任意 TURN 端口），DHCP/DNS/NTP/节点传输零影响；**并对代理核心（`xray` / `sing-box` / `mihomo`）封锁 STUN/TURN 端口**——TUN 模式下真正从物理网卡发包的是核心，境内 STUN 经 `geoip:cn → direct` 会返回真实 ISP 地址；`-Apply / -Verify / -Remove / -DryRun`，规则 `LocalAddress` 按网段写入 |
@@ -406,7 +406,7 @@ cd C:\AI-Net-Guard
 | [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | 一键关闭 Windows 11 遥测服务与遥测组策略，杜绝海外遥测 IP 拦截产生的 `connectex 10013` 报错 |
 | [`gui/`](./gui) | 原生 C# WPF 桌面配置中心项目源码（基于 `.NET Framework 4.8`，单文件内嵌核心载荷与 UAC 清单） |
 | [`gui/build.ps1`](./gui/build.ps1) | **构建总门禁**：纯 ASCII + AST 语法校验 → `tests/` 回归测试 → 打包 `payload.zip` → 编译 exe → 可选 GUI 冒烟测试；产物写入 `dist/` |
-| [`tests/test-stun-ports.ps1`](./tests/test-stun-ports.ps1) | 11 条断言的构建期回归门禁：端口集单一定义、三种 getter 一致、6 个消费方先 dot-source 再调用、回滚清单必须清理 `b1-guard.meta`；**只进门禁，不进发行物** |
+| [`tests/test-stun-ports.ps1`](./tests/test-stun-ports.ps1) | 构建期回归门禁：端口集单一定义、三种 getter 一致、所有消费方先 dot-source 再调用（按行号比较）、B1 判定形状（进程限定不得误判为遮蔽）、缓存 UTF-8 无 BOM、卸载闭环提示、体检覆盖与 GUI 文案；**只进门禁，不进发行物** |
 | [`docs/`](./docs) | 长期技术文档与 [`docs/releases/`](./docs/releases) 发布说明权威副本；目录职责见 [`REPO-LAYOUT.md`](./docs/REPO-LAYOUT.md) |
 
 > 想要深入了解系统的架构演进与深层技术复盘，请参阅 [`CURRENT-IMPLEMENTATION.md`](./CURRENT-IMPLEMENTATION.md)。
