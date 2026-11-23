@@ -394,8 +394,25 @@ To whitelist specific developer tools or custom daemons from anti-drift quaranti
 | [`scripts/align-xray-egress.bat`](./scripts/align-xray-egress.bat) | Injects `/32` physical host route to eliminate dual-core double-hop relay overhead |
 | [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | Disables Windows 11 telemetry services (`DiagTrack`) to prevent foreign IP `connectex 10013` errors |
 | [`gui/`](./gui) | Native C# WPF desktop configurator project (`net48`, embeds payload archive and UAC manifest) |
+| [`scripts/lib-stun-guard.ps1`](./scripts/lib-stun-guard.ps1) | Shared guard-analysis library **and the single definition of the 12-port STUN/TURN set**; dot-sourced by `02` / `07` / `14` / `15` / `18` / `verify-leak-test`. A missing library is a hard stop, never a fallback to a local literal |
+| [`scripts/verify-leak-test.ps1`](./scripts/verify-leak-test.ps1) | End-to-end leak & connectivity acceptance; reports `PASSED WITH CAVEAT` (silence alone does not prove a core-side drop; udp/443 is outside the 12-port guard) |
+| [`gui/build.ps1`](./gui/build.ps1) | Build gate: ASCII + AST checks, `tests/` regression, payload packing, exe compile, optional GUI smoke test |
+| [`tests/test-stun-ports.ps1`](./tests/test-stun-ports.ps1) | 11 build-time assertions; gate-only, **never packed** into `payload.zip` |
+| [`docs/`](./docs) | Long-form docs and the authoritative release notes under [`docs/releases/`](./docs/releases) |
 
 > For deep architectural evolution logs and technical postmortems, see [`CURRENT-IMPLEMENTATION.md`](./CURRENT-IMPLEMENTATION.md).
+
+### 🗂️ Repository Layout
+
+| Path | Tracked | Role |
+| :--- | :---: | :--- |
+| `scripts/` | yes | Sole source of shipped scripts; `build.ps1` packs every `*.ps1` |
+| `gui/` | yes | WPF sources and the build gate (`obj/` and `bin/` ignored) |
+| `tests/` | yes | Build-time regression, excluded from `payload.zip` |
+| `docs/` | yes | Design notes, [`REPO-LAYOUT.md`](./docs/REPO-LAYOUT.md), release notes |
+| `dist/` `backup/` `logs/` `scratch/` | no | Build artifacts, runtime backups, live logs, one-off debug scripts |
+
+Three boundaries worth knowing: the repository root is **not** a script entry point (production runs from `scripts\` only); `-SyncWorkspace` syncs `scripts\*.ps1` only and never overwrites runtime data such as `cn-ipv4.txt`; and tagging a Release does not deploy it - the production directory must be synced separately. See [`docs/REPO-LAYOUT.md`](./docs/REPO-LAYOUT.md) for the full map (in Chinese).
 
 ---
 

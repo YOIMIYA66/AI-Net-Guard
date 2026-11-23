@@ -400,13 +400,31 @@ cd C:\AI-Net-Guard
 | [`scripts/17-autorepair-task.ps1`](./scripts/17-autorepair-task.ps1) | **自愈计划任务管理器**：默认 `-Status` 只读体检，`-Install` 注册「开机 + 网络变更（NetworkProfile 10000/10001）+ 睡眠唤醒」事件任务与 60 分钟低频兜底，`-Install -SelfTest` 事件任务实跑两次（首次修复 / 二次稳态）+ 兜底任务实跑一次，三条退出码必须全为 0，`-Remove` 清理全部 `AI-Guard-Mode-*` |
 | [`scripts/18-route-stun-guard.ps1`](./scripts/18-route-stun-guard.ps1) | **路由层 STUN/TURN 封锁（WebRTC 防泄露兜底）**：实测防火墙挡不住核心重发的那一跳，故在 xray 路由顶部插 `3478,3479,5349,5350,19302-19309 → block`（UDP+TCP），国内直连规则一行不动、代理流量零增加；`-Verify` / `-Apply`（自动备份 `guiNDB.db` + SHA-256 校验 + `PRAGMA quick_check`）/ `-Restore`（恢复前先快照当前库并校验哈希，恢复后整库哈希比对）；`-RoutingId` 贯穿读取、写入、比对与恢复，绝不"读 A 写 B"；v2rayN 运行中与 `-wal` 未 checkpoint 时**一律拒绝且无旁路**（`-Force` 已删除），固定规则 `Id` 被占用时 `exit 4` 拒写 |
 | [`scripts/verify-leak-test.ps1`](./scripts/verify-leak-test.ps1) | **端到端泄露与连通性验收**：防火墙规则 + Chromium 策略 + TUN 状态 + 物理网卡直连/STUN 绑定探测 + 数据通路 + 4b 出口身份比对（国内/境外出口 IP 不同才证明分流生效）+ 第 9 段活体 STUN 探针；第 9 段按 B1 语义判定，**境内境外任一应答即 FAIL**，静默还必须同时满足"守卫对已完整加载且前方无规则遮蔽"才 PASS；退出码 `0` 全过 / `1` 有硬失败 / `2` 不可判定 |
-| [`scripts/lib-stun-guard.ps1`](./scripts/lib-stun-guard.ps1) | **守卫校验共用库**：`18` 与 `verify-leak-test` 同时 dot-source，保证 `B1 ACTIVE` 与验收 `PASS` 的前置条件完全一致；含"是否纯端口匹配"判定与"前置规则能否遮蔽 STUN 流量"的逐条求值（`excluded` / `restricted` / `matches`） |
+| [`scripts/lib-stun-guard.ps1`](./scripts/lib-stun-guard.ps1) | **守卫校验共用库 + STUN/TURN 端口集的唯一定义**：`02` / `07` / `14` / `15` / `18` / `verify-leak-test` 共 6 个脚本 dot-source 它，保证 `B1 ACTIVE`、WFP 规则与验收 `PASS` 的端口清单完全一致；含 `Get-StunGuardPorts` / `Get-StunGuardPortStrings` / `Get-StunGuardPortSpec` 三种返回形态、`Get-StunGuardAnalysis` 配置形状分析，以及"前置规则能否遮蔽 STUN 流量"的逐条求值（`excluded` / `restricted` / `matches`）；缺库一律 `exit 1`，不回落本地字面量 |
 | [`Emergency-Rescue.bat`](./Emergency-Rescue.bat) | 纯原生、无依赖、自带提权的离线一键网络应急脱困批处理脚本 |
 | [`scripts/align-xray-egress.bat`](./scripts/align-xray-egress.bat) | 自动注入物理网卡高优先级 `/32` 主机路由，消除双核架构下的二跳中继开销 |
 | [`scripts/run-disable-telemetry.bat`](./scripts/run-disable-telemetry.bat) | 一键关闭 Windows 11 遥测服务与遥测组策略，杜绝海外遥测 IP 拦截产生的 `connectex 10013` 报错 |
 | [`gui/`](./gui) | 原生 C# WPF 桌面配置中心项目源码（基于 `.NET Framework 4.8`，单文件内嵌核心载荷与 UAC 清单） |
+| [`gui/build.ps1`](./gui/build.ps1) | **构建总门禁**：纯 ASCII + AST 语法校验 → `tests/` 回归测试 → 打包 `payload.zip` → 编译 exe → 可选 GUI 冒烟测试；产物写入 `dist/` |
+| [`tests/test-stun-ports.ps1`](./tests/test-stun-ports.ps1) | 11 条断言的构建期回归门禁：端口集单一定义、三种 getter 一致、6 个消费方先 dot-source 再调用、回滚清单必须清理 `b1-guard.meta`；**只进门禁，不进发行物** |
+| [`docs/`](./docs) | 长期技术文档与 [`docs/releases/`](./docs/releases) 发布说明权威副本；目录职责见 [`REPO-LAYOUT.md`](./docs/REPO-LAYOUT.md) |
 
 > 想要深入了解系统的架构演进与深层技术复盘，请参阅 [`CURRENT-IMPLEMENTATION.md`](./CURRENT-IMPLEMENTATION.md)。
+
+### 🗂️ 仓库结构与目录职责
+
+| 路径 | 入库 | 职责 |
+| :--- | :---: | :--- |
+| `scripts/` | 是 | 唯一发行脚本源，`build.ps1` 自动打包全部 `*.ps1` |
+| `gui/` | 是 | WPF 配置中心源码与构建门禁（`obj/` `bin/` 忽略） |
+| `tests/` | 是 | 构建期回归测试，**不进 `payload.zip`** |
+| `docs/` | 是 | 技术复盘、`REPO-LAYOUT.md`、`releases/` 发布说明 |
+| `dist/` `backup/` `logs/` `scratch/` | 否 | 构建产物、运行时备份、活体日志、调试脚本 |
+| 根目录 9 个文件 | 是 | GitHub 标准入口 + `cn-ipv4.txt` / `ai-domains.txt` 两份数据基线 |
+
+三条容易踩的边界：① 根目录**不是**脚本入口，生产环境只从 `scripts\` 运行；② `-SyncWorkspace` 只同步 `scripts\*.ps1`，运行时数据由生产目录独立维护、禁止反向覆盖；③ 发版（tag/Release）与部署（同步生产）是两步，实机生效以前者之后的同步为准。
+
+完整目录地图见 [`docs/REPO-LAYOUT.md`](./docs/REPO-LAYOUT.md)。
 
 ---
 
