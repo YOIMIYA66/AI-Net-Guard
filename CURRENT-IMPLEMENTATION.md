@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.8.2 · 路由层 STUN 封锁 + 自愈快路径重构 + 显式物理境外硬阻断）
+# AI-Net-Guard 实现方案与持续审查文档（v5.8.3 · B1 路由守卫漂移检测 + 端口清单单一来源 + 构建回归门禁）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.8.2 正式版**（v5.8.1 全部内容 + 删除 `-Force` 旁路、`-RoutingId` 贯穿读写、遮蔽判定改为按 STUN 流量逐条求值、守卫校验抽取共用 `lib-stun-guard.ps1`、恢复前后补 SHA-256，详见 16.7 / 16.8）
+> 版本状态：**v5.8.3 正式版**（v5.8.2 全部内容 + `07-mode.ps1` 每周期只读检测 B1 路由守卫并显式告警、12 端口清单收敛到 `lib-stun-guard.ps1` 单一定义、`tests\test-stun-ports.ps1` 接入构建门禁、`b1-guard.meta` 双指纹缓存，详见 16.9）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -245,7 +245,13 @@ cd C:\AI-Net-Guard
 > [!NOTE]
 > Windows 中对象所有者（Owner）隐含 `WRITE_DAC` 权限，若不把所有者一并改为 `Administrators`，原普通用户所有者仍可把写权限重新赋回给自己。[`scripts/13-harden-acl.ps1`](./scripts/13-harden-acl.ps1) 会同时执行 `/setowner *S-1-5-32-544 /T` 并使用 `.NET` ACL API 逐项校验。
 
-锁定后更新代码的方式：在管理员终端从仓库目录执行 `C:\AI-Net-Guard\13-harden-acl.ps1 -SyncWorkspace`（或传 `-WorkspaceRoot <仓库路径>`）。
+锁定后更新代码的方式：在管理员终端从仓库目录执行 `C:\AI-Net-Guard\scripts\13-harden-acl.ps1 -SyncWorkspace`（或传 `-WorkspaceRoot <仓库路径>`）。
+
+> [!IMPORTANT]
+> **`C:\AI-Net-Guard` 根目录不是脚本入口。** 唯一受支持的执行位置是 `C:\AI-Net-Guard\scripts\`。根目录下若存在同名 `.ps1` 副本，均属历史遗留，不要执行；它们已归档到 `archive\stale-root-20261123\`（含 `MANIFEST.tsv`，记录原名、大小、SHA-256 与排查结论）。此前本文档曾指向根目录的 `13-harden-acl.ps1`，是这批副本长期未被清理的成因；该路径已在 v5.8.3 修正为 `scripts\13-harden-acl.ps1`。
+
+> [!IMPORTANT]
+> **同步边界**：`-SyncWorkspace` 只把仓库 `scripts\*.ps1` 复制到 `C:\AI-Net-Guard\scripts\`，**不同步运行时数据文件**。`cn-ipv4.txt`、`ai-domains.txt` 等名单类数据由生产环境独立维护（由 `11-geo-cn.ps1` 等脚本就地重建），生产版本可能比仓库副本更新，**禁止用仓库副本反向覆盖**。脚本与文档按仓库版本同步，运行时数据按生产环境为准。
 
 ---
 
@@ -529,3 +535,57 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 **验收方式（本轮）**：共用库判定 24 条断言全绿（含审查给的反例、`geoip:cn`、端口区间、半套规则、`enabled=false`）；数据库操作层 13 条断言全绿（歧义拒绝、按 Id 读取/写入/比对、写 A 不动 B、Id 冲突、损坏库）；端到端用合成配置跑通两条新路径（`present` + 1 条 process caveat + 0 shadow；以及 tun 入站规则被判 `SHADOWED` 并使验收记 FAIL）。真库仍为 `9 rules, guard=0`，只读打开。
 
 
+
+---
+
+### 16.9 v5.8.3 小版本：把 B1 纳入自愈链的观测范围（2026-11-23）
+
+**起因是一次真实审计，不是新功能设想**：`02-killswitch.ps1` 与 `07-mode.ps1` 会在每个周期自动重跑 `15-webrtc-browser-shield.ps1`，而 `15` 自己的头部注释就承认 TUN 起来后 WFP 规则对核心再次发出的包无效；真正生效的 `18-route-stun-guard.ps1` **全仓库零引用**。守卫规则被改、被删、被 v2rayN 更新覆盖之后，没有任何机制会发现。更隐蔽的是症状：物理网卡的 WFP 规则同时挡住同一批出口流量，所有探针依旧静默，看不出核心路由表已经空了。自愈链一直在修那个赢不了的层，忽略那个唯一能赢的层。
+
+#### 16.9.1 P0：`Get-B1GuardState` —— 只读检测，绝不自动修复
+
+`07-mode.ps1` 新增 `Get-B1GuardState`，复用 `lib-stun-guard.ps1` 的 `Get-StunGuardAnalysis` 对 `binConfigs\config.json` 做形状判定：
+
+- `Show-Status` 增加 `B1 route guard` 一行，显示 `loaded (12 ports, udp+tcp, routing rules #N and #N+1)`，按 `Shadow` / `Caveat` 转黄标；`absent` / `error` 红标并打印修复命令。
+- `Ensure-Guard` 新增 9b 段，每个快检周期检测一次。`SHADOWED` 与任何非 `present` 状态写入 `logs\watchdog.log` 的 `WARNING` 行；判定结果同时进入 `backup\mode-state.json` 的 `B1Guard` 对象。
+- **刻意不自动修复**：`18 -Apply` 要改写 `guiNDB.db` 且拒绝在 v2rayN 运行时执行；从 SYSTEM 计划任务里触发，轻则被 v2rayN 退出时整体回写覆盖，重则损坏数据库。同理**不因此抬高退出码**——用户主动换一套不带守卫的路由规则是合法选择，一个每小时都失败的任务只会教会人忽略失败。
+- 该函数放在 `Show-Status` **之前**。`-Status` 分支在静态状态段之前就调用 `Show-Status`，放在 `Ensure-Guard` 旁边会命中"函数尚未定义"；本轮实跑 `-Status` 已验证输出正常。
+
+#### 16.9.2 P1：12 端口清单从 7 份硬编码收敛为 1 份定义
+
+`02`（729 行）、`07`（两处）、`14`（834 行）、`15`（两处）、`18`、`verify-leak-test` 各自抄了一份 `3478,3479,5349,5350,19302-19309`。任意两份不同步，就会出现"WFP 挡 13 个端口、核心丢 12 个，两边都报健康"，而验收脚本会把这个代码问题误判成配置问题。
+
+现在唯一定义是 `lib-stun-guard.ps1` 的 `$script:StunGuardPorts`，三个 getter 按用途返回形态：
+
+| getter | 返回 | 用途 |
+| --- | --- | --- |
+| `Get-StunGuardPorts` | `int[]` | 配置分析、守卫形状比对 |
+| `Get-StunGuardPortStrings` | `string[]` | `New-NetFirewallRule -RemotePort`（沿用既有参数类型） |
+| `Get-StunGuardPortSpec` | `'3478,3479,...'` | 写入路由规则与屏幕展示 |
+
+**缺库一律 `exit 1`，不回落本地字面量**：空端口列表会造出一条"挡住所有端口、却显示 `Enabled=True`"的规则，正是这个检查要防的静默失败。
+
+#### 16.9.3 P1：回归门禁进构建，且测试脚本不进发行物
+
+新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。
+
+#### 16.9.4 第二轮 review 修掉的 6 处
+
+完整 diff（10 文件）逐项自查后修正：`18` 的 `Get-ExpectedPortSet` 去掉一元逗号（`@(f).Count` 从 1 改回 12，消除嵌套数组陷阱）；B1 缓存 key 补上 lib 的 `(mtime,length)`，避免升级 lib 后仍读旧的 `present`；9b 的空 `catch` 改为写 `WARNING`；删除只写不读的死变量 `$script:B1Warning`；两个 `Protected` 分支的 `Write-State` 补传 `-B1`；lib 路径查找对 `$PSScriptRoot` 为空做防御。
+
+缓存行改为九段：`cfgTicks|cfgLen|libTicks|libLen|state|index|shadow|caveat|detail`。旧格式前缀不匹配即自动重算，不需要手工清缓存。真机验证：临时 Root 冷启动写出 9 段，把 `state` 篡改成 `absent` 后再跑 `-Status`，输出 `absent - CACHE-HIT-PROBE`，证明读路径生效。计划任务命令行显式带 `-Root "$Root"`，缓存落 `C:/AI-Net-Guard/backup/b1-guard.meta`，与 `mode-state.json` 同目录且在 13 的 ACL 范围内。
+
+#### 16.9.5 验收结果
+
+| 项目 | 结果 |
+| --- | --- |
+| `tests\test-stun-ports.ps1` | 11/11 PASS，exit 0 |
+| `18 -Verify` / `15 -Verify` / `verify-leak-test` | 全部 exit 0；`B1 ACTIVE`；`PASSED WITH CAVEAT` 口径未变 |
+| `gui\build.ps1 -RunSmokeTest` | exit 0；纯 ASCII + AST 门禁通过；payload 38 文件 299.4 KB；编译 0 警告 0 错误；冒烟 8 项 PASS |
+| `git diff --check` | 干净 |
+
+#### 16.9.6 必须说清的边界
+
+1. **检测不是修复，也不是抓包**。9b 只回答"核心当前加载的路由表里还有没有这对规则"，不证明某个包被丢弃。修复仍需人工关掉 v2rayN 后跑 `18 -Apply`。
+2. **防护范围没有扩大**：仍是 12 个端口的 udp + tcp，`udp/443` 等非标 STUN/TURN 端口不在覆盖内；`CAVEAT` 里的 origin-scoped direct 规则依旧可能绕过 B1。本版没有为了"看起来更严"去动这些已验证的判定。
+3. **生产目录要同步才生效**。`-SyncWorkspace` 只同步 `scripts\*.ps1`；在同步完成前，`C:/AI-Net-Guard` 实机跑的仍是 v5.8.2 脚本，不会有 `B1 route guard` 行，也不会生成 `b1-guard.meta`。这不是故障，是发版与部署的时间差。

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.2 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
+    AI-Net-Guard v5.8.3 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
 
 .DESCRIPTION
     The guard itself is 100% STATIC in Windows kernel WFP (BFE / tcpip.sys):
@@ -156,6 +156,7 @@ $v54Flag = Join-Path $Root 'backup\v54-migrated.flag'
 $quarantineFile = Join-Path $Root 'backup\auto-disabled-outbound-allow.json'
 $allowExceptionsFile = Join-Path $Root 'backup\allowed-outbound-rules.json'
 $stateFile = Join-Path $Root 'backup\mode-state.json'
+$b1Meta = Join-Path $Root 'backup\b1-guard.meta'
 $hotplugFile = Join-Path $Root 'backup\hotplug-ipv6.json'
 $logDir = Join-Path $Root 'logs'
 $eventLog = Join-Path $logDir 'watchdog.log'
@@ -163,6 +164,32 @@ $cnRuleName = 'AI-Guard-Allow-CN'
 $requiredRules = @('AI-Guard-Allow-TUN', 'AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-DoH-Ali', 'AI-Guard-Allow-DHCP')
 if ($guardPolicy.AllowLan) { $requiredRules += 'AI-Guard-Allow-LAN' }
 $knownTunNames = @($TunName, 'xray_tun', 'singbox_tun', 'mihomo_tun', 'Meta', 'Mihomo') | Select-Object -Unique
+
+# The STUN/TURN port set and the B1 routing-table checks are defined once, in
+# lib-stun-guard.ps1, and shared with 02/14/15/18/verify-leak-test. This script both
+# creates the firewall STUN block (section 9) and watches the routing-level guard
+# (section 9b), so both halves must agree on the port list - that agreement used to rely
+# on seven hand-synced literals.
+#
+# A missing lib is a hard stop, not a fallback to a local literal: a drift check that runs
+# against an empty port set reports 'clean' for a rule that blocks nothing, which is the
+# silent failure the check exists to prevent.
+$libStun = ''
+$libCandidates = @((Join-Path $Root 'scripts\lib-stun-guard.ps1'), (Join-Path $Root 'lib-stun-guard.ps1'))
+# $PSScriptRoot is empty when this file is dot-sourced from an interactive host, and
+# Join-Path throws on an empty -Path. Guard it instead of trusting the caller.
+if ($PSScriptRoot) { $libCandidates = @((Join-Path $PSScriptRoot 'lib-stun-guard.ps1')) + $libCandidates }
+foreach ($cand in $libCandidates) {
+    if ($cand -and (Test-Path -LiteralPath $cand)) { $libStun = $cand; break }
+}
+if (-not $libStun) {
+    Write-Host '[!] lib-stun-guard.ps1 missing - cannot determine the STUN/TURN port set' -ForegroundColor Red
+    Write-Host '    expected next to this script or under scripts\ - the install is incomplete.' -ForegroundColor Red
+    exit 1
+}
+. $libStun
+$stunPorts = @(Get-StunGuardPortStrings)
+$webrtcPorts = @($stunPorts)
 
 # ---------------------------------------------------------------- helpers (zero-CIM fast primitives)
 function Write-MonitorLog([string]$msg) {
@@ -1300,8 +1327,18 @@ function Read-PrevState {
 }
 
 function Write-State {
-    param([string]$Label, [bool]$CnEnabled, [string]$Sig, [bool]$TunState, [string[]]$Missing = @())
+    param([string]$Label, [bool]$CnEnabled, [string]$Sig, [bool]$TunState, [string[]]$Missing = @(), $B1 = $null)
     New-Item -ItemType Directory -Path (Split-Path $stateFile) -Force | Out-Null
+    $b1Obj = $null
+    if ($null -ne $B1) {
+        $b1Obj = [pscustomobject]@{
+            State  = [string]$B1.State
+            Detail = [string]$B1.Detail
+            Ports  = [int]$B1.Ports
+            Shadow = [int]$B1.Shadow
+            Caveat = [int]$B1.Caveat
+        }
+    }
     [pscustomobject]@{
         Version      = '5.5'
         Mode         = $Label
@@ -1309,6 +1346,7 @@ function Write-State {
         Signature    = $Sig
         MissingRules = $Missing
         TunUp        = $TunState
+        B1Guard      = $b1Obj
         Updated      = (Get-Date).ToString('o')
     } | ConvertTo-Json | Set-Content -LiteralPath $stateFile -Encoding UTF8
 }
@@ -1355,7 +1393,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>AI-Net-Guard v5.8.2 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
+    <Description>AI-Net-Guard v5.8.3 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
@@ -1443,6 +1481,124 @@ function Install-WatchdogTasks {
     Say ('[+] registered low-frequency fallback task: AI-Guard-Mode-Fallback (every ' + $fbMin + ' min, zero-CIM fast check)')
 }
 
+function Get-B1GuardState {
+    # Read-only. Answers one question: is the STUN/TURN block still inside the routing
+    # table the core actually loaded?
+    #
+    # Why a watch for something 18-route-stun-guard.ps1 already writes: 18 runs on demand,
+    # and nothing after it re-checks the result. A routing-set switch in the v2rayN UI, a
+    # v2rayN update, or a hand edit of the routing table can remove the two guard rules,
+    # and every symptom stays hidden: the physical-NIC WFP rules block the same egress, so
+    # every probe is still silent, while the core's own re-send - the packet the firewall
+    # never sees - sails straight out. 15's header and 18's header both document that the
+    # WFP layer cannot close that path; the routing table is the only layer that can. It
+    # deserves the same 'detect drift every cycle' treatment the firewall rules get.
+    #
+    # This function NEVER repairs. -Apply has to rewrite guiNDB.db and refuses to run
+    # while v2rayN is up, so repairing from a scheduled task would either be reverted by
+    # v2rayN on exit or corrupt the database. Detection plus a loud warning is the whole
+    # job; the remediation command is printed with the warning.
+    #
+    # Placement note: -Status invokes Show-Status before the static-state section, so this
+    # function must live above Show-Status, not next to its other caller in Ensure-Guard.
+    param([string]$ConfigPath)
+
+    $res = [pscustomobject]@{
+        State = 'unknown'; Detail = ''; Ports = 0; PairIndex = -1
+        Shadow = 0; Caveat = 0; Config = $ConfigPath
+    }
+    if (-not $ConfigPath -or -not (Test-Path -LiteralPath $ConfigPath)) {
+        $res.State = 'no-config'
+        $res.Detail = 'core config has not been written yet'
+        return $res
+    }
+    if (-not (Get-Command Get-StunGuardAnalysis -ErrorAction SilentlyContinue)) {
+        $res.State = 'lib-missing'
+        $res.Detail = 'lib-stun-guard.ps1 is not loaded'
+        return $res
+    }
+
+    $ports = @(Get-StunGuardPorts)
+    $res.Ports = $ports.Count
+
+    # The analysis costs one ConvertFrom-Json over binConfigs\config.json. Cheap on the
+    # hourly fallback, but this task also fires on every network-profile event, and
+    # re-parsing an unchanged config buys nothing - so the verdict is cached against
+    # (mtime ticks, length) of BOTH files it depends on: the core config and the lib
+    # that defines the port set and the verdict logic. Caching on the config alone means
+    # an upgraded lib keeps returning the old 'present' verdict off an unchanged config,
+    # which is exactly the silent staleness this watch exists to prevent. The fast path
+    # is two Get-Item calls plus one small read.
+    #
+    # Cache line: cfgTicks|cfgLen|libTicks|libLen|state|index|shadow|caveat|detail
+    # Old-format lines simply do not match the new stamp prefix and are recomputed.
+    $stamp = ''
+    $it = Get-Item -LiteralPath $ConfigPath -ErrorAction SilentlyContinue
+    $li = if ($libStun) { Get-Item -LiteralPath $libStun -ErrorAction SilentlyContinue } else { $null }
+    if ($null -ne $it -and $null -ne $li) {
+        $stamp = $it.LastWriteTimeUtc.Ticks.ToString() + '|' + $it.Length.ToString() + '|' +
+                 $li.LastWriteTimeUtc.Ticks.ToString() + '|' + $li.Length.ToString()
+    }
+    if ($stamp -and (Test-Path -LiteralPath $b1Meta)) {
+        try {
+            $c = (Get-Content -LiteralPath $b1Meta -Raw -Encoding ASCII -ErrorAction SilentlyContinue).Trim()
+            if ($c -and $c.StartsWith($stamp + '|')) {
+                $p = $c.Split('|', 9)
+                if ($p.Count -ge 9) {
+                    $res.State = $p[4]
+                    $res.PairIndex = [int]$p[5]
+                    $res.Shadow = [int]$p[6]
+                    $res.Caveat = [int]$p[7]
+                    $res.Detail = $p[8]
+                    return $res
+                }
+            }
+        }
+        catch { }
+    }
+
+    try {
+        $a = Get-StunGuardAnalysis -ConfigPath $ConfigPath -Expected $ports
+    }
+    catch {
+        $res.State = 'error'
+        $res.Detail = $_.Exception.Message
+        return $res
+    }
+    $res.State = [string]$a.State
+    $res.PairIndex = [int]$a.Index
+    $res.Shadow = [int]$a.Shadow
+    $res.Caveat = [int]$a.Caveat
+    switch ($res.State) {
+        'present' {
+            if ($res.Shadow -gt 0) {
+                $res.Detail = 'rule(s) ahead of the guard pair can swallow STUN traffic: ' + (@($a.ShadowRules) -join '; ')
+            }
+            elseif ($res.Caveat -gt 0) {
+                $res.Detail = 'origin-scoped rule(s) ahead of the pair may bypass it: ' + (@($a.CaveatRules) -join '; ')
+            }
+        }
+        'absent' { $res.Detail = 'no block rule carries the complete STUN/TURN port set' }
+        default {
+            if ($a.Detail) { $res.Detail = [string]$a.Detail }
+        }
+    }
+    if ($res.Detail.Length -gt 400) { $res.Detail = $res.Detail.Substring(0, 400) }
+
+    if ($stamp) {
+        try {
+            $line = ($stamp + '|' + $res.State + '|' + $res.PairIndex.ToString() + '|' + $res.Shadow.ToString() + '|' + $res.Caveat.ToString() + '|' + ($res.Detail -replace '[\|\r\n]', ' '))
+            New-Item -ItemType Directory -Path (Split-Path $b1Meta) -Force -ErrorAction SilentlyContinue | Out-Null
+            # -ErrorAction Stop: the install root is locked read-only for Users, so a
+            # non-elevated -Status must fail this write SILENTLY into the catch, not print
+            # a red permission error in the middle of a read-only report.
+            Set-Content -LiteralPath $b1Meta -Value $line -Encoding ASCII -ErrorAction Stop
+        }
+        catch { }
+    }
+    return $res
+}
+
 function Show-Status {
     # NOTE: these helpers 'return ,$array'; assign directly - wrapping in @() would always yield Count=1
     $activeTuns = Get-ActiveTunNamesFast
@@ -1458,7 +1614,7 @@ function Show-Status {
     else { 'stopped' }
 
     Write-Host ''
-    Write-Host '=== AI-Net-Guard v5.8.2 Status (read-only) ===' -ForegroundColor Cyan
+    Write-Host '=== AI-Net-Guard v5.8.3 Status (read-only) ===' -ForegroundColor Cyan
     Write-Host ('TUN : ' + $tunLabel + '   core : ' + $coreLabel)
     if (Test-Path -LiteralPath $policyFile) {
         Write-Host ('  policy preset     : ' + $guardPolicy.Preset + ' (guard-policy.json active)') -ForegroundColor Cyan
@@ -1521,6 +1677,34 @@ function Show-Status {
         else {
             Write-Host ('  rule {0,-24} : MISSING' -f $rn) -ForegroundColor Red
         }
+    }
+
+    # B1 routing-table guard (18-route-stun-guard.ps1). Read-only line: the fix requires
+    # v2rayN to be closed, so it is reported, not repaired, everywhere it is checked.
+    $b1 = if ($script:B1State) { $script:B1State } else { Get-B1GuardState (Join-Path $V2rayNRoot 'binConfigs\config.json') }
+    $b1Col = 'Red'; $b1Txt = ''
+    switch ($b1.State) {
+        'present' {
+            $b1Col = 'Green'
+            $b1Txt = 'loaded (' + $b1.Ports + ' ports, udp+tcp, routing rules #' + $b1.PairIndex + ' and #' + ($b1.PairIndex + 1) + ')'
+            if ($b1.Shadow -gt 0) {
+                $b1Col = 'Yellow'
+                $b1Txt += ' - SHADOWED by a preceding rule'
+            }
+            elseif ($b1.Caveat -gt 0) {
+                $b1Col = 'Yellow'
+                $b1Txt += ' - caveat: origin-scoped rule ahead may bypass it'
+            }
+        }
+        'no-config' { $b1Col = 'DarkGray'; $b1Txt = 'unknown (core config not written yet - start v2rayN once)' }
+        'lib-missing' { $b1Txt = 'cannot check (lib-stun-guard.ps1 missing)' }
+        default {
+            $b1Txt = $b1.State + ' - ' + $b1.Detail
+        }
+    }
+    Write-Host ('  B1 route guard    : ' + $b1Txt) -ForegroundColor $b1Col
+    if ($b1.State -notin @('present', 'no-config')) {
+        Write-Host '                      fix: close v2rayN, then run scripts\18-route-stun-guard.ps1 -Apply' -ForegroundColor DarkGray
     }
 
     $rogueCnt = $analysis.RogueOutboundAllows.Count
@@ -1612,7 +1796,7 @@ function Show-Status {
 }
 
 function Invoke-UpgradeV54 {
-    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.8.2 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
+    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.8.3 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
 
     # 1. Backfill new rollback fields into existing DNS baseline JSON without altering original values
     $bf = Join-Path $Root 'backup\baseline.json'
@@ -1784,7 +1968,7 @@ function Test-ShieldDriftFast($Analysis, $PhysNics) {
     # Anything that cannot be positively verified counts as drift.  A wrong "clean" would
     # skip a repair and leave a leak path open, which is exactly the silent failure this
     # guard exists to prevent; a wrong "drift" only costs one extra repair run.
-    $stunPorts = @('3478', '3479', '5349', '5350', '19302', '19303', '19304', '19305', '19306', '19307', '19308', '19309')
+    # $stunPorts is the script-scope copy from lib-stun-guard.ps1 (single definition).
 
     if ($null -eq $Analysis -or $null -eq $Analysis.RawByRule) { return $true }
     $raw = $Analysis.RawByRule
@@ -1877,6 +2061,7 @@ function Test-ShieldDriftFast($Analysis, $PhysNics) {
 function Ensure-Guard {
     $script:missingRules = @()
     $script:repairedItems = @()
+    $script:B1State = $null
 
     # 0. One-time zero-touch v5.4 hot-migration (<0.2 ms Test-Path after first run)
     if (-not (Test-Path -LiteralPath $v54Flag)) {
@@ -2301,7 +2486,7 @@ function Ensure-Guard {
     # 9. WebRTC STUN/TURN leak shield (dual-layer: WFP firewall + Chromium enterprise policy)
     try {
         $wrtcEnabled = if ($guardPolicy.PSObject.Properties.Name -contains 'BlockWebRtcLeak') { [bool]$guardPolicy.BlockWebRtcLeak } else { $true }
-        $webrtcPorts = @('3478', '3479', '5349', '5350', '19302', '19303', '19304', '19305', '19306', '19307', '19308', '19309')
+        # $webrtcPorts is the script-scope copy from lib-stun-guard.ps1 (single definition).
         $udpActive = $ruleStates.ContainsKey('AI-Guard-Block-WebRTC-UDP') -and $ruleStates['AI-Guard-Block-WebRTC-UDP']
         $tcpActive = $ruleStates.ContainsKey('AI-Guard-Block-WebRTC-TCP') -and $ruleStates['AI-Guard-Block-WebRTC-TCP']
         $localUdpActive = $ruleStates.ContainsKey('AI-Guard-Block-WebRTC-LocalIP-UDP') -and $ruleStates['AI-Guard-Block-WebRTC-LocalIP-UDP']
@@ -2496,6 +2681,50 @@ function Ensure-Guard {
     }
     catch { }
 
+    # 9b. B1 routing-table guard (scripts\18-route-stun-guard.ps1): DETECT, never repair.
+    #
+    # The section above auto-repairs 15-webrtc-browser-shield.ps1, but 15's own header
+    # admits the firewall layer cannot stop this leak once a TUN is up: the browser hands
+    # the packet to the tunnel, the core re-sends it from the physical NIC, and the WFP
+    # block filters are never evaluated. The layer that actually drops the traffic is the
+    # core's routing table, maintained by 18 - and until now NOTHING watched it. A
+    # routing-set switch in the v2rayN UI, a v2rayN update, or a hand edit could remove
+    # the two guard rules, and every probe would stay silent (the physical-NIC WFP rules
+    # block the same egress) while the core's own re-send leaks the real address. The
+    # self-heal chain repaired the layer that cannot win and ignored the layer that can;
+    # this check fixes that asymmetry.
+    #
+    # No auto-repair by design: -Apply has to rewrite guiNDB.db and refuses to run while
+    # v2rayN is up, so repairing from here would be reverted by v2rayN on exit at best and
+    # would corrupt the database at worst. Detection + a loud warning + the exact
+    # remediation command is the whole job. The exit code is NOT raised on this alone:
+    # running a routing set without the guard is a legitimate user choice, and a task that
+    # fails every hour teaches people to ignore failures.
+    try {
+        $script:B1State = Get-B1GuardState (Join-Path $V2rayNRoot 'binConfigs\config.json')
+        switch ($script:B1State.State) {
+            'present' {
+                if ($script:B1State.Shadow -gt 0) {
+                    Write-MonitorLog ('WARNING: B1 STUN route guard is loaded but SHADOWED - ' + $script:B1State.Detail)
+                }
+                elseif ($script:B1State.Caveat -gt 0) {
+                    Write-MonitorLog ('B1 STUN route guard: loaded, caveat=' + $script:B1State.Caveat + ' (' + $script:B1State.Detail + ')')
+                }
+            }
+            'no-config' { }
+            default {
+                Write-MonitorLog ('WARNING: B1 STUN route guard is ' + $script:B1State.State + ' in the core routing table - ' + $script:B1State.Detail)
+                Write-MonitorLog '         STUN/TURN can leave through the core unobserved. Fix: close v2rayN, then run scripts\18-route-stun-guard.ps1 -Apply'
+            }
+        }
+    }
+    catch {
+        # Never swallow this silently: an unchecked B1 is precisely the failure mode this
+        # section was added to catch. B1State stays null, so the state file records
+        # B1Guard=null and a reader can tell the check did not complete.
+        Write-MonitorLog ('WARNING: B1 route guard check threw - ' + $_.Exception.Message)
+    }
+
     # 10. Explicit physical-NIC foreign IPv4 block (vetoes third-party WFP soft-permit callouts)
     try {
         $libForeign = if ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'lib-foreign-block.ps1'))) {
@@ -2625,7 +2854,7 @@ else {
         Say '[+] PROTECTED: CN prefix list missing/invalid (fail closed)'
         Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Block -Enabled True
         Disable-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
-        Write-State -Label 'Protected' -CnEnabled $false -Sig '' -TunState $tunUp
+        Write-State -Label 'Protected' -CnEnabled $false -Sig '' -TunState $tunUp -B1 $script:B1State
         Write-MonitorLog 'verify: CN list invalid -> Protected (fail closed)'
         exit 2
     }
@@ -2702,11 +2931,11 @@ else {
     $label = if ($tunUp) { 'Guard (proxy on)' } else { 'Guard (proxy off)' }
     if ($sig -eq 'POLICY-NO-CN') {
         Say ('[+] ' + $label + ': static guard intact, strict global lock (CN direct disabled by policy)')
-        Write-State -Label $label -CnEnabled $false -Sig $sig -TunState $tunUp -Missing $script:missingRules
+        Write-State -Label $label -CnEnabled $false -Sig $sig -TunState $tunUp -Missing $script:missingRules -B1 $script:B1State
     }
     else {
         Say ('[+] ' + $label + ': static guard intact, CN direct allowed, foreign blocked')
-        Write-State -Label $label -CnEnabled $true -Sig $sig -TunState $tunUp -Missing $script:missingRules
+        Write-State -Label $label -CnEnabled $true -Sig $sig -TunState $tunUp -Missing $script:missingRules -B1 $script:B1State
     }
 
     if ($Upgrade) {

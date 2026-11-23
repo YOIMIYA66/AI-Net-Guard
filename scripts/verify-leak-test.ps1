@@ -1,4 +1,4 @@
-# AI-Net-Guard Leak & Connectivity Verification Test (v5.8.2)
+# AI-Net-Guard Leak & Connectivity Verification Test (v5.8.3)
 #
 # .PARAMETER V2rayNRoot
 #   Optional. v2rayN install folder, used only to locate binConfigs\config.json for the
@@ -339,12 +339,10 @@ function Find-CoreConfig {
     return ''
 }
 
-# Same port set as 18-route-stun-guard.ps1 and 15-webrtc-browser-shield.ps1.
-$expectedPorts = @(3478, 3479, 5349, 5350, 19302, 19303, 19304, 19305, 19306, 19307, 19308, 19309)
-
-# The guard checks are SHARED with 18-route-stun-guard.ps1 rather than reimplemented here.
-# A second copy is exactly how one script reports SHADOWED while the other reports PASS for
-# the same config file, leaving the operator no way to tell which one is lying.
+# The guard checks AND the port set are SHARED with 18-route-stun-guard.ps1 rather than
+# reimplemented here. A second copy is exactly how one script reports SHADOWED while the
+# other reports PASS for the same config file, leaving the operator no way to tell which
+# one is lying - and the port list itself was a second copy too, in seven places.
 $libPath = Join-Path $(if ($PSScriptRoot) { $PSScriptRoot } else { (Split-Path -Parent $PSCommandPath) }) 'lib-stun-guard.ps1'
 if (-not (Test-Path -LiteralPath $libPath)) {
     Write-Host '[FAIL] lib-stun-guard.ps1 is missing next to this script - cannot judge the guard' -ForegroundColor Red
@@ -352,6 +350,7 @@ if (-not (Test-Path -LiteralPath $libPath)) {
     exit 1
 }
 . $libPath
+$expectedPorts = @(Get-StunGuardPorts)
 
 function Get-StunGuardLoaded {
     $cfg = Find-CoreConfig

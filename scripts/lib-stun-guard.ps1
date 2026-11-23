@@ -18,6 +18,47 @@
 #      evaluated against the actual shape of a STUN probe: an IP destination, one of the
 #      twelve ports, over udp or tcp, arriving through the TUN inbound.
 
+# ---------------------------------------------------------------- the port set
+#
+# THE list. Twelve ports, four protocols worth of ways to leak, one definition.
+#
+# It used to be copy-pasted into seven places: 02-killswitch, 07-mode (twice),
+# 14-apply-policy, 15-webrtc-browser-shield (twice), 18-route-stun-guard and
+# verify-leak-test. Every copy is a place where "the guard covers twelve ports" quietly
+# stops being true: add a port to the firewall rule and not to the routing rule and the
+# host blocks 13 ports at WFP while the core drops 12, with both halves reporting healthy.
+# The acceptance test would then report the mismatch as a config problem instead of a code
+# one.
+#
+# Consumers dot-source this file and call one of the three getters below. There is no
+# fallback literal: a script that cannot find this file must refuse to run, because a rule
+# built from an empty port list blocks nothing while still showing Enabled=True.
+$script:StunGuardPorts = @(
+    3478, 3479,                                                  # STUN / TURN
+    5349, 5350,                                                  # TURN over TLS / TCP
+    19302, 19303, 19304, 19305, 19306, 19307, 19308, 19309       # Google STUN pool
+)
+
+function Get-StunGuardPorts {
+    # int[] - what the analysis in this file compares against. Returned unrolled (the
+    # pipeline re-collects it), so @(Get-StunGuardPorts) and a bare assignment both give
+    # the same 12-element array.
+    return $script:StunGuardPorts
+}
+
+function Get-StunGuardPortStrings {
+    # string[] - New-NetFirewallRule -RemotePort accepts this form directly, and 02/07/14/15
+    # have passed strings to it since the first version, so the type is kept identical.
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $script:StunGuardPorts) { $out.Add([string]$p) }
+    return $out.ToArray()
+}
+
+function Get-StunGuardPortSpec {
+    # '3478,3479,...' - the wire form 18 writes into the routing rule and shows on screen.
+    return ($script:StunGuardPorts -join ',')
+}
+
 # Keys that narrow a rule so it no longer matches every host/port. 'type' is added by
 # v2rayN when it generates config.json and carries no matching semantics of its own.
 $script:StunNarrowingKeys = @(

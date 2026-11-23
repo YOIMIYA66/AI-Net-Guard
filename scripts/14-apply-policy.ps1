@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.2 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.8.3 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 16
@@ -52,6 +52,17 @@ function Get-PolicyScriptPath([string]$name) {
     if (Test-Path -LiteralPath $sp) { return $sp }
     return (Join-Path $Root $name)
 }
+
+# The STUN/TURN port set is defined once, in lib-stun-guard.ps1. Resolved before any rule is
+# touched: an empty port list would create a rule that blocks every port while claiming to
+# block twelve.
+$libStun = Get-PolicyScriptPath 'lib-stun-guard.ps1'
+if (-not (Test-Path -LiteralPath $libStun)) {
+    Write-Host ('[!] lib-stun-guard.ps1 not found: ' + $libStun) -ForegroundColor Red
+    Write-Host '    refusing to apply the WebRTC block without the shared port list.' -ForegroundColor Red
+    exit 1
+}
+. $libStun
 
 function Write-Step([string]$msg) { Write-Host ('[+] ' + $msg) -ForegroundColor Cyan }
 function Write-Ok([string]$msg)   { Write-Host ('    [OK] ' + $msg) -ForegroundColor Green }
@@ -359,7 +370,7 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.8.2 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.8.3 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
 
 if ($isFreshInstall) {
@@ -831,7 +842,7 @@ else {
     }
 
     # 2c. BlockWebRtcLeak (physical NIC STUN/TURN firewall rules + LocalIP rules + Chrome/Edge policy)
-    $wrtcPorts = @('3478', '3479', '5349', '5350', '19302', '19303', '19304', '19305', '19306', '19307', '19308', '19309')
+    $wrtcPorts = @(Get-StunGuardPortStrings)
     $cPolKey = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
     $ePolKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
     $ruleWrtcUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue
@@ -1120,5 +1131,5 @@ if (Test-Path -LiteralPath $aclScript) {
 
 & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Status -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns
 Write-Host ''
-Write-Host '[SUCCESS] AI-Net-Guard v5.8.2 configuration applied successfully.' -ForegroundColor Green
+Write-Host '[SUCCESS] AI-Net-Guard v5.8.3 configuration applied successfully.' -ForegroundColor Green
 exit 0

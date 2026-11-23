@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.2 - step 2: static default-deny firewall + CN & TUN allowlist.
+    AI-Net-Guard v5.8.3 - step 2: static default-deny firewall + CN & TUN allowlist.
 
 .DESCRIPTION
     Configures Windows Defender Firewall for the v5.1 zero-switch static guard:
@@ -68,6 +68,19 @@ if (-not $V2rayNRoot) {
     }
 }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+
+# The STUN/TURN port set is defined once, in lib-stun-guard.ps1 (see the header there), and
+# read from that file here. Resolved BEFORE the first rule is created on purpose: a missing
+# lib must abort the run, not fall back to a literal of its own. '-RemotePort' with an
+# empty list blocks every port, i.e. it would black-hole all UDP instead of the twelve
+# STUN/TURN ports, and the rules would still read Enabled=True.
+$libStun = Join-Path $PSScriptRoot 'lib-stun-guard.ps1'
+if (-not (Test-Path -LiteralPath $libStun)) {
+    Write-Host ('[!] lib-stun-guard.ps1 not found next to this script: ' + $libStun) -ForegroundColor Red
+    Write-Host '    refusing to build the STUN/TURN block rules without the shared port list.' -ForegroundColor Red
+    exit 1
+}
+. $libStun
 
 function Assert-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -726,7 +739,7 @@ if (-not $SkipNcsiRule) {
 
 # 6.5 WebRTC STUN/TURN leak shield on physical network interfaces (anti-leak for all proxy cores)
 if (-not $SkipWebRtcBlock -and $physicalAll.Count -gt 0) {
-    $webrtcPorts = @('3478', '3479', '5349', '5350', '19302', '19303', '19304', '19305', '19306', '19307', '19308', '19309')
+    $webrtcPorts = @(Get-StunGuardPortStrings)
     New-AiRule @{
         DisplayName    = 'AI-Guard-Block-WebRTC-UDP'
         Direction      = 'Outbound'

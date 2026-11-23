@@ -41,6 +41,10 @@ $allScripts = @()
 if (Test-Path -LiteralPath $scriptsDir) {
     $allScripts += @(Get-ChildItem -Path $scriptsDir -Filter '*.ps1' -File)
 }
+$testsDir = Join-Path $RepoRoot 'tests'
+if (Test-Path -LiteralPath $testsDir) {
+    $allScripts += @(Get-ChildItem -Path $testsDir -Filter '*.ps1' -File)
+}
 $allScripts += @(Get-ChildItem -Path $RepoRoot -Filter '*.ps1' -File)
 $allScripts = @($allScripts | Sort-Object FullName -Unique)
 if ($allScripts.Count -lt 16) {
@@ -60,6 +64,19 @@ foreach ($sf in ($allScripts + @(Get-Item -LiteralPath $PSCommandPath))) {
     }
 }
 Write-Host ('        checked ' + ($allScripts.Count + 1) + ' scripts: 100% pure ASCII, 0 parse errors') -ForegroundColor Green
+
+# ------------------------------------------------------------------ 1b. STUN/TURN port-set regression gate
+# The port list has exactly one definition (scripts\lib-stun-guard.ps1). This test proves
+# no script kept a local copy, and it proves the copy that WAS present in seven places
+# cannot silently come back - running it here means a drift never survives a build.
+$tportTest = Join-Path $RepoRoot 'tests\test-stun-ports.ps1'
+if (Test-Path -LiteralPath $tportTest) {
+    Write-BuildStep 'running STUN/TURN port-set regression test (tests\test-stun-ports.ps1)'
+    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $tportTest
+    if ($LASTEXITCODE -ne 0) {
+        throw ('STUN/TURN port-set regression test failed (exit ' + $LASTEXITCODE + ')')
+    }
+}
 
 # ------------------------------------------------------------------ 2. Generate vector multi-size app.ico
 Write-BuildStep 'generating vector shield icon (gui\obj\app.ico)'

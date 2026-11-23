@@ -76,6 +76,19 @@ $ErrorActionPreference = 'Stop'
 
 function Say($m, $c = 'Gray') { if (-not $Quiet) { Write-Host $m -ForegroundColor $c } }
 
+# The STUN/TURN port set is defined once, in lib-stun-guard.ps1 (see the header there).
+# This script repairs rules created by 02/07/14 from that same list, so reading its own
+# copy here is how a "repair" can quietly rewrite a rule back to a stale port list. A
+# missing lib is a hard stop: an empty list would create a rule that blocks every port.
+$libStun = Join-Path $PSScriptRoot 'lib-stun-guard.ps1'
+if (-not (Test-Path -LiteralPath $libStun)) { $libStun = Join-Path (Join-Path $Root 'scripts') 'lib-stun-guard.ps1' }
+if (-not (Test-Path -LiteralPath $libStun)) {
+    Write-Host ('[!] lib-stun-guard.ps1 not found: ' + $libStun) -ForegroundColor Red
+    Write-Host '    refusing to touch the STUN/TURN rules without the shared port list.' -ForegroundColor Red
+    exit 1
+}
+. $libStun
+
 # ------------------------------------------------------------ NetSecurity cache
 # Measured on this host: Get-NetFirewallRule costs ~1.23 s per call whether or not
 # -Name narrows it, and each Get-NetFirewall*Filter costs another ~0.3 s. Discovery
@@ -320,9 +333,9 @@ foreach ($e in $coreExe) {
     $cores += [pscustomobject]@{ Tag = $tag; Exe = $e }
 }
 
-# STUN / TURN well-known ports.  Kept as an explicit list because Windows Firewall has no
-# port-range object here; 19302-19309 covers the Google STUN pool.
-$stunPorts = @('3478', '3479', '5349', '5350', '19302', '19303', '19304', '19305', '19306', '19307', '19308', '19309')
+# STUN / TURN well-known ports, from lib-stun-guard.ps1 (the single definition).
+# 19302-19309 covers the Google STUN pool; Windows Firewall has no port-range object here.
+$stunPorts = @(Get-StunGuardPortStrings)
 
 Say ' '
 Say ('physical NICs : ' + ($physNames -join ', ')) 'Cyan'
@@ -497,7 +510,7 @@ foreach ($n in $stockIfRules) {
 # The two LocalAddress rules carry the physical-NIC scope that survives a DHCP renumber.
 # Compare as sets (not "is the new IP missing"), so a lease left over from an old subnet is
 # pruned instead of lingering forever on a rule that looks healthy.
-$webrtcPorts = @('3478', '3479', '5349', '5350', '19302', '19303', '19304', '19305', '19306', '19307', '19308', '19309')
+$webrtcPorts = @(Get-StunGuardPortStrings)
 foreach ($n in $stockIpRules) {
     if ($physCidrs.Count -eq 0) { Say ('  skip    {0} (no physical IPv4)' -f $n) 'Yellow'; continue }
     $cur = Get-RuleLocalAddressList $n

@@ -153,12 +153,31 @@ $Root = $Root.TrimEnd('\')
 $env:PYTHONIOENCODING = 'utf-8'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
-# Kept in sync with 15-webrtc-browser-shield.ps1 and the AI-Guard-Block-WebRTC-* rules.
-$StunPorts = '3478,3479,5349,5350,19302,19303,19304,19305,19306,19307,19308,19309'
 $GuardTag = 'STUN-GUARD:'
 $V2Config = Join-Path $V2rayNRoot 'binConfigs\config.json'
 
 function Say($msg, $color = 'Gray') { Write-Host $msg -ForegroundColor $color }
+
+# ---------------------------------------------------------------- shared guard logic
+# The port set AND the config checks live in lib-stun-guard.ps1, not here. Two reasons:
+#
+#   * The port list used to be a literal in this file, in 02-killswitch, in 07-mode twice,
+#     in 14-apply-policy, in 15-webrtc-browser-shield twice and in verify-leak-test. That
+#     is seven chances for the firewall rule and the routing rule to cover different ports
+#     while both report healthy.
+#   * verify-leak-test.ps1 asks the same questions about the same config.json. Two copies of
+#     the checks is how one script reports SHADOWED while the other reports PASS.
+#
+# Loaded here (before any database call) rather than further down, because the port value
+# is passed into every database operation.
+$libPath = Join-Path $(if ($PSScriptRoot) { $PSScriptRoot } else { (Split-Path -Parent $PSCommandPath) }) 'lib-stun-guard.ps1'
+if (-not (Test-Path -LiteralPath $libPath)) {
+    Say ('[!] lib-stun-guard.ps1 not found next to this script: ' + $libPath) 'Red'
+    Say '    the guard checks and the port set are shared and cannot be skipped' 'Yellow'
+    exit 1
+}
+. $libPath
+$StunPorts = Get-StunGuardPortSpec
 
 function Get-PythonExe {
     foreach ($cand in @('python', 'python3', 'py')) {
@@ -419,20 +438,11 @@ function Get-FileSha([string]$Path) {
 # the loaded table is checked directly. The checks themselves live in lib-stun-guard.ps1
 # because verify-leak-test.ps1 asks the same questions: two copies of this logic is how
 # one script reports SHADOWED while the other reports PASS for the same config file.
-$libPath = Join-Path $(if ($PSScriptRoot) { $PSScriptRoot } else { (Split-Path -Parent $PSCommandPath) }) 'lib-stun-guard.ps1'
-if (-not (Test-Path -LiteralPath $libPath)) {
-    Say ('[!] lib-stun-guard.ps1 not found next to this script: ' + $libPath) 'Red'
-    Say '    the guard checks are shared with verify-leak-test.ps1 and cannot be skipped' 'Yellow'
-    exit 1
-}
-. $libPath
-
 function Get-ExpectedPortSet {
-    return @($StunPorts.Split(',') | ForEach-Object { [int]$_.Trim() } | Sort-Object -Unique)
-}
-
-function Get-CoreGuardState {
-    return Get-StunGuardAnalysis -ConfigPath $V2Config -Expected (Get-ExpectedPortSet)
+    # Unrolled int[]: the only caller binds this straight into [int[]]$Expected, and a
+    # unary comma here would make '@(Get-ExpectedPortSet)' see Count=1 (one nested array)
+    # for anyone who adds a second caller later. Plain @() keeps the shape obvious.
+    return @(Get-StunGuardPorts)
 }
 
 function Get-CoreGuardState {
