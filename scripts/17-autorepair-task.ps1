@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.1 - network auto-repair scheduled tasks (status / install / remove / self-test).
+    AI-Net-Guard v5.9.2 - network auto-repair scheduled tasks (status / install / remove / self-test).
 
 .DESCRIPTION
     Windows can invalidate part of the static guard without any user action: a NIC
