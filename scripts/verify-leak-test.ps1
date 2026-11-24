@@ -1,4 +1,4 @@
-# AI-Net-Guard Leak & Connectivity Verification Test (v5.8.7)
+# AI-Net-Guard Leak & Connectivity Verification Test (v5.8.8)
 #
 # .PARAMETER V2rayNRoot
 #   Optional. v2rayN install folder, used only to locate binConfigs\config.json for the
@@ -242,29 +242,18 @@ function Invoke-StunProbe {
     try {
         $udp.Client.ReceiveTimeout = $TimeoutMs
         $udp.Connect($Target, $Port)
-        $b = New-Object byte[] 20
-        $b[1] = 0x01
-        $b[4] = 0x21; $b[5] = 0x12; $b[6] = 0xA4; $b[7] = 0x42
-        for ($i = 8; $i -lt 20; $i++) { $b[$i] = [byte](Get-Random -Minimum 0 -Maximum 256) }
-        [void]$udp.Send($b, $b.Length)
+        $req = New-StunBindingRequest
+        [void]$udp.Send($req.Packet, $req.Packet.Length)
         $ep = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
         $resp = $udp.Receive([ref]$ep)
-        $res.State = 'reply'
-        $len = ([int]$resp[2] -shl 8) -bor [int]$resp[3]
-        $i = 20
-        while (($i + 12) -le $resp.Length -and $i -lt (20 + $len)) {
-            $t = ([int]$resp[$i] -shl 8) -bor [int]$resp[$i + 1]
-            $l = ([int]$resp[$i + 2] -shl 8) -bor [int]$resp[$i + 3]
-            $v = $i + 4
-            if ($t -eq 0x0020 -and $resp[$v + 1] -eq 0x01 -and ($v + 8) -le $resp.Length) {
-                $ck = [BitConverter]::GetBytes([uint32]0x2112A442)
-                if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($ck) }
-                $ipb = @()
-                for ($k = 0; $k -lt 4; $k++) { $ipb += [string]([byte]($resp[$v + 4 + $k] -bxor $ck[$k])) }
-                $res.Mapped = ($ipb -join '.')
-                break
-            }
-            $i = $v + $l + ((4 - ($l % 4)) % 4)
+        $mapped = ConvertFrom-StunResponse -Packet $resp -TransactionId $req.TransactionId
+        if ($mapped) {
+            $res.State = 'reply'
+            $res.Mapped = $mapped
+        }
+        else {
+            $res.State = 'malformed'
+            $res.Detail = ('unrecognized/mismatched STUN UDP reply (' + $resp.Length + 'B)')
         }
     }
     catch {
@@ -370,7 +359,13 @@ $guard = Get-StunGuardLoaded
 
 switch ($guard.State) {
     'present' {
-        Write-Host ('[i] core config : pair loaded at routing index ' + $guard.Index + '/' + ($guard.Index + 1) + ',') -ForegroundColor DarkGray
+        $guardDesc = if (($guard.PSObject.Properties.Name -contains 'RuleCount') -and $guard.RuleCount -eq 1) {
+            'combined rule loaded at routing index ' + $guard.Index + ','
+        }
+        else {
+            'pair loaded at routing index ' + $guard.Index + '/' + ($guard.Index + 1) + ','
+        }
+        Write-Host ('[i] core config : ' + $guardDesc) -ForegroundColor DarkGray
         Write-Host ('                  complete ' + $expectedPorts.Count + '-port set, udp then tcp') -ForegroundColor DarkGray
         # Loaded is not the same as reachable. A rule ahead of the pair that can match STUN
         # traffic hides it completely, and this is the same judgement 18 makes, from the

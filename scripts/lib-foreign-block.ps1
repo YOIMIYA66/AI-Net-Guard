@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.8.7 - shared helper for explicit physical-NIC foreign IPv4 block rule
+# AI-Net-Guard v5.8.8 - shared helper for explicit physical-NIC foreign IPv4 block rule
 # Pure ASCII script. Dot-sourced by 02-killswitch.ps1, 07-mode.ps1, 10-sync-node-rule.ps1, 14-apply-policy.ps1.
 #
 # Why this exists:
@@ -137,6 +137,7 @@ function Sync-ForeignPhysicalBlockRule {
         [bool]$AllowCnDirect = $true,
         [bool]$AllowLan = $true,
         [bool]$AllowNcsi = $true,
+        [bool]$BlockPhysicalIpv6 = $true,
         [switch]$Force
     )
 
@@ -153,7 +154,7 @@ function Sync-ForeignPhysicalBlockRule {
     }
 
     $metaFile = Join-Path $Root 'backup\foreign-block.meta'
-    $wantSig = ([int]$AllowCnDirect).ToString() + '|' + ([int]$AllowLan).ToString() + '|' + ([int]$AllowNcsi).ToString() + '|' + ($physClean -join ',') + '|' + ($nodeClean -join ',') + '|' + $cnStamp
+    $wantSig = ([int]$AllowCnDirect).ToString() + '|' + ([int]$AllowLan).ToString() + '|' + ([int]$AllowNcsi).ToString() + '|' + ($physClean -join ',') + '|' + ($nodeClean -join ',') + '|' + $cnStamp + '|' + ([int]$BlockPhysicalIpv6).ToString()
     if (-not $Force -and (Test-Path -LiteralPath $metaFile)) {
         try {
             # UTF-8 on purpose: adapter aliases are localised (e.g. the Chinese name of
@@ -164,7 +165,8 @@ function Sync-ForeignPhysicalBlockRule {
             if ($oldSig -eq $wantSig) {
                 $existing = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
                 $existingV6 = Get-NetFirewallRule -Name 'AI-Guard-Block-Foreign-Physical-IPv6' -ErrorAction SilentlyContinue
-                if ($existing -and $existing.Enabled -eq 'True' -and $existingV6 -and $existingV6.Enabled -eq 'True') { return $false }
+                $v6StateOk = if ($BlockPhysicalIpv6) { [bool]($existingV6 -and $existingV6.Enabled -eq 'True') } else { (-not $existingV6 -or $existingV6.Enabled -ne 'True') }
+                if ($existing -and $existing.Enabled -eq 'True' -and $v6StateOk) { return $false }
             }
         }
         catch { }
@@ -201,7 +203,15 @@ function Sync-ForeignPhysicalBlockRule {
             -Description 'Explicitly block non-CN/non-LAN/non-Node IPv4 egress on physical NICs (vetoes third-party WFP soft-permit callouts).' | Out-Null
     }
 
-    [void](Sync-ForeignPhysicalIpv6BlockRule -PhysicalAliases $physClean -Force:$Force)
+    if ($BlockPhysicalIpv6) {
+        [void](Sync-ForeignPhysicalIpv6BlockRule -PhysicalAliases $physClean -Force:$Force)
+    }
+    else {
+        $v6Rule = Get-NetFirewallRule -Name 'AI-Guard-Block-Foreign-Physical-IPv6' -ErrorAction SilentlyContinue
+        if ($v6Rule -and $v6Rule.Enabled -eq 'True') {
+            Disable-NetFirewallRule -InputObject $v6Rule -ErrorAction SilentlyContinue
+        }
+    }
 
     $metaDir = Split-Path -Parent $metaFile
     if (-not (Test-Path -LiteralPath $metaDir)) { New-Item -ItemType Directory -Path $metaDir -Force | Out-Null }

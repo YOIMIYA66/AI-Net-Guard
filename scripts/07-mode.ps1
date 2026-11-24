@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.7 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
+    AI-Net-Guard v5.8.8 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
 
 .DESCRIPTION
     The guard itself is 100% STATIC in Windows kernel WFP (BFE / tcpip.sys):
@@ -226,11 +226,11 @@ function Get-ActiveTunNamesFast {
         }
     }
     catch { }
-    return ,$names.ToArray()
+    return $names.ToArray()
 }
 
 function Test-TunUp {
-    return ((Get-ActiveTunNamesFast).Count -gt 0)
+    return ((@(Get-ActiveTunNamesFast)).Count -gt 0)
 }
 
 # ------------------------------------------------------------ NetSecurity cache
@@ -333,7 +333,7 @@ function Get-ActivePhysicalNicsFast {
         }
     }
     catch { }
-    return ,$list
+    return $list.ToArray()
 }
 
 # ------------------------------------------------------------ IPv4 subnet helpers
@@ -796,6 +796,148 @@ function Test-NodeMetaFastHit([string]$StampPrefix) {
     catch { return $false }
 }
 
+function Sync-NodeActiveHostRoutes {
+    param([string[]]$NodeIps)
+
+    $validIps = @($NodeIps | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Select-Object -Unique)
+    if ($validIps.Count -eq 0) { return }
+
+    # Zero-CIM precheck: read active physical IPv4 gateways (.NET) and live /32 routes (route.exe).
+    # After a reboot, ActiveStore /32 routes vanish even while config.json & firewall rules are
+    # unchanged; after a Wi-Fi/hotspot switch, the next-hop gateway changes. Catch both without
+    # loading NetTCPIP CIM on healthy ticks.
+    $activePhysGws = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($ni in @(Get-ActivePhysicalNicsFast)) {
+        try {
+            foreach ($gw in $ni.GetIPProperties().GatewayAddresses) {
+                if ($gw.Address -and $gw.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                    $gs = $gw.Address.IPAddressToString
+                    if ($gs -and $gs -ne '0.0.0.0') { [void]$activePhysGws.Add($gs) }
+                }
+            }
+        }
+        catch { }
+    }
+    if ($activePhysGws.Count -eq 0) { return }
+
+    $metaMatched = $false
+    if (Test-Path -LiteralPath $nodeRoutesMeta) {
+        try {
+            $nrMetaRaw = [System.IO.File]::ReadAllText($nodeRoutesMeta, [System.Text.Encoding]::UTF8).Trim()
+            $nrMetaIps = @($nrMetaRaw.Split(',') | Where-Object { $_ } | Sort-Object -Unique) -join ','
+            $wantSorted = (@($validIps | Sort-Object -Unique)) -join ','
+            if ($nrMetaIps -eq $wantSorted) { $metaMatched = $true }
+        }
+        catch { }
+    }
+
+    if ($metaMatched) {
+        try {
+            $liveHostGw = @{}
+            foreach ($rl in @(& route.exe PRINT -4 2>$null)) {
+                if ([string]$rl -match '^\s*(\d+\.\d+\.\d+\.\d+)\s+255\.255\.255\.255\s+(\d+\.\d+\.\d+\.\d+)\s+') {
+                    $dst = $matches[1]
+                    $nh = $matches[2]
+                    if (-not $liveHostGw.ContainsKey($dst)) { $liveHostGw[$dst] = New-Object System.Collections.Generic.List[string] }
+                    $liveHostGw[$dst].Add($nh)
+                }
+            }
+            $allLiveOk = $true
+            foreach ($nip in $validIps) {
+                if (-not $liveHostGw.ContainsKey($nip)) { $allLiveOk = $false; break }
+                $gwHit = $false
+                foreach ($lgw in $liveHostGw[$nip]) {
+                    if ($activePhysGws.Contains($lgw)) { $gwHit = $true; break }
+                }
+                if (-not $gwHit) { $allLiveOk = $false; break }
+            }
+            if ($allLiveOk) { return }
+        }
+        catch { }
+    }
+
+    # Ensure /32 physical host route for proxy node IPs (ActiveStore only - never PersistentStore)
+    try {
+        $staleRouteIps = @()
+        if (Test-Path -LiteralPath $nodeMeta) {
+            $oldMetaRaw = Get-Content -LiteralPath $nodeMeta -Raw -ErrorAction SilentlyContinue
+            if ($oldMetaRaw -match '\|([\d\.,]+)\|') {
+                $staleRouteIps += @($Matches[1].Split(','))
+            }
+        }
+        if (Test-Path -LiteralPath $nodeRoutesMeta) {
+            $oldNrRaw = [System.IO.File]::ReadAllText($nodeRoutesMeta, [System.Text.Encoding]::UTF8).Trim()
+            if ($oldNrRaw) {
+                $staleRouteIps += @($oldNrRaw.Split(','))
+            }
+        }
+        foreach ($prevIp in @($staleRouteIps | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Select-Object -Unique)) {
+            if ($validIps -notcontains $prevIp) {
+                Remove-NetRoute -DestinationPrefix ($prevIp + '/32') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                Remove-NetRoute -DestinationPrefix ($prevIp + '/32') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+            }
+        }
+
+        $physRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback' -and $_.NextHop -ne '0.0.0.0' } |
+            Sort-Object { [int]$_.RouteMetric + [int]$_.InterfaceMetric } |
+            Select-Object -First 1
+        if ($physRoute -and $physRoute.NextHop) {
+            $changedRoutes = $false
+            foreach ($nodeIp in $validIps) {
+                $pDup = @(Get-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore PersistentStore -ErrorAction SilentlyContinue)
+                if ($pDup.Count -gt 0) {
+                    $pDup | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+                    $changedRoutes = $true
+                }
+                $curHostRoute = @(Get-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore ActiveStore -ErrorAction SilentlyContinue)
+                if ($curHostRoute.Count -eq 0) {
+                    New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+                    $changedRoutes = $true
+                }
+                elseif ($curHostRoute[0].NextHop -ne $physRoute.NextHop -or $curHostRoute[0].InterfaceAlias -ne $physRoute.InterfaceAlias -or $curHostRoute[0].RouteMetric -ne 1) {
+                    Remove-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                    New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+                    $changedRoutes = $true
+                }
+            }
+            New-Item -ItemType Directory -Path (Split-Path $nodeRoutesMeta) -Force | Out-Null
+            [System.IO.File]::WriteAllText($nodeRoutesMeta, ($validIps -join ','), (New-Object System.Text.UTF8Encoding($false)))
+            if ($changedRoutes) {
+                $script:repairedItems += 'node-route-synced'
+                Say ('    synced ActiveStore /32 route -> ' + ($validIps -join ',') + ' via ' + $physRoute.NextHop + ' (' + $physRoute.InterfaceAlias + ')')
+            }
+        }
+    }
+    catch { }
+}
+
+function Remove-RedundantActiveCoreRules {
+    param([pscustomobject]$Analysis, [string]$CoreExe)
+    if (-not $Analysis -or -not $CoreExe) { return }
+    $activeTag = if ($CoreExe -like '*xray*') { 'Xray' } elseif ($CoreExe -like '*sing*') { 'SingBox' } elseif ($CoreExe -like '*v2rayn*') { 'V2rayN' } else { '' }
+    if (-not $activeTag) { return }
+    $hasAny = $false
+    foreach ($sfx in @('TCP', 'UDP', 'DoH')) {
+        $rn = 'AI-Guard-Allow-Core-' + $activeTag + '-' + $sfx
+        if ($Analysis.States.ContainsKey($rn)) { $hasAny = $true; break }
+    }
+    if (-not $hasAny) { return }
+    $removedAny = $false
+    foreach ($sfx in @('TCP', 'UDP', 'DoH')) {
+        $rn = 'AI-Guard-Allow-Core-' + $activeTag + '-' + $sfx
+        $dup = Get-NetFirewallRule -DisplayName $rn -ErrorAction SilentlyContinue
+        if ($dup) {
+            $dup | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+            $removedAny = $true
+        }
+    }
+    if ($removedAny) {
+        $script:repairedItems += ('core-dup-pruned(' + $activeTag + ')')
+        Reset-RuleCache
+    }
+}
+
 function Sync-NodeRuleFast {
     param([pscustomobject]$Analysis)
     if ($DisableAutoNodeSync) { return }
@@ -858,7 +1000,11 @@ function Sync-NodeRuleFast {
                         }
                         elseif ($udpExists) { $ok = $false }
                     }
-                    if ($ok) { return }
+                    if ($ok) {
+                        Sync-NodeActiveHostRoutes -NodeIps $wantIps
+                        Remove-RedundantActiveCoreRules -Analysis $Analysis -CoreExe $wantExe
+                        return
+                    }
                 }
             }
         }
@@ -1020,54 +1166,14 @@ function Sync-NodeRuleFast {
                 Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-Core-*-UDP' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
             }
 
-            # Ensure /32 physical host route for proxy node IPs (ActiveStore only - never PersistentStore)
-            try {
-                $staleRouteIps = @()
-                if (Test-Path -LiteralPath $nodeMeta) {
-                    $oldMetaRaw = Get-Content -LiteralPath $nodeMeta -Raw -ErrorAction SilentlyContinue
-                    if ($oldMetaRaw -match '\|([\d\.,]+)\|') {
-                        $staleRouteIps += @($Matches[1].Split(','))
-                    }
-                }
-                if (Test-Path -LiteralPath $nodeRoutesMeta) {
-                    $oldNrRaw = [System.IO.File]::ReadAllText($nodeRoutesMeta, [System.Text.Encoding]::UTF8).Trim()
-                    if ($oldNrRaw) {
-                        $staleRouteIps += @($oldNrRaw.Split(','))
-                    }
-                }
-                foreach ($prevIp in @($staleRouteIps | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Select-Object -Unique)) {
-                    if ($ips -notcontains $prevIp) {
-                        Remove-NetRoute -DestinationPrefix ($prevIp + '/32') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
-                        Remove-NetRoute -DestinationPrefix ($prevIp + '/32') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
-                    }
-                }
-                $physRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-                    Where-Object { $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback' -and $_.NextHop -ne '0.0.0.0' } |
-                    Select-Object -First 1
-                if ($physRoute -and $physRoute.NextHop) {
-                    foreach ($nodeIp in $ips) {
-                        if ($nodeIp -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') {
-                            Remove-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
-                            $curHostRoute = @(Get-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore ActiveStore -ErrorAction SilentlyContinue)
-                            if ($curHostRoute.Count -eq 0) {
-                                New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
-                            }
-                            elseif ($curHostRoute[0].NextHop -ne $physRoute.NextHop -or $curHostRoute[0].InterfaceAlias -ne $physRoute.InterfaceAlias -or $curHostRoute[0].RouteMetric -ne 1) {
-                                Remove-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
-                                New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
-                            }
-                        }
-                    }
-                }
-                New-Item -ItemType Directory -Path (Split-Path $nodeRoutesMeta) -Force | Out-Null
-                [System.IO.File]::WriteAllText($nodeRoutesMeta, ($ips -join ','), (New-Object System.Text.UTF8Encoding($false)))
-            } catch { }
-
             $coreLabel = Split-Path -Leaf $coreExe
             $summary = ($ips -join ',') + ':' + ($tcpPorts -join ',') + $(if ($udp) { '/udp:' + ($udpPorts -join ',') } else { '' }) + ' [' + $coreLabel + ']'
             $script:repairedItems += ('node-synced(' + $summary + ')')
             Say ('    auto-synced node rule -> ' + $summary)
         }
+
+        Sync-NodeActiveHostRoutes -NodeIps $ips
+        Remove-RedundantActiveCoreRules -Analysis $Analysis -CoreExe $coreExe
 
         New-Item -ItemType Directory -Path (Split-Path $nodeMeta) -Force | Out-Null
         $domainTag = if ($usedDomain) { '|domain' } else { '|ip' }
@@ -1376,7 +1482,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>AI-Net-Guard v5.8.7 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
+    <Description>AI-Net-Guard v5.8.8 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
@@ -1488,7 +1594,7 @@ function Get-B1GuardState {
 
     $res = [pscustomobject]@{
         State = 'unknown'; Detail = ''; Ports = 0; PairIndex = -1
-        Shadow = 0; Caveat = 0; Config = $ConfigPath
+        RuleCount = 0; Shadow = 0; Caveat = 0; Config = $ConfigPath
     }
     if (-not $ConfigPath -or -not (Test-Path -LiteralPath $ConfigPath)) {
         $res.State = 'no-config'
@@ -1513,8 +1619,8 @@ function Get-B1GuardState {
     # which is exactly the silent staleness this watch exists to prevent. The fast path
     # is two Get-Item calls plus one small read.
     #
-    # Cache line: cfgTicks|cfgLen|libTicks|libLen|state|index|shadow|caveat|detail
-    # Old-format lines simply do not match the new stamp prefix and are recomputed.
+    # Cache line: cfgTicks|cfgLen|libTicks|libLen|state|index|ruleCount|shadow|caveat|detail
+    # Old-format lines simply do not match the new 10-field schema and are recomputed.
     $stamp = ''
     $it = Get-Item -LiteralPath $ConfigPath -ErrorAction SilentlyContinue
     $li = if ($libStun) { Get-Item -LiteralPath $libStun -ErrorAction SilentlyContinue } else { $null }
@@ -1528,13 +1634,14 @@ function Get-B1GuardState {
             # mangle a localised Detail back into '?' on every cache hit.
             $c = [System.IO.File]::ReadAllText($b1Meta, [System.Text.Encoding]::UTF8).Trim()
             if ($c -and $c.StartsWith($stamp + '|')) {
-                $p = $c.Split('|', 9)
-                if ($p.Count -ge 9) {
+                $p = $c.Split('|', 10)
+                if ($p.Count -ge 10) {
                     $res.State = $p[4]
                     $res.PairIndex = [int]$p[5]
-                    $res.Shadow = [int]$p[6]
-                    $res.Caveat = [int]$p[7]
-                    $res.Detail = $p[8]
+                    $res.RuleCount = [int]$p[6]
+                    $res.Shadow = [int]$p[7]
+                    $res.Caveat = [int]$p[8]
+                    $res.Detail = $p[9]
                     return $res
                 }
             }
@@ -1552,6 +1659,7 @@ function Get-B1GuardState {
     }
     $res.State = [string]$a.State
     $res.PairIndex = [int]$a.Index
+    $res.RuleCount = if ($a.PSObject.Properties.Name -contains 'RuleCount') { [int]$a.RuleCount } else { 2 }
     $res.Shadow = [int]$a.Shadow
     $res.Caveat = [int]$a.Caveat
     switch ($res.State) {
@@ -1568,11 +1676,14 @@ function Get-B1GuardState {
             if ($a.Detail) { $res.Detail = [string]$a.Detail }
         }
     }
+    # Normalize '|' before caching AND returning so cold computation and cache hit produce the
+    # exact same Detail string (prevents duplicate B1 caveat log lines in watchdog.log).
+    $res.Detail = (($res.Detail -replace '[\|\r\n]', ' ') -replace '\s{2,}', ' ').Trim()
     if ($res.Detail.Length -gt 400) { $res.Detail = $res.Detail.Substring(0, 400) }
 
     if ($stamp) {
         try {
-            $line = ($stamp + '|' + $res.State + '|' + $res.PairIndex.ToString() + '|' + $res.Shadow.ToString() + '|' + $res.Caveat.ToString() + '|' + ($res.Detail -replace '[\|\r\n]', ' '))
+            $line = ($stamp + '|' + $res.State + '|' + $res.PairIndex.ToString() + '|' + $res.RuleCount.ToString() + '|' + $res.Shadow.ToString() + '|' + $res.Caveat.ToString() + '|' + $res.Detail)
             New-Item -ItemType Directory -Path (Split-Path $b1Meta) -Force -ErrorAction SilentlyContinue | Out-Null
             # The install root is locked read-only for Users, so a non-elevated -Status
             # must fail this write SILENTLY into the enclosing catch, not print a red
@@ -1590,8 +1701,7 @@ function Get-B1GuardState {
 }
 
 function Show-Status {
-    # NOTE: these helpers 'return ,$array'; assign directly - wrapping in @() would always yield Count=1
-    $activeTuns = Get-ActiveTunNamesFast
+    $activeTuns = @(Get-ActiveTunNamesFast)
     $tunUp = ($activeTuns.Count -gt 0)
     $coreProcs = Get-RunningCoreProcessesFast
     $analysis = Get-FirewallRuleAnalysis
@@ -1604,7 +1714,7 @@ function Show-Status {
     else { 'stopped' }
 
     Write-Host ''
-    Write-Host '=== AI-Net-Guard v5.8.7 Status (read-only) ===' -ForegroundColor Cyan
+    Write-Host '=== AI-Net-Guard v5.8.8 Status (read-only) ===' -ForegroundColor Cyan
     Write-Host ('TUN : ' + $tunLabel + '   core : ' + $coreLabel)
     if (Test-Path -LiteralPath $policyFile) {
         Write-Host ('  policy preset     : ' + $guardPolicy.Preset + ' (guard-policy.json active)') -ForegroundColor Cyan
@@ -1643,7 +1753,9 @@ function Show-Status {
     $displayRules += 'AI-Guard-Block-Foreign-Physical-IPv6'
 
     foreach ($rn in $displayRules) {
-        $optDisabled = ($rn -eq 'AI-Guard-Allow-LAN' -and -not $guardPolicy.AllowLan) -or ($rn -eq 'AI-Guard-Allow-NCSI' -and -not $guardPolicy.AllowNcsi)
+        $optDisabled = ($rn -eq 'AI-Guard-Allow-LAN' -and -not $guardPolicy.AllowLan) -or
+                       ($rn -eq 'AI-Guard-Allow-NCSI' -and -not $guardPolicy.AllowNcsi) -or
+                       ($rn -eq 'AI-Guard-Block-Foreign-Physical-IPv6' -and -not $guardPolicy.DisablePhysicalIpv6)
         if ($ruleStates.ContainsKey($rn)) {
             $act = $ruleStates[$rn]
             $extra = ''
@@ -1677,7 +1789,8 @@ function Show-Status {
     switch ($b1.State) {
         'present' {
             $b1Col = 'Green'
-            $b1Txt = 'loaded (' + $b1.Ports + ' ports, udp+tcp, routing rules #' + $b1.PairIndex + ' and #' + ($b1.PairIndex + 1) + ')'
+            $ruleLocTxt = if ($b1.RuleCount -eq 1) { 'routing rule #' + $b1.PairIndex } else { 'routing rules #' + $b1.PairIndex + ' and #' + ($b1.PairIndex + 1) }
+            $b1Txt = 'loaded (' + $b1.Ports + ' ports, udp+tcp, ' + $ruleLocTxt + ')'
             if ($b1.Shadow -gt 0) {
                 $b1Col = 'Yellow'
                 $b1Txt += ' - SHADOWED by a preceding rule'
@@ -1721,7 +1834,7 @@ function Show-Status {
         Write-Host ('  install ACL       : WRITABLE by non-admin (' + $aclIssues.Count + ' issue(s), e.g. ' + $aclIssues[0] + ') - run .\13-harden-acl.ps1') -ForegroundColor Red
     }
 
-    foreach ($ni in (Get-ActivePhysicalNicsFast)) {
+    foreach ($ni in @(Get-ActivePhysicalNicsFast)) {
         $v4Dns = @($ni.GetIPProperties().DnsAddresses |
             Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
             ForEach-Object { $_.IPAddressToString }) -join ','
@@ -1796,7 +1909,7 @@ function Show-Status {
 }
 
 function Invoke-UpgradeV54 {
-    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.8.7 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
+    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.8.8 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
 
     # 1. Backfill new rollback fields into existing DNS baseline JSON without altering original values
     $bf = Join-Path $Root 'backup\baseline.json'
@@ -2222,7 +2335,7 @@ function Ensure-Guard {
         $tunLocalAddrs = Get-TunAllowedLocalAddressesFast
         $mainTunRule = Get-GuardRule 'AI-Guard-Allow-TUN'
         $altRule = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
-        $activeTunNamesNow = @(Get-ActiveTunNamesFast)
+        [string[]]$activeTunNamesNow = @(Get-ActiveTunNamesFast | Where-Object { $_ })
 
         # Prune dead GUIDs from AI-Guard-Allow-TUN / AI-Guard-Allow-TUN-Alt when live TUNs exist
         if ($needTunPrune -and $activeTunNamesNow.Count -gt 0) {
@@ -2232,7 +2345,7 @@ function Ensure-Guard {
                 if (-not $allLiveNicIds.Contains($m.Groups[1].Value)) { $mainHasDead = $true; break }
             }
             if ($mainTunRule -and (($mainLiveNames.Count -eq 0) -or $mainHasDead)) {
-                $targetMainIfs = if ($mainLiveNames.Count -gt 0) { $mainLiveNames } else { $activeTunNamesNow }
+                [string[]]$targetMainIfs = if ($mainLiveNames.Count -gt 0) { @($mainLiveNames) } else { @($activeTunNamesNow) }
                 try {
                     Set-NetFirewallRule -InputObject $mainTunRule -InterfaceAlias $targetMainIfs -LocalAddress $tunLocalAddrs -Enabled True -ErrorAction Stop
                     Reset-RuleCache
@@ -2457,7 +2570,7 @@ function Ensure-Guard {
     $nrptActive = Test-AiGuardNrptActiveFast
     $dnsChanged = $false
 
-    foreach ($ni in (Get-ActivePhysicalNicsFast)) {
+    foreach ($ni in @(Get-ActivePhysicalNicsFast)) {
         if ($guardPolicy.LockPhysicalDns -and -not $nrptActive -and $ni.Supports([System.Net.NetworkInformation.NetworkInterfaceComponent]::IPv4)) {
             $v4Dns = @($ni.GetIPProperties().DnsAddresses |
                 Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork } |
@@ -2802,6 +2915,7 @@ function Ensure-Guard {
         if (Test-Path -LiteralPath $libForeign) {
             $fpActive = $ruleStates.ContainsKey('AI-Guard-Block-Foreign-Physical') -and $ruleStates['AI-Guard-Block-Foreign-Physical']
             $fpV6Active = $ruleStates.ContainsKey('AI-Guard-Block-Foreign-Physical-IPv6') -and $ruleStates['AI-Guard-Block-Foreign-Physical-IPv6']
+            $wantV6Block = [bool]$guardPolicy.DisablePhysicalIpv6
             $physFastFp = @(Get-ActivePhysicalNicsFast)
             $physNamesFastFp = @($physFastFp | Select-Object -ExpandProperty Name | Sort-Object -Unique)
 
@@ -2823,7 +2937,7 @@ function Ensure-Guard {
             }
 
             $fpMetaFile = Join-Path $Root 'backup\foreign-block.meta'
-            $fpNeedsSync = (-not $fpActive) -or (-not $fpV6Active)
+            $fpNeedsSync = (-not $fpActive) -or ($wantV6Block -and -not $fpV6Active) -or ((-not $wantV6Block) -and $fpV6Active)
             if (-not $fpNeedsSync -and (Test-Path -LiteralPath $fpMetaFile)) {
                 try {
                     # UTF-8 must match how Sync-ForeignPhysicalBlockRule writes it: the
@@ -2832,16 +2946,18 @@ function Ensure-Guard {
                     # whole foreign-block rule got rebuilt on every single run.
                     $fpMetaRaw = [System.IO.File]::ReadAllText($fpMetaFile, [System.Text.Encoding]::UTF8).Trim()
                     $fpParts = $fpMetaRaw.Split('|')
-                    if ($fpParts.Count -ge 6) {
+                    if ($fpParts.Count -ge 7) {
                         $metaCn = [int]$fpParts[0]
                         $metaLan = [int]$fpParts[1]
                         $metaNcsi = [int]$fpParts[2]
                         $metaPhys = @($fpParts[3].Split(',') | Where-Object { $_ })
                         $metaNodes = @($fpParts[4].Split(',') | Where-Object { $_ })
                         $metaStamp = $fpParts[5]
+                        $metaV6 = [int]$fpParts[6]
                         if ($metaCn -ne [int][bool]$guardPolicy.AllowCnDirect -or
                             $metaLan -ne [int][bool]$guardPolicy.AllowLan -or
                             $metaNcsi -ne [int][bool]$guardPolicy.AllowNcsi -or
+                            $metaV6 -ne [int]$wantV6Block -or
                             $metaStamp -ne $cnStampFp -or
                             (($metaNodes -join ',') -ne ($nodeIpsMeta -join ','))) {
                             $fpNeedsSync = $true
@@ -2872,7 +2988,8 @@ function Ensure-Guard {
                 if ($allPhysFp.Count -gt 0) {
                     . $libForeign
                     if (Sync-ForeignPhysicalBlockRule -Root $Root -PhysicalAliases $allPhysFp -NodeIps $nodeIpsMeta `
-                        -AllowCnDirect ([bool]$guardPolicy.AllowCnDirect) -AllowLan ([bool]$guardPolicy.AllowLan) -AllowNcsi ([bool]$guardPolicy.AllowNcsi)) {
+                        -AllowCnDirect ([bool]$guardPolicy.AllowCnDirect) -AllowLan ([bool]$guardPolicy.AllowLan) `
+                        -AllowNcsi ([bool]$guardPolicy.AllowNcsi) -BlockPhysicalIpv6 $wantV6Block) {
                         $script:repairedItems += 'Foreign-Physical-synced'
                         Say '    enforced AI-Guard-Block-Foreign-Physical (vetoes WFP soft-permit callouts)'
                     }
@@ -2961,7 +3078,7 @@ else {
             $tunLocalAddrsLate = Get-TunAllowedLocalAddressesFast
             $mainTunRuleLate = Get-GuardRule 'AI-Guard-Allow-TUN'
             $altRuleLate = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
-            foreach ($activeTun in (Get-ActiveTunNamesFast)) {
+            foreach ($activeTun in @(Get-ActiveTunNamesFast)) {
                 if (Test-FirewallRuleHasTun $mainTunRuleLate $activeTun) { continue }
                 if (Test-FirewallRuleHasTun $altRuleLate $activeTun) { continue }
                 try {

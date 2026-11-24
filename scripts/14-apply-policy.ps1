@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.7 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.8.8 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 16
@@ -427,7 +427,7 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.8.7 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.8.8 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
 
 if ($isFreshInstall) {
@@ -521,6 +521,7 @@ if ($isFreshInstall) {
         if (-not $policy.AllowLan)             { $ksArgs += '-SkipLanRule' }
         if (-not $policy.AllowNcsi)            { $ksArgs += '-SkipNcsiRule' }
         if (-not $policy.BlockWebRtcLeak)      { $ksArgs += '-SkipWebRtcBlock' }
+        if (-not $policy.DisablePhysicalIpv6)  { $ksArgs += '-SkipIpv6Block' }
         if (-not $policy.QuarantineRogueAllow) { $ksArgs += '-KeepExistingAllowRules' }
         & $psExe @ksArgs
         if ($LASTEXITCODE -ne 0) { throw ('02-killswitch.ps1 exited with code ' + $LASTEXITCODE) }
@@ -572,6 +573,7 @@ else {
         if (-not $policy.AllowLan)             { $ksArgs += '-SkipLanRule' }
         if (-not $policy.AllowNcsi)            { $ksArgs += '-SkipNcsiRule' }
         if (-not $policy.BlockWebRtcLeak)      { $ksArgs += '-SkipWebRtcBlock' }
+        if (-not $policy.DisablePhysicalIpv6)  { $ksArgs += '-SkipIpv6Block' }
         if (-not $policy.QuarantineRogueAllow) { $ksArgs += '-KeepExistingAllowRules' }
         & $psExe @ksArgs
     }
@@ -658,8 +660,8 @@ else {
     if ($policy.AllowLan) {
         if (-not $lanRule) {
             New-NetFirewallRule -Name 'AI-Guard-Allow-LAN' -DisplayName 'AI-Guard-Allow-LAN' `
-                -Direction Outbound -Action Allow -RemoteAddress 'LocalSubnet' -Profile Any -Enabled True `
-                -Description 'Local subnet only.' | Out-Null
+                -Direction Outbound -Action Allow -RemoteAddress @('LocalSubnet', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16') -Profile Any -Enabled True `
+                -Description 'Local subnet and private LAN subnets (RFC1918).' | Out-Null
         }
         elseif ($lanRule.Enabled -ne 'True') {
             Enable-NetFirewallRule -InputObject $lanRule -ErrorAction SilentlyContinue
@@ -1024,6 +1026,10 @@ else {
                 try { Enable-NetAdapterBinding -Name $pa.Name -ComponentID 'ms_tcpip6' -ErrorAction SilentlyContinue } catch { }
             }
         }
+        $v6BlkRule = Get-NetFirewallRule -Name 'AI-Guard-Block-Foreign-Physical-IPv6' -ErrorAction SilentlyContinue
+        if ($v6BlkRule -and $v6BlkRule.Enabled -eq 'True') {
+            Disable-NetFirewallRule -InputObject $v6BlkRule -ErrorAction SilentlyContinue
+        }
         Write-Ok 'DisablePhysicalIpv6 = OFF (restored ms_tcpip6 binding on physical adapters)'
     }
 
@@ -1091,7 +1097,7 @@ $syncNodeScript = Get-PolicyScriptPath '10-sync-node-rule.ps1'
 if (Test-Path -LiteralPath $syncNodeScript) {
     try {
         & $psExe -NoProfile -ExecutionPolicy Bypass -File $syncNodeScript -Root $Root -V2rayNRoot $V2rayNRoot
-        Write-Ok 'multi-core node rules synchronized (xray, sing-box, v2rayN across all active/test ports)'
+        Write-Ok 'multi-core node rules synchronized (xray, sing-box, v2rayN across active config.json ports)'
     }
     catch {
         Write-Warn ('node rule synchronization skipped: ' + $_.Exception.Message)
@@ -1192,5 +1198,5 @@ if (Test-Path -LiteralPath $aclScript) {
 
 & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Status -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns
 Write-Host ''
-Write-Host '[SUCCESS] AI-Net-Guard v5.8.7 configuration applied successfully.' -ForegroundColor Green
+Write-Host '[SUCCESS] AI-Net-Guard v5.8.8 configuration applied successfully.' -ForegroundColor Green
 exit 0

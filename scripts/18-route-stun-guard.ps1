@@ -774,7 +774,13 @@ if (-not $Apply) {
 
     switch ($core.State) {
         'present' {
-            Say ('core config : both rules loaded at routing index ' + $core.Index + '/' + ($core.Index + 1) + ', complete port set') 'Green'
+            $ruleSpan = if (($core.PSObject.Properties.Name -contains 'RuleCount') -and $core.RuleCount -eq 1) {
+                'rule #' + $core.Index
+            }
+            else {
+                'both rules loaded at routing index ' + $core.Index + '/' + ($core.Index + 1)
+            }
+            Say ('core config : ' + $ruleSpan + ', complete port set') 'Green'
             if ($core.Shadow -gt 0) {
                 Say ('[!] ' + $core.Shadow + ' rule(s) ahead of the pair can match STUN traffic -') 'Yellow'
                 Say '    the pair may never be reached. Inspect binConfigs\config.json:' 'Yellow'

@@ -178,48 +178,102 @@ function Get-SingBoxStunRuleVerdict {
 
     $res = [pscustomobject]@{ Kind = 'matches'; Why = 'no constraining field - matches every destination' }
 
-    if ($Rule.PSObject.Properties.Name -contains 'action' -and ([string]$Rule.action -in @('sniff', 'resolve'))) {
+    if ($Rule.PSObject.Properties.Name -contains 'action' -and ([string]$Rule.action -in @('sniff', 'resolve', 'hijack-dns'))) {
         $res.Kind = 'excluded'
-        $res.Why = 'non-terminating action: ' + [string]$Rule.action
+        $res.Why = 'action ' + [string]$Rule.action + ' does not forward STUN payloads'
         return $res
     }
 
-    foreach ($dk in @('domain', 'domain_suffix', 'domain_keyword', 'domain_regex', 'geosite')) {
-        if ($Rule.PSObject.Properties.Name -contains $dk) {
-            $res.Kind = 'excluded'
-            $res.Why = 'domain rule - STUN destination is an IP literal'
+    if ($Rule.PSObject.Properties.Name -contains 'type' -and ([string]$Rule.type -eq 'logical')) {
+        $subRules = @($Rule.rules | Where-Object { $_ })
+        $isInv = ($Rule.PSObject.Properties.Name -contains 'invert') -and [bool]$Rule.invert
+        if ($isInv) {
+            $res.Kind = 'matches'
+            $res.Why = 'inverted logical rule may match STUN destinations'
             return $res
         }
+        if ($subRules.Count -eq 0) {
+            $res.Kind = 'matches'
+            $res.Why = 'empty logical rule may match STUN destinations'
+            return $res
+        }
+        $subVerdicts = @($subRules | ForEach-Object { Get-SingBoxStunRuleVerdict $_ $TunTags $Expected })
+        $mode = if ($Rule.PSObject.Properties.Name -contains 'mode' -and $Rule.mode) { ([string]$Rule.mode).ToLowerInvariant() } else { 'and' }
+        if ($mode -eq 'or') {
+            $hasMatch = @($subVerdicts | Where-Object { $_.Kind -eq 'matches' }).Count -gt 0
+            $hasRestr = @($subVerdicts | Where-Object { $_.Kind -eq 'restricted' }).Count -gt 0
+            if ($hasMatch) {
+                $res.Kind = 'matches'
+                $res.Why = 'logical-or branch matches STUN destinations'
+            }
+            elseif ($hasRestr) {
+                $res.Kind = 'restricted'
+                $res.Why = 'logical-or branch is origin-scoped'
+            }
+            else {
+                $res.Kind = 'excluded'
+                $res.Why = 'every logical-or branch is excluded from STUN'
+            }
+        }
+        else {
+            $hasExcl = @($subVerdicts | Where-Object { $_.Kind -eq 'excluded' }).Count -gt 0
+            $hasRestr = @($subVerdicts | Where-Object { $_.Kind -eq 'restricted' }).Count -gt 0
+            if ($hasExcl) {
+                $res.Kind = 'excluded'
+                $res.Why = 'logical-and has an excluded branch'
+            }
+            elseif ($hasRestr) {
+                $res.Kind = 'restricted'
+                $res.Why = 'logical-and is narrowed by an origin-scoped branch'
+            }
+            else {
+                $res.Kind = 'matches'
+                $res.Why = 'logical-and branches may match STUN destinations'
+            }
+        }
+        return $res
     }
 
-    if (($Rule.PSObject.Properties.Name -contains 'port') -or ($Rule.PSObject.Properties.Name -contains 'port_range')) {
-        $got = Get-SingBoxRulePortSet $Rule
-        $hit = @($Expected | Where-Object { $got.Contains($_) })
-        if ($hit.Count -eq 0) {
-            $res.Kind = 'excluded'
-            $res.Why = 'port list excludes every STUN/TURN port'
-            return $res
-        }
-    }
+    $isRuleInverted = ($Rule.PSObject.Properties.Name -contains 'invert') -and [bool]$Rule.invert
 
-    if ($Rule.PSObject.Properties.Name -contains 'network' -and $null -ne $Rule.network) {
-        $nets = @($Rule.network | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ })
-        if ($nets.Count -gt 0 -and -not ($nets -contains 'udp') -and -not ($nets -contains 'tcp')) {
-            $res.Kind = 'excluded'
-            $res.Why = 'network excludes udp and tcp'
-            return $res
+    if (-not $isRuleInverted) {
+        foreach ($dk in @('domain', 'domain_suffix', 'domain_keyword', 'domain_regex', 'geosite')) {
+            if ($Rule.PSObject.Properties.Name -contains $dk) {
+                $res.Kind = 'excluded'
+                $res.Why = 'domain rule - STUN destination is an IP literal'
+                return $res
+            }
         }
-    }
 
-    if ($Rule.PSObject.Properties.Name -contains 'inbound') {
-        $inbs = @($Rule.inbound | ForEach-Object { [string]$_ })
-        $common = @($inbs | Where-Object { $TunTags -contains $_ })
-        if ($common.Count -eq 0) {
-            $res.Kind = 'excluded'
-            $res.Why = 'inbound ' + ($inbs -join '|') + ' is not the TUN inbound (' + ($TunTags -join '|') + ')'
-            return $res
+        if (($Rule.PSObject.Properties.Name -contains 'port') -or ($Rule.PSObject.Properties.Name -contains 'port_range')) {
+            $got = Get-SingBoxRulePortSet $Rule
+            $hit = @($Expected | Where-Object { $got.Contains($_) })
+            if ($hit.Count -eq 0) {
+                $res.Kind = 'excluded'
+                $res.Why = 'port list excludes every STUN/TURN port'
+                return $res
+            }
         }
-        $res.Why = 'inbound includes the TUN inbound'
+
+        if ($Rule.PSObject.Properties.Name -contains 'network' -and $null -ne $Rule.network) {
+            $nets = @($Rule.network | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ })
+            if ($nets.Count -gt 0 -and -not ($nets -contains 'udp') -and -not ($nets -contains 'tcp')) {
+                $res.Kind = 'excluded'
+                $res.Why = 'network excludes udp and tcp'
+                return $res
+            }
+        }
+
+        if ($Rule.PSObject.Properties.Name -contains 'inbound') {
+            $inbs = @($Rule.inbound | ForEach-Object { [string]$_ })
+            $common = @($inbs | Where-Object { $TunTags -contains $_ })
+            if ($common.Count -eq 0) {
+                $res.Kind = 'excluded'
+                $res.Why = 'inbound ' + ($inbs -join '|') + ' is not the TUN inbound (' + ($TunTags -join '|') + ')'
+                return $res
+            }
+            $res.Why = 'inbound includes the TUN inbound'
+        }
     }
 
     foreach ($ik in @('ip_cidr', 'geoip', 'ip_is_private', 'rule_set')) {
@@ -333,7 +387,7 @@ function Get-StunGuardAnalysisFromObject {
     param($Cfg, [int[]]$Expected, [string]$ConfigPath = '')
 
     $res = [pscustomobject]@{
-        State = 'absent'; Index = -1; Preceding = 0; Shadow = 0; Caveat = 0
+        State = 'absent'; Index = -1; RuleCount = 0; Preceding = 0; Shadow = 0; Caveat = 0
         ShadowRules = @(); CaveatRules = @(); Detail = ''; Config = $ConfigPath; TunTags = @()
     }
     if (-not $Cfg) { return $res }
@@ -375,6 +429,7 @@ function Get-StunGuardAnalysisFromObject {
 
         $res.State = 'present'
         $res.Index = $pairAt
+        $res.RuleCount = 2
         if ($pairAt -gt 0) {
             $before = @(0..($pairAt - 1) | ForEach-Object { $rules[$_] } |
                 Where-Object { [string]$_.outboundTag -ne 'block' })
@@ -398,13 +453,14 @@ function Get-StunGuardAnalysisFromObject {
     if ($Cfg.PSObject.Properties.Name -contains 'route' -and $Cfg.route -and ($Cfg.route.PSObject.Properties.Name -contains 'rules')) {
         $rules = @($Cfg.route.rules | Where-Object { $_ })
         $pairAt = -1
+        $ruleCount = 0
         for ($i = 0; $i -lt $rules.Count - 1; $i++) {
             if ((Test-SingBoxStunPortBlockRule $rules[$i] 'udp' $Expected) -and
-                (Test-SingBoxStunPortBlockRule $rules[$i + 1] 'tcp' $Expected)) { $pairAt = $i; break }
+                (Test-SingBoxStunPortBlockRule $rules[$i + 1] 'tcp' $Expected)) { $pairAt = $i; $ruleCount = 2; break }
         }
         if ($pairAt -lt 0) {
             for ($i = 0; $i -lt $rules.Count; $i++) {
-                if (Test-SingBoxStunPortBlockRule $rules[$i] 'both' $Expected) { $pairAt = $i; break }
+                if (Test-SingBoxStunPortBlockRule $rules[$i] 'both' $Expected) { $pairAt = $i; $ruleCount = 1; break }
             }
         }
         if ($pairAt -lt 0) {
@@ -430,6 +486,7 @@ function Get-StunGuardAnalysisFromObject {
 
         $res.State = 'present'
         $res.Index = $pairAt
+        $res.RuleCount = $ruleCount
         if ($pairAt -gt 0) {
             $before = @(0..($pairAt - 1) | ForEach-Object { $rules[$_] } |
                 Where-Object { -not (Test-SingBoxIsBlockRule $_) })
@@ -460,7 +517,7 @@ function Get-StunGuardAnalysis {
     param([string]$ConfigPath, [int[]]$Expected)
 
     $res = [pscustomobject]@{
-        State = 'no-config'; Index = -1; Preceding = 0; Shadow = 0; Caveat = 0
+        State = 'no-config'; Index = -1; RuleCount = 0; Preceding = 0; Shadow = 0; Caveat = 0
         ShadowRules = @(); CaveatRules = @(); Detail = ''; Config = ''; TunTags = @()
     }
     if (-not $ConfigPath -or -not (Test-Path -LiteralPath $ConfigPath)) { return $res }
@@ -469,4 +526,87 @@ function Get-StunGuardAnalysis {
     catch { $res.State = 'unparsable'; $res.Detail = $_.Exception.Message; return $res }
 
     return Get-StunGuardAnalysisFromObject -Cfg $cfg -Expected $Expected -ConfigPath $ConfigPath
+}
+
+function New-StunBindingRequest {
+    # RFC 5389 Binding Request (0x0001) + Magic Cookie (0x2112A442) + 96-bit TxID
+    $pkt = New-Object 'byte[]' 20
+    $pkt[0] = 0x00; $pkt[1] = 0x01
+    $pkt[2] = 0x00; $pkt[3] = 0x00
+    $pkt[4] = 0x21; $pkt[5] = 0x12; $pkt[6] = 0xA4; $pkt[7] = 0x42
+    $txId = New-Object 'byte[]' 12
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($txId) } finally { $rng.Dispose() }
+    [System.Array]::Copy($txId, 0, $pkt, 8, 12)
+    return [pscustomobject]@{
+        Packet        = [byte[]]$pkt
+        TransactionId = [byte[]]$txId
+    }
+}
+
+function ConvertFrom-StunResponse {
+    # Strict RFC 5389 parser: verifies Binding Success Response (0x0101), Magic Cookie,
+    # exact 96-bit TransactionId match, padded TLV bounds, and decodes XOR-MAPPED-ADDRESS
+    # (0x0020) or MAPPED-ADDRESS (0x0001) for IPv4 (0x01) and IPv6 (0x02).
+    param(
+        [byte[]]$Packet,
+        [byte[]]$TransactionId
+    )
+    if ($null -eq $Packet -or $Packet.Length -lt 20 -or
+        $null -eq $TransactionId -or $TransactionId.Length -ne 12) { return $null }
+
+    $msgType = ([int]$Packet[0] -shl 8) -bor [int]$Packet[1]
+    $bodyLen = ([int]$Packet[2] -shl 8) -bor [int]$Packet[3]
+    if ($msgType -ne 0x0101 -or ($bodyLen % 4) -ne 0 -or
+        $Packet.Length -lt (20 + $bodyLen)) { return $null }
+
+    $cookie = [byte[]]@(0x21, 0x12, 0xA4, 0x42)
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($Packet[4 + $i] -ne $cookie[$i]) { return $null }
+    }
+    for ($i = 0; $i -lt 12; $i++) {
+        if ($Packet[8 + $i] -ne $TransactionId[$i]) { return $null }
+    }
+
+    $end = 20 + $bodyLen
+    $pos = 20
+    while (($pos + 4) -le $end) {
+        $attrType = ([int]$Packet[$pos] -shl 8) -bor [int]$Packet[$pos + 1]
+        $attrLen = ([int]$Packet[$pos + 2] -shl 8) -bor [int]$Packet[$pos + 3]
+        $valStart = $pos + 4
+        if (($valStart + $attrLen) -gt $end) { return $null }
+
+        if ($attrType -eq 0x0020 -or $attrType -eq 0x0001) {
+            if ($attrLen -lt 8) { return $null }
+            $family = $Packet[$valStart + 1]
+            if ($family -eq 0x01) {
+                if ($attrLen -ne 8) { return $null }
+                $size = 4
+            }
+            elseif ($family -eq 0x02) {
+                if ($attrLen -ne 20) { return $null }
+                $size = 16
+            }
+            else {
+                return $null
+            }
+
+            $addrBytes = New-Object 'byte[]' $size
+            for ($i = 0; $i -lt $size; $i++) {
+                $val = [int]$Packet[$valStart + 4 + $i]
+                if ($attrType -eq 0x0020) {
+                    if ($i -lt 4) {
+                        $val = $val -bxor [int]$cookie[$i]
+                    }
+                    else {
+                        $val = $val -bxor [int]$TransactionId[$i - 4]
+                    }
+                }
+                $addrBytes[$i] = [byte]$val
+            }
+            return (New-Object System.Net.IPAddress(, $addrBytes)).ToString()
+        }
+        $pos = $valStart + (($attrLen + 3) -band (-bnot 3))
+    }
+    return $null
 }

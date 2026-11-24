@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.7 - step 2: static default-deny firewall + CN & TUN allowlist.
+    AI-Net-Guard v5.8.8 - step 2: static default-deny firewall + CN & TUN allowlist.
 
 .DESCRIPTION
     Configures Windows Defender Firewall for the v5.1 zero-switch static guard:
@@ -49,6 +49,7 @@ param(
     [switch]$SkipLanRule,
     [switch]$SkipNcsiRule,
     [switch]$SkipWebRtcBlock,
+    [switch]$SkipIpv6Block,
     [switch]$StrictKillSwitchOnly,
     [switch]$AllowRemainingRules,
     [Alias('DohServer')]
@@ -870,7 +871,8 @@ try {
         . $libForeign
         $resolvedNodes = @($nodeAddress + @($allNodeAddresses) | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Select-Object -Unique)
         if (Sync-ForeignPhysicalBlockRule -Root $Root -PhysicalAliases $physicalAll -NodeIps $resolvedNodes `
-            -AllowCnDirect (-not [bool]$StrictKillSwitchOnly) -AllowLan (-not [bool]$SkipLanRule) -AllowNcsi (-not [bool]$SkipNcsiRule) -Force) {
+            -AllowCnDirect (-not [bool]$StrictKillSwitchOnly) -AllowLan (-not [bool]$SkipLanRule) `
+            -AllowNcsi (-not [bool]$SkipNcsiRule) -BlockPhysicalIpv6 (-not [bool]$SkipIpv6Block) -Force) {
             Write-Host '    AI-Guard-Block-Foreign-Physical'
         }
     }

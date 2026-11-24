@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.7 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
+    AI-Net-Guard v5.8.8 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
 
 .DESCRIPTION
     Verifies the v5.4 static guard end-to-end. Read-only, except for a temporary
@@ -282,7 +282,7 @@ function Get-ConfiguredNodeInfo {
     }
 }
 
-W ('=== AI-Net-Guard v5.8.7 regression ' + (Get-Date -Format 'o') + ' ===')
+W ('=== AI-Net-Guard v5.8.8 regression ' + (Get-Date -Format 'o') + ' ===')
 function Get-ActiveIpPhysicalNics {
     @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
         $_.OperationalStatus -eq 'Up' -and
@@ -493,9 +493,115 @@ Check 'B1 STUN route guard present in core routing table' {
     }
     # A caveat is a known limitation, not a failure: 07-mode.ps1 shows it as a note and
     # verify-leak-test.ps1 reports PASSED WITH CAVEAT. Keep the same verdict here.
-    $out = 'loaded (rules #' + $a.Index + '/' + ($a.Index + 1) + ', udp+tcp, ' + (@(Get-StunGuardPorts)).Count + ' ports)'
+    $ruleSpan = if (($a.PSObject.Properties.Name -contains 'RuleCount') -and $a.RuleCount -eq 1) {
+        'rule #' + $a.Index
+    }
+    else {
+        'rules #' + $a.Index + '/' + ($a.Index + 1)
+    }
+    $out = 'loaded (' + $ruleSpan + ', udp+tcp, ' + (@(Get-StunGuardPorts)).Count + ' ports)'
     if ($a.Caveat -gt 0) { $out += ' - caveat: ' + $a.Caveat + ' origin-scoped rule(s) ahead may bypass it' }
     $out
+}
+
+Check 'explicit physical-NIC foreign block policy (IPv4 + IPv6)' {
+    $v4Act = $script:regStates.ContainsKey('AI-Guard-Block-Foreign-Physical') -and $script:regStates['AI-Guard-Block-Foreign-Physical']
+    if (-not $v4Act) { throw 'AI-Guard-Block-Foreign-Physical missing or disabled' }
+    $v6Act = $script:regStates.ContainsKey('AI-Guard-Block-Foreign-Physical-IPv6') -and $script:regStates['AI-Guard-Block-Foreign-Physical-IPv6']
+    if ($guardPolicy.DisablePhysicalIpv6) {
+        if (-not $v6Act) { throw 'AI-Guard-Block-Foreign-Physical-IPv6 missing or disabled' }
+        'IPv4=active, IPv6(2000::/3)=active'
+    }
+    else {
+        if ($v6Act) { throw 'AI-Guard-Block-Foreign-Physical-IPv6 active while DisablePhysicalIpv6=false' }
+        'IPv4=active, IPv6=disabled(policy)'
+    }
+}
+
+Check 'ActiveStore WFP enforcement & address-filter readback' {
+    $activeIdx = @{}
+    foreach ($ar in @(Get-NetFirewallRule -PolicyStore ActiveStore -ErrorAction Stop)) {
+        if (-not $ar) { continue }
+        $an = [string]$ar.Name
+        $ad = [string]$ar.DisplayName
+        if ($an -and (-not $activeIdx.ContainsKey($an) -or $ar.Enabled -eq 'True')) { $activeIdx[$an] = $ar }
+        if ($ad -and (-not $activeIdx.ContainsKey($ad) -or $ar.Enabled -eq 'True')) { $activeIdx[$ad] = $ar }
+    }
+    $fpRule = if ($activeIdx.ContainsKey('AI-Guard-Block-Foreign-Physical')) { $activeIdx['AI-Guard-Block-Foreign-Physical'] } else { $null }
+    if (-not $fpRule -or $fpRule.Enabled -ne 'True' -or $fpRule.Action -ne 'Block') {
+        throw 'AI-Guard-Block-Foreign-Physical not active/Block in ActiveStore'
+    }
+    $fpRanges = @(($fpRule | Get-NetFirewallAddressFilter -ErrorAction Stop).RemoteAddress)
+    if ($fpRanges.Count -lt 100) {
+        throw ('AI-Guard-Block-Foreign-Physical ActiveStore truncated: ranges=' + $fpRanges.Count)
+    }
+
+    $v6Msg = 'disabled(policy)'
+    if ($guardPolicy.DisablePhysicalIpv6) {
+        $fp6Rule = if ($activeIdx.ContainsKey('AI-Guard-Block-Foreign-Physical-IPv6')) { $activeIdx['AI-Guard-Block-Foreign-Physical-IPv6'] } else { $null }
+        if (-not $fp6Rule -or $fp6Rule.Enabled -ne 'True' -or $fp6Rule.Action -ne 'Block') {
+            throw 'AI-Guard-Block-Foreign-Physical-IPv6 not active/Block in ActiveStore'
+        }
+        $fp6Ranges = @(($fp6Rule | Get-NetFirewallAddressFilter -ErrorAction Stop).RemoteAddress)
+        if ($fp6Ranges -notcontains '2000::/3') {
+            throw ('AI-Guard-Block-Foreign-Physical-IPv6 ActiveStore missing 2000::/3 (' + ($fp6Ranges -join ',') + ')')
+        }
+        $v6Msg = '2000::/3'
+    }
+
+    $cnMsg = 'disabled(policy)'
+    if ($guardPolicy.AllowCnDirect) {
+        $cnActiveRule = if ($activeIdx.ContainsKey('AI-Guard-Allow-CN')) { $activeIdx['AI-Guard-Allow-CN'] } else { $null }
+        if (-not $cnActiveRule -or $cnActiveRule.Enabled -ne 'True' -or $cnActiveRule.Action -ne 'Allow') {
+            throw 'AI-Guard-Allow-CN not active/Allow in ActiveStore'
+        }
+        $cnActiveCnt = @(($cnActiveRule | Get-NetFirewallAddressFilter -ErrorAction Stop).RemoteAddress).Count
+        if ($cnActiveCnt -lt 1000) {
+            throw ('AI-Guard-Allow-CN ActiveStore count too low: ' + $cnActiveCnt)
+        }
+        $cnMsg = [string]$cnActiveCnt
+    }
+
+    $tunMsg = 'tun-down'
+    if ($tunUp) {
+        $tunActiveRule = if ($activeIdx.ContainsKey('AI-Guard-Allow-TUN')) { $activeIdx['AI-Guard-Allow-TUN'] } elseif ($activeIdx.ContainsKey('AI-Guard-Allow-TUN-Alt')) { $activeIdx['AI-Guard-Allow-TUN-Alt'] } else { $null }
+        if (-not $tunActiveRule -or $tunActiveRule.Enabled -ne 'True' -or $tunActiveRule.Action -ne 'Allow') {
+            throw 'AI-Guard-Allow-TUN not active/Allow in ActiveStore'
+        }
+        $tunMsg = 'ok'
+    }
+
+    ('Foreign-v4=' + $fpRanges.Count + ' ranges, Foreign-v6=' + $v6Msg + ', CN=' + $cnMsg + ', TUN=' + $tunMsg)
+}
+
+Check 'physical-IP-on-TUN block policy' {
+    if (-not $tunUp) { return 'SKIP - TUN is down' }
+    if (-not ($script:regStates.ContainsKey('AI-Guard-Block-PhysicalIP-On-TUN') -and $script:regStates['AI-Guard-Block-PhysicalIP-On-TUN'])) {
+        throw 'AI-Guard-Block-PhysicalIP-On-TUN missing or disabled while TUN is up'
+    }
+    'active'
+}
+
+Check 'no orphaned PersistentStore /32 node host routes' {
+    $p32 = @(Get-NetRoute -PolicyStore PersistentStore -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.DestinationPrefix -like '*/32' -and
+            $_.RouteMetric -eq 1 -and
+            $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback'
+        })
+    $orphans = @()
+    foreach ($pr in $p32) {
+        $rip = ($pr.DestinationPrefix -split '/')[0]
+        if (-not $rip -or ($rip -notmatch '^\d{1,3}(\.\d{1,3}){3}$')) { continue }
+        if ($rip -match '^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)') { continue }
+        $oct0 = [int]($rip.Split('.')[0])
+        if ($oct0 -ge 224) { continue }
+        $orphans += $pr.DestinationPrefix
+    }
+    if ($orphans.Count -gt 0) {
+        throw ($orphans.Count.ToString() + ' orphaned PersistentStore /32 route(s), e.g. ' + $orphans[0] + ' (run 10-sync-node-rule.ps1 -PruneStaleNodeRoutes)')
+    }
+    '0 persistent /32 routes'
 }
 
 Check 'install directory ACL policy' {
@@ -567,6 +673,29 @@ Check 'background footprint (zero-resident event mode vs legacy daemon)' {
 # ---------------------------------------------------------------- 3. functional
 W ''
 W '--- 3. functional (Proxy=null direct kernel datapath) ---'
+function Find-WfpBlockOrigin {
+    param([string]$DestinationIP, [datetime]$Since)
+    if (-not $DestinationIP) { return $null }
+    try {
+        $events = Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 5157; StartTime = $Since } `
+            -MaxEvents 100 -ErrorAction Stop
+    }
+    catch {
+        return $null
+    }
+    foreach ($e in $events) {
+        try { $xmlDoc = [xml]$e.ToXml() } catch { continue }
+        $ns = New-Object System.Xml.XmlNamespaceManager($xmlDoc.NameTable)
+        $ns.AddNamespace('e', 'http://schemas.microsoft.com/win/2004/08/events/event')
+        $dest = $xmlDoc.SelectSingleNode('//e:EventData/e:Data[@Name="DestAddress"]', $ns)
+        if (-not $dest -or $dest.'#text' -ne $DestinationIP) { continue }
+        $origin = $xmlDoc.SelectSingleNode('//e:EventData/e:Data[@Name="FilterOrigin"]', $ns)
+        if ($origin -and $origin.'#text') { return [string]$origin.'#text' }
+        return 'Security-5157'
+    }
+    return $null
+}
+
 function Test-UrlStatus($url) {
     try { return [string](Invoke-DirectHttp -Url $url -TimeoutSec 12).StatusCode }
     catch {
@@ -612,10 +741,11 @@ if ($tunUp) {
 
     Check 'physical adapter socket direct egress blocked to foreign IP while TUN up' {
         $physNic = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch '(?i)wintun|singbox|xray|tap|loopback|virtual' } | Select-Object -First 1
-        if (-not $physNic) { return 'skipped (no active physical adapter)' }
+        if (-not $physNic) { return 'SKIP - no active physical adapter' }
         $physIp = (Get-NetIPAddress -InterfaceIndex $physNic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
-        if (-not $physIp) { return 'skipped (no physical IPv4)' }
+        if (-not $physIp) { return 'SKIP - no physical IPv4' }
         $targetForeignIp = '13.107.246.51'
+        $probeSince = (Get-Date).AddSeconds(-2)
         $localEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($physIp), 0)
         $sock = New-Object System.Net.Sockets.Socket([System.Net.Sockets.AddressFamily]::InterNetwork, [System.Net.Sockets.SocketType]::Stream, [System.Net.Sockets.ProtocolType]::Tcp)
         $leakedTcp = $false
@@ -635,26 +765,35 @@ if ($tunUp) {
             $sock.Close()
         }
         if ($leakedTcp) { throw ('direct physical outbound leak detected: ' + $physIp + ' connected to ' + $targetForeignIp + ':443') }
+        $origin5157 = Find-WfpBlockOrigin -DestinationIP $targetForeignIp -Since $probeSince
+        if ($origin5157) { $msgTcp += '; WFP 5157 FilterOrigin=' + $origin5157 }
         $msgTcp
     }
 
     if ($guardPolicy.BlockWebRtcLeak) {
         Check 'physical adapter raw WebRTC STUN UDP (19302) blocked' {
             $physNic = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch '(?i)wintun|sing-tun|mihomo|singbox|xray|tap|loopback|virtual' -and $_.Name -notmatch '(?i)tun|loopback' } | Select-Object -First 1
-            if (-not $physNic) { return 'skipped (no active physical adapter)' }
+            if (-not $physNic) { return 'SKIP - no active physical adapter' }
             $physIp = (Get-NetIPAddress -InterfaceIndex $physNic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress
-            if (-not $physIp) { return 'skipped (no physical IPv4)' }
-            $stunReq = [byte[]]@(0x00,0x01,0x00,0x00,0x21,0x12,0xA4,0x42,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA,0xBB,0xCC)
+            if (-not $physIp) { return 'SKIP - no physical IPv4' }
+            $stunReqObj = if (-not $stunLibMissing) { New-StunBindingRequest } else { [pscustomobject]@{ Packet = [byte[]]@(0x00,0x01,0x00,0x00,0x21,0x12,0xA4,0x42,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA,0xBB,0xCC); TransactionId = [byte[]]@(0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xAA,0xBB,0xCC) } }
+            $stunTargetIp = '74.125.250.129'
+            $probeSince = (Get-Date).AddSeconds(-2)
             $localEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Parse($physIp), 0)
             $udp = New-Object System.Net.Sockets.UdpClient($localEp)
             $udp.Client.ReceiveTimeout = 2000
             $leakedStun = $false
+            $leakedInfo = ''
             $msgStun = 'STUN UDP blocked/timed out'
             try {
-                [void]$udp.Send($stunReq, $stunReq.Length, '74.125.250.129', 19302)
+                [void]$udp.Send($stunReqObj.Packet, $stunReqObj.Packet.Length, $stunTargetIp, 19302)
                 $rem = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
                 $resp = $udp.Receive([ref]$rem)
-                if ($resp -and $resp.Length -gt 0) { $leakedStun = $true }
+                if ($resp -and $resp.Length -gt 0) {
+                    $leakedStun = $true
+                    $mapped = if (-not $stunLibMissing) { ConvertFrom-StunResponse -Packet $resp -TransactionId $stunReqObj.TransactionId } else { $null }
+                    $leakedInfo = if ($mapped) { 'mapped=' + $mapped } else { 'non-STUN/mismatched reply ' + $resp.Length + 'B' }
+                }
             }
             catch {
                 $msgStun = 'blocked/timed out on ' + $physIp + ' (' + $_.Exception.Message + ')'
@@ -662,7 +801,9 @@ if ($tunUp) {
             finally {
                 $udp.Close()
             }
-            if ($leakedStun) { throw ('WebRTC STUN UDP leak detected on physical NIC ' + $physIp + ' -> 74.125.250.129:19302') }
+            if ($leakedStun) { throw ('WebRTC STUN UDP leak detected on physical NIC ' + $physIp + ' -> ' + $stunTargetIp + ':19302 (' + $leakedInfo + ')') }
+            $origin5157 = Find-WfpBlockOrigin -DestinationIP $stunTargetIp -Since $probeSince
+            if ($origin5157) { $msgStun += '; WFP 5157 FilterOrigin=' + $origin5157 }
             $msgStun
         }
     }

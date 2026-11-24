@@ -325,6 +325,106 @@ Assert-True '07-mode Show-Status reports inconclusive for SYSTEM tasks when non-
     (($mode -match '\$script:ReadOnlyStatusMode') -and ($mode -match 'inconclusive \(non-elevated session cannot enumerate SYSTEM tasks')) `
     'ReadOnlyStatusMode guard required before reporting monitor tasks : none registered'
 
+# ---------------------------------------------------------------- 20. v5.8.8 post-review fixes
+$vSbHijack = Get-SingBoxStunRuleVerdict ([pscustomobject]@{ protocol = @('dns'); action = 'hijack-dns' }) $tunTags $expected
+$sbCfgLogical = [pscustomobject]@{
+    inbounds = @([pscustomobject]@{ tag = 'tun-in'; type = 'tun' })
+    route    = [pscustomobject]@{
+        rules = @(
+            [pscustomobject]@{ type = 'logical'; mode = 'or'; rules = @([pscustomobject]@{ protocol = @('dns') }, [pscustomobject]@{ port = @(53) }); action = 'hijack-dns' },
+            [pscustomobject]@{ action = 'reject'; port = @(3478, 3479, 5349, 5350); port_range = @('19302:19309') }
+        )
+    }
+}
+$aSbLog = Get-StunGuardAnalysisFromObject -Cfg $sbCfgLogical -Expected $expected
+$vSbLogAndExcl = Get-SingBoxStunRuleVerdict ([pscustomobject]@{ type = 'logical'; mode = 'and'; rules = @([pscustomobject]@{ ip_cidr = @('1.1.1.1/32') }, [pscustomobject]@{ port = @(53) }); outbound = 'direct' }) $tunTags $expected
+$vSbLogOrMatch = Get-SingBoxStunRuleVerdict ([pscustomobject]@{ type = 'logical'; mode = 'or'; rules = @([pscustomobject]@{ domain = @('example.com') }, [pscustomobject]@{ ip_cidr = @('1.1.1.0/24') }); outbound = 'direct' }) $tunTags $expected
+Assert-True 'sing-box hijack-dns and logical rules are classified without false SHADOWED and track RuleCount' `
+    (($vSbHijack.Kind -eq 'excluded') -and ($aSbLog.State -eq 'present') -and ($aSbLog.Shadow -eq 0) -and ($aSbLog.Caveat -eq 0) -and ($aSbLog.RuleCount -eq 1) -and ($aSb1.RuleCount -eq 2) -and ($vSbLogAndExcl.Kind -eq 'excluded') -and ($vSbLogOrMatch.Kind -eq 'matches')) `
+    ('got hijack=' + $vSbHijack.Kind + ' logShadow=' + $aSbLog.Shadow + ' logRuleCount=' + $aSbLog.RuleCount + ' andExcl=' + $vSbLogAndExcl.Kind + ' orMatch=' + $vSbLogOrMatch.Kind)
+
+Assert-True '07-mode Get-ActiveTunNamesFast & Get-ActivePhysicalNicsFast avoid nested return-comma and call Sync-NodeActiveHostRoutes' `
+    (($mode -match 'function Get-ActiveTunNamesFast[\s\S]*?return \$names\.ToArray\(\)') -and `
+     ($mode -match 'function Get-ActivePhysicalNicsFast[\s\S]*?return \$list\.ToArray\(\)') -and `
+     ($mode -match 'Sync-NodeActiveHostRoutes -NodeIps \$wantIps') -and `
+     ($mode -match 'Sync-NodeActiveHostRoutes -NodeIps \$ips') -and `
+     ($mode -match 'b1Meta, \$line' -and $mode -match "Detail -replace '\[\\\|\\r\\n\]'")) `
+    'flat returns, fast-path /32 route recovery, and pre-cache Detail normalization required'
+
+Assert-True 'IPv6 physical block respects DisablePhysicalIpv6 across lib-foreign-block, 07-mode, 02-killswitch, 14-apply-policy' `
+    (($libForeign -match '\[bool\]\$BlockPhysicalIpv6 = \$true') -and `
+     ($mode -match '\$wantV6Block = \[bool\]\$guardPolicy\.DisablePhysicalIpv6') -and `
+     ($applyPol -match '-SkipIpv6Block')) `
+    'BlockPhysicalIpv6 gating required'
+
+Assert-True '09-rollback clears foreign-block.meta and 12-regression enforces SKIP casing and new static checks' `
+    (($rollback -match "'foreign-block\.meta'") -and `
+     ($reg -notmatch "return 'skipped") -and `
+     ($reg -match 'AI-Guard-Block-Foreign-Physical-IPv6') -and `
+     ($reg -match 'AI-Guard-Block-PhysicalIP-On-TUN') -and `
+     ($reg -match 'PersistentStore')) `
+    'rollback cleanup, uppercase SKIP, and static regression checks required'
+
+# ---------------------------------------------------------------- 21. v5.8.8 STUN RFC 5389 parser, WFP 5157 & ActiveStore readback
+$req = New-StunBindingRequest
+$tx = $req.TransactionId
+$ck = [byte[]]@(0x21, 0x12, 0xA4, 0x42)
+
+# Build valid IPv4 XOR-MAPPED-ADDRESS (203.0.113.42)
+$rawV4 = [byte[]]@(203, 0, 113, 42)
+$pktV4 = New-Object 'byte[]' 32
+$pktV4[0] = 0x01; $pktV4[1] = 0x01; $pktV4[3] = 12
+[System.Array]::Copy($ck, 0, $pktV4, 4, 4)
+[System.Array]::Copy($tx, 0, $pktV4, 8, 12)
+$pktV4[20] = 0x00; $pktV4[21] = 0x20; $pktV4[22] = 0x00; $pktV4[23] = 8
+$pktV4[25] = 0x01; $pktV4[26] = 0x11; $pktV4[27] = 0x22
+for ($i = 0; $i -lt 4; $i++) { $pktV4[28 + $i] = [byte]($rawV4[$i] -bxor $ck[$i]) }
+$decV4 = ConvertFrom-StunResponse -Packet $pktV4 -TransactionId $tx
+
+# Build valid IPv6 XOR-MAPPED-ADDRESS (2001:db8::1)
+$rawV6 = ([System.Net.IPAddress]::Parse('2001:db8::1')).GetAddressBytes()
+$pktV6 = New-Object 'byte[]' 44
+$pktV6[0] = 0x01; $pktV6[1] = 0x01; $pktV6[3] = 24
+[System.Array]::Copy($ck, 0, $pktV6, 4, 4)
+[System.Array]::Copy($tx, 0, $pktV6, 8, 12)
+$pktV6[20] = 0x00; $pktV6[21] = 0x20; $pktV6[22] = 0x00; $pktV6[23] = 20
+$pktV6[25] = 0x02; $pktV6[26] = 0x11; $pktV6[27] = 0x22
+for ($i = 0; $i -lt 16; $i++) {
+    $maskB = if ($i -lt 4) { $ck[$i] } else { $tx[$i - 4] }
+    $pktV6[28 + $i] = [byte]($rawV6[$i] -bxor $maskB)
+}
+$decV6 = ConvertFrom-StunResponse -Packet $pktV6 -TransactionId $tx
+
+# Build valid IPv4 MAPPED-ADDRESS (198.51.100.7)
+$pktMap = New-Object 'byte[]' 32
+$pktMap[0] = 0x01; $pktMap[1] = 0x01; $pktMap[3] = 12
+[System.Array]::Copy($ck, 0, $pktMap, 4, 4)
+[System.Array]::Copy($tx, 0, $pktMap, 8, 12)
+$pktMap[20] = 0x00; $pktMap[21] = 0x01; $pktMap[22] = 0x00; $pktMap[23] = 8
+$pktMap[25] = 0x01; $pktMap[28] = 198; $pktMap[29] = 51; $pktMap[30] = 100; $pktMap[31] = 7
+$decMap = ConvertFrom-StunResponse -Packet $pktMap -TransactionId $tx
+
+# Mismatched TransactionId, bad Cookie, bad type
+$badTx = [byte[]]@(0..11)
+$badTx[0] = [byte]($tx[0] -bxor 0xFF)
+$decBadTx = ConvertFrom-StunResponse -Packet $pktV4 -TransactionId $badTx
+$pktBadCookie = [byte[]]$pktV4.Clone(); $pktBadCookie[4] = 0x00
+$decBadCookie = ConvertFrom-StunResponse -Packet $pktBadCookie -TransactionId $tx
+$decShort = ConvertFrom-StunResponse -Packet ($pktV4[0..19]) -TransactionId $tx
+
+Assert-True 'strict STUN parser decodes IPv4/IPv6 XOR and rejects mismatched TxID/cookie/truncation' `
+    (($req.Packet.Length -eq 20) -and ($decV4 -eq '203.0.113.42') -and ($decV6 -eq '2001:db8::1') -and `
+     ($decMap -eq '198.51.100.7') -and ($null -eq $decBadTx) -and ($null -eq $decBadCookie) -and ($null -eq $decShort)) `
+    ('v4=' + $decV4 + ' v6=' + $decV6 + ' map=' + $decMap + ' badTx=' + $decBadTx)
+
+$vlt = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') 'verify-leak-test.ps1') -Raw
+Assert-True 'verify-leak-test and 12-regression use strict STUN, WFP 5157 attribution, and ActiveStore readback' `
+    (($vlt -match 'New-StunBindingRequest') -and ($vlt -match 'ConvertFrom-StunResponse') -and `
+     ($reg -match 'New-StunBindingRequest') -and ($reg -match 'ConvertFrom-StunResponse') -and `
+     ($reg -match 'Find-WfpBlockOrigin') -and ($reg -match 'Id = 5157') -and `
+     ($reg -match '-PolicyStore ActiveStore')) `
+    'strict STUN helpers, Event 5157 origin lookup, and ActiveStore readback required'
+
 Write-Host ' '
 if ($script:fail -gt 0) {
     Write-Host ('=== ' + $script:fail + ' assertion(s) FAILED ===') -ForegroundColor Red

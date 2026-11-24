@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.8.7 · 根治持久化 /32 路由污染 + sing-box B1 适配 + IPv6 显式阻断 + 策略引擎修复）
+# AI-Net-Guard 实现方案与持续审查文档（v5.8.8 · ActiveStore `/32` 路由自愈 + 嵌套数组防错 + 严格 STUN/WFP 核验）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.8.7 正式版**（v5.8.6 全部内容 + 停止扫描 `configTest*.json` 且 `/32` 路由限定 `ActiveStore` + `-PruneStaleNodeRoutes` 清理历史孤儿路由、`lib-stun-guard` 补齐 `sing-box` `route.rules` B1 检测、`lib-foreign-block` 新增物理网卡 IPv6 显式 `Block`、`14-apply-policy` 修复三处增量回退/错位、`07-mode` 清理僵尸核心规则/TUN GUID 与 `-Status` 非提权任务口径，门禁扩至 33 条，详见 16.13）
+> 版本状态：**v5.8.8 正式版**（修复 `07-mode` 重启/切网 `ActiveStore` `/32` 不重建与 5 处 `return ,` 嵌套数组静默失效、`DisablePhysicalIpv6 = false` 与 IPv6 拦截规则冲突、`sing-box` `hijack-dns`/`logical` B1 误报，并吸收 RFC 5389 严格 STUN 解析、WFP Event ID `5157` 阻断归因与 `ActiveStore` 规则段数回读核验，详见 16.14）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -759,3 +759,21 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 
 1. **构建门禁扩展**：`tests\test-stun-ports.ps1` 扩至 19 组断言段（新增 `sing-box` 内存探针、`ActiveStore`/禁扫 `configTest*`、`node-routes.meta` 与 UTF-8 回滚日志、IPv6 显式 `Block`、`14` 禁用与去遥测、`-Status` 非提权口径）。
 2. **本轮未在本机提权执行生产同步与 `12-regression.ps1`**：发版会话为非提权上下文，`C:\AI-Net-Guard` 同步、清理本机 367 条历史 `/32` 孤儿路由、生成 IPv6 Block 规则及全链路回归需由用户在提权管理员终端执行。
+
+---
+
+### 16.14 v5.8.8：复核修复 `ActiveStore` `/32` 路由与嵌套数组自愈盲区 + 吸收严格 STUN/WFP/ActiveStore 核验（2026-11-24）
+
+在 v5.8.7 实机部署后开展第二轮全代码与运行时核查，修复了 2 项 P0 自愈回归、2 项 P1 策略/规则解析冲突与 4 项 P2 细节，并从 [claude-desktop-killswitch](https://github.com/yoruuuchan/claude-desktop-killswitch) 吸收了 3 项高价值验证能力：
+
+1. **P0 修复**：
+   - `07-mode.ps1` 抽离 `Sync-NodeActiveHostRoutes`（零 CIM 预检 `route.exe PRINT -4` 与 `.NET` 物理网关，失效时按最低复合跃点默认路由重建 `ActiveStore` `/32` 并清除 `PersistentStore` 副本）与 `Remove-RedundantActiveCoreRules`，且无论 fast-path 命中还是 `$alreadyExact` 均执行；
+   - 消除 `Get-ActiveTunNamesFast` 与 `Get-ActivePhysicalNicsFast` 的 `return ,` 嵌套数组陷阱并统一调用端 `@(...)` / `[string[]]`，根治本机 `AI-Guard-Block-PhysicalIP-On-TUN` 被静默异常阻断在 `/32`、`WebRTC-LocalIP` 漂移检测失灵与热插拔外网拦截死代码问题。
+2. **P1/P2 修复**：
+   - `AI-Guard-Block-Foreign-Physical-IPv6` 严格跟随 `DisablePhysicalIpv6` 策略（`lib-foreign-block.ps1`、`02`、`07`、`14`）；
+   - `lib-stun-guard.ps1` 适配 `sing-box` `action="hijack-dns"`、`type="logical"`（`and`/`or`）及 `invert`，新增 `RuleCount` 字段；
+   - 修复 `Get-B1GuardState` `|` 替换在返回/缓存前未同步导致的 `watchdog.log` 重复打印；`10-sync-node-rule.ps1 -PruneStaleNodeRoutes` 改为管道批量删除；`09-rollback.ps1` 补清 `foreign-block.meta`；`14-apply-policy.ps1` 重建 `Allow-LAN` 补全 RFC1918；`12-regression.ps1` 补齐物理网卡外网块 / `PhysicalIP-On-TUN` / 孤儿 `PersistentStore /32` 检查并统一 `'SKIP - ...'` 大小写。
+3. **吸收的三项验证增强**：
+   - `lib-stun-guard.ps1` 新增严格 RFC 5389 `New-StunBindingRequest` 与 `ConvertFrom-StunResponse`（校验 `0x0101`、Magic Cookie、96 位 `TransactionId` 与 IPv4/IPv6 XOR 解码），接入 `verify-leak-test.ps1` 与 `12-regression.ps1`；
+   - `12-regression.ps1` 新增 `Find-WfpBlockOrigin`（最佳努力检索 Security Event ID `5157` `FilterOrigin` 阻断归因）；
+   - `12-regression.ps1` 新增 `ActiveStore` 活跃防火墙规则与地址段数回读校验，确认规则真正在当前活跃策略生效且未被截断。

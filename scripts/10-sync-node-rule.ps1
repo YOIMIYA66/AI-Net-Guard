@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.7 - maintenance: re-sync node allow rule after switching proxy node or core.
+    AI-Net-Guard v5.8.8 - maintenance: re-sync node allow rule after switching proxy node or core.
 
 .DESCRIPTION
     Note: In v5.4, 07-mode.ps1 automatically syncs AI-Guard-Allow-Node-TCP/UDP
@@ -288,26 +288,37 @@ try {
     }
 
     if ($PruneStaleNodeRoutes) {
-        $prunedOrphanCount = 0
         $persistRoutes = @(Get-NetRoute -PolicyStore PersistentStore -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             Where-Object {
                 $_.DestinationPrefix -like '*/32' -and
                 $_.RouteMetric -eq 1 -and
                 $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback'
             })
+        $toDropPersist = New-Object System.Collections.Generic.List[object]
+        $toDropActiveSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
         foreach ($pr in $persistRoutes) {
             $rip = ($pr.DestinationPrefix -split '/')[0]
             if (-not $rip -or ($rip -notmatch '^\d{1,3}(\.\d{1,3}){3}$')) { continue }
             if ($rip -match '^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)') { continue }
             $oct0 = [int]($rip.Split('.')[0])
             if ($oct0 -ge 224) { continue }
-            Remove-NetRoute -DestinationPrefix $pr.DestinationPrefix -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+            $toDropPersist.Add($pr)
             if ($ips -notcontains $rip) {
-                Remove-NetRoute -DestinationPrefix $pr.DestinationPrefix -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                [void]$toDropActiveSet.Add($pr.DestinationPrefix)
             }
-            $prunedOrphanCount++
         }
-        Write-Host ('[-] pruned orphaned PersistentStore /32 host routes: ' + $prunedOrphanCount) -ForegroundColor Green
+        if ($toDropPersist.Count -gt 0) {
+            $toDropPersist | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+        }
+        if ($toDropActiveSet.Count -gt 0) {
+            @(Get-NetRoute -PolicyStore ActiveStore -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $toDropActiveSet.Contains($_.DestinationPrefix) -and
+                    $_.RouteMetric -eq 1 -and
+                    $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback'
+                }) | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+        }
+        Write-Host ('[-] pruned orphaned PersistentStore /32 host routes: ' + $toDropPersist.Count) -ForegroundColor Green
     }
 
     $physRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |

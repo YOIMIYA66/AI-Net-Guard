@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.8.7 - rollback & baseline restore (100% thorough uninstaller)
+# AI-Net-Guard v5.8.8 - rollback & baseline restore (100% thorough uninstaller)
 [CmdletBinding()]
 param(
     [string]$Root = 'C:\AI-Net-Guard',
@@ -22,7 +22,7 @@ function Log ($msg) {
 }
 
 $DohServer = '223.5.5.5'
-Log 'AI-Net-Guard v5.8.7 thorough rollback started'
+Log 'AI-Net-Guard v5.8.8 thorough rollback started'
 Log ('user: ' + [System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
 
 # ------------------------------------------------------------------ admin check
@@ -405,7 +405,7 @@ if (Test-Path -LiteralPath $pf) {
 }
 
 # Remove dynamic metadata files
-foreach ($metaFile in @('mode-state.json', 'node-sync.meta', 'node-routes.meta', 'cn-rule.sig', 'cn-file.meta', 'auto-disabled-outbound-allow.json', 'hotplug-ipv6.json', 'b1-guard.meta')) {
+foreach ($metaFile in @('mode-state.json', 'node-sync.meta', 'node-routes.meta', 'foreign-block.meta', 'cn-rule.sig', 'cn-file.meta', 'auto-disabled-outbound-allow.json', 'hotplug-ipv6.json', 'b1-guard.meta')) {
     $mf = Join-Path $BackupDir $metaFile
     if (Test-Path -LiteralPath $mf) {
         Remove-Item -LiteralPath $mf -Force -ErrorAction SilentlyContinue
