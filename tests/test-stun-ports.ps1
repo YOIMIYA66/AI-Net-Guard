@@ -30,7 +30,12 @@
          a full shadow (the ip branch must not return before the narrowing loop);
      13. an attrs-scoped rule agrees with StunNarrowingKeys and is a caveat;
      14. the GUI captures SKIP=n, shows a warning tone for skipped checks, and never
-         claims an absolute zero-leak clean bill of health.
+         claims an absolute zero-leak clean bill of health;
+     15. sing-box route.rules schema B1 detection (udp+tcp pair, combined rule, ip_cidr shadow, inbound/process narrowing);
+     16. /32 host route persistence prevention (ActiveStore only, no configTest*.json scanning, node-routes.meta rollback cleanup, UTF-8 no-BOM rollback log);
+     17. IPv6 physical-NIC explicit block (AI-Guard-Block-Foreign-Physical-IPv6 with 2000::/3, authorized in 07-mode);
+     18. 14-apply-policy.ps1 has no misplaced DiagTrack block and removes/disables 15-webrtc-browser-shield rules when BlockWebRtcLeak is off;
+     19. 07-mode.ps1 -Status distinguishes non-elevated ReadOnlyStatusMode for SYSTEM tasks.
 
     Exit code 0 when every assertion passes, 1 otherwise. Run by gui\build.ps1 so a
     local copy can never reach a release.
@@ -237,6 +242,88 @@ Assert-True 'GUI captures SKIP and no longer claims an absolute zero-leak result
      ($gui.Contains('StatusTone.Warning')) -and ($gui.Contains('Incomplete verification')) -and `
      (-not $gui.Contains('Regression PASS (FAIL=0)')) -and (-not $gui.Contains($absZeroLeak))) `
     'SKIP capture, warning tone and no absolute zero-leak wording are all required'
+
+# ---------------------------------------------------------------- 15. sing-box B1 analysis
+$sbCfgPair = [pscustomobject]@{
+    inbounds = @([pscustomobject]@{ tag = 'tun-in'; type = 'tun' })
+    route    = [pscustomobject]@{
+        rules = @(
+            [pscustomobject]@{ action = 'sniff' },
+            [pscustomobject]@{ domain_suffix = @('example.com'); outbound = 'direct' },
+            [pscustomobject]@{ ip_cidr = @('1.2.3.4/32'); process_name = @('curl.exe'); outbound = 'direct' },
+            [pscustomobject]@{ action = 'reject'; network = @('udp'); port = @(3478, 3479, 5349, 5350); port_range = @('19302:19309') },
+            [pscustomobject]@{ action = 'reject'; network = @('tcp'); port = @(3478, 3479, 5349, 5350); port_range = @('19302:19309') }
+        )
+    }
+}
+$aSb1 = Get-StunGuardAnalysisFromObject -Cfg $sbCfgPair -Expected $expected
+Assert-True 'sing-box udp+tcp reject pair with sniff/domain/ip+process gives present, shadow=0, caveat=1' `
+    (($aSb1.State -eq 'present') -and ($aSb1.Index -eq 3) -and ($aSb1.Shadow -eq 0) -and ($aSb1.Caveat -eq 1)) `
+    ('got state=' + $aSb1.State + ' idx=' + $aSb1.Index + ' shadow=' + $aSb1.Shadow + ' caveat=' + $aSb1.Caveat)
+
+$sbCfgSingle = [pscustomobject]@{
+    inbounds = @([pscustomobject]@{ tag = 'tun-in'; type = 'tun' })
+    route    = [pscustomobject]@{
+        rules = @(
+            [pscustomobject]@{ action = 'reject'; port = @(3478, 3479, 5349, 5350); port_range = @('19302:19309') }
+        )
+    }
+}
+$aSb2 = Get-StunGuardAnalysisFromObject -Cfg $sbCfgSingle -Expected $expected
+Assert-True 'sing-box single combined reject rule gives present and shadow=0' `
+    (($aSb2.State -eq 'present') -and ($aSb2.Index -eq 0) -and ($aSb2.Shadow -eq 0)) `
+    ('got state=' + $aSb2.State + ' shadow=' + $aSb2.Shadow)
+
+$sbCfgShadow = [pscustomobject]@{
+    inbounds = @([pscustomobject]@{ tag = 'tun-in'; type = 'tun' })
+    route    = [pscustomobject]@{
+        rules = @(
+            [pscustomobject]@{ ip_cidr = @('192.0.2.0/24'); outbound = 'direct' },
+            [pscustomobject]@{ action = 'reject'; port = @(3478, 3479, 5349, 5350); port_range = @('19302:19309') }
+        )
+    }
+}
+$aSb3 = Get-StunGuardAnalysisFromObject -Cfg $sbCfgShadow -Expected $expected
+Assert-True 'sing-box ip_cidr-only preceding rule flags shadow=1' `
+    (($aSb3.State -eq 'present') -and ($aSb3.Shadow -eq 1)) `
+    ('got state=' + $aSb3.State + ' shadow=' + $aSb3.Shadow)
+
+$vSbExcl = Get-SingBoxStunRuleVerdict ([pscustomobject]@{ inbound = @('socks-in') }) $tunTags $expected
+$vSbRestr = Get-SingBoxStunRuleVerdict ([pscustomobject]@{ inbound = @('tun-in'); process_name = @('curl.exe') }) $tunTags $expected
+Assert-True 'sing-box non-TUN inbound is excluded and TUN inbound + process_name is restricted' `
+    (($vSbExcl.Kind -eq 'excluded') -and ($vSbRestr.Kind -eq 'restricted')) `
+    ('got excl=' + $vSbExcl.Kind + ' restr=' + $vSbRestr.Kind)
+
+# ---------------------------------------------------------------- 16. route pollution & rollback fixes
+$syncNode = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') '10-sync-node-rule.ps1') -Raw
+Assert-True '07-mode and 10-sync-node-rule use ActiveStore only and never scan configTest*.json' `
+    (($mode -match '-PolicyStore\s+ActiveStore') -and ($syncNode -match '-PolicyStore\s+ActiveStore') -and `
+     ($mode -notmatch "Get-ChildItem[^\r\n]*configTest") -and ($syncNode -notmatch "Get-ChildItem[^\r\n]*configTest")) `
+    'ActiveStore flag required on New-NetRoute and no configTest*.json scanning allowed'
+
+Assert-True '09-rollback cleans node-routes.meta and writes log as UTF-8 without BOM' `
+    (($rollback -match "'node-routes\.meta'") -and ($rollback -match 'AppendAllText\(\$Log,.*UTF8Encoding\(\$false\)') -and `
+     ($rollback -notmatch 'Add-Content -LiteralPath \$Log.*-Encoding ASCII')) `
+    'node-routes.meta cleanup and UTF8Encoding($false) log writer required'
+
+# ---------------------------------------------------------------- 17. IPv6 physical block
+$libForeign = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') 'lib-foreign-block.ps1') -Raw
+Assert-True 'lib-foreign-block enforces AI-Guard-Block-Foreign-Physical-IPv6 (2000::/3) and 07-mode authorizes it' `
+    (($libForeign -match 'AI-Guard-Block-Foreign-Physical-IPv6') -and ($libForeign -match '2000::/3') -and `
+     ($mode -match 'Foreign-Physical-IPv6')) `
+    'IPv6 physical block rule and 07-mode authorization regex must be present'
+
+# ---------------------------------------------------------------- 18. 14-apply-policy fixes
+$applyPol = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') '14-apply-policy.ps1') -Raw
+Assert-True '14-apply-policy removes misplaced DiagTrack block and removes/disables 15-webrtc-browser-shield on OFF' `
+    (($applyPol -notmatch 'DiagTrack') -and ($applyPol -match '15-webrtc-browser-shield\.ps1') -and `
+     ($applyPol -match '-Remove -Quiet')) `
+    'no DiagTrack in 14-apply-policy and WebRTC browser shield must be removed when disabled'
+
+# ---------------------------------------------------------------- 19. 07-mode non-elevated task status
+Assert-True '07-mode Show-Status reports inconclusive for SYSTEM tasks when non-elevated' `
+    (($mode -match '\$script:ReadOnlyStatusMode') -and ($mode -match 'inconclusive \(non-elevated session cannot enumerate SYSTEM tasks')) `
+    'ReadOnlyStatusMode guard required before reporting monitor tasks : none registered'
 
 Write-Host ' '
 if ($script:fail -gt 0) {

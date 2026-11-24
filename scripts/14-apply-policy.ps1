@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.6 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.8.7 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 16
@@ -259,7 +259,7 @@ elseif ($policy.V2rayNRoot -and (Test-Path -LiteralPath $policy.V2rayNRoot)) {
 else {
     if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
     else {
-        foreach ($cand in @('C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
+        foreach ($cand in @('D:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64-desktop', 'C:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
             if ($cand -and ((Test-Path -LiteralPath (Join-Path $cand 'v2rayN.exe')) -or (Test-Path -LiteralPath (Join-Path $cand 'binConfigs')))) { $V2rayNRoot = $cand; break }
         }
         if (-not $V2rayNRoot) {
@@ -313,6 +313,63 @@ function Get-PhysicalAdaptersAll {
         ($knownTuns -notcontains $_.Name) -and
         $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|Loopback'
     })
+}
+
+function Get-IPv4MaskBytesPolicy([int]$PrefixLen) {
+    if ($PrefixLen -lt 0) { $PrefixLen = 0 }
+    if ($PrefixLen -gt 32) { $PrefixLen = 32 }
+    $full = [int][Math]::Floor($PrefixLen / 8)
+    $rem = $PrefixLen % 8
+    $b = New-Object 'byte[]' 4
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($i -lt $full) { $b[$i] = [byte]255 }
+        elseif ($i -eq $full -and $rem -gt 0) { $b[$i] = [byte]((0xFF -shl (8 - $rem)) -band 0xFF) }
+        else { $b[$i] = [byte]0 }
+    }
+    return ,$b
+}
+
+function Get-IPv4NetworkTextPolicy([string]$Ip, [byte[]]$Mask) {
+    $ipb = ([System.Net.IPAddress]::Parse($Ip)).GetAddressBytes()
+    $n = New-Object 'byte[]' 4
+    for ($i = 0; $i -lt 4; $i++) { $n[$i] = [byte]($ipb[$i] -band $Mask[$i]) }
+    return (([string]$n[0]) + '.' + ([string]$n[1]) + '.' + ([string]$n[2]) + '.' + ([string]$n[3]))
+}
+
+function Get-PhysicalEgressCidrsPolicy([string[]]$PhysicalAlias, [string[]]$TunAlias) {
+    $out = New-Object System.Collections.Generic.List[string]
+    $tunIps = @()
+    if ($TunAlias) {
+        try {
+            $tunIps = @(Get-NetIPAddress -InterfaceAlias $TunAlias -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' } |
+                Select-Object -ExpandProperty IPAddress -Unique)
+        }
+        catch { }
+    }
+    $addrs = @()
+    try {
+        $addrs = @(Get-NetIPAddress -InterfaceAlias $PhysicalAlias -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' })
+    }
+    catch { }
+    foreach ($a in $addrs) {
+        $ip = [string]$a.IPAddress
+        $plen = 32
+        try { $plen = [int]$a.PrefixLength } catch { $plen = 32 }
+        if ($plen -le 0 -or $plen -gt 32) { $plen = 32 }
+        $mask = Get-IPv4MaskBytesPolicy $plen
+        $net = Get-IPv4NetworkTextPolicy $ip $mask
+        $overlapsTun = $false
+        if ($plen -lt 32) {
+            foreach ($ti in $tunIps) {
+                if ((Get-IPv4NetworkTextPolicy $ti $mask) -eq $net) { $overlapsTun = $true; break }
+            }
+        }
+        $cidr = if ($plen -ge 32 -or $overlapsTun) { ($ip + '/32') } else { ($net + '/' + [string]$plen) }
+        if (-not $out.Contains($cidr)) { $out.Add($cidr) }
+    }
+    return $out.ToArray()
 }
 
 function Invoke-QuickConnectivityCheck([bool]$AllowCn) {
@@ -370,7 +427,7 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.8.6 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.8.7 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
 
 if ($isFreshInstall) {
@@ -557,17 +614,18 @@ else {
             }
         }
         $tunNamesActive = @($tunAdaptersAll | Select-Object -ExpandProperty Name -Unique)
-        if ($tunNamesActive.Count -gt 0 -and $physIpList.Count -gt 0) {
+        $physAliasForTunBlk = @(Get-PhysicalAdaptersAll | Select-Object -ExpandProperty Name)
+        $physCidrsForTunBlk = @(Get-PhysicalEgressCidrsPolicy -PhysicalAlias $physAliasForTunBlk -TunAlias $tunNamesActive)
+        if ($physCidrsForTunBlk.Count -eq 0) { $physCidrsForTunBlk = $physIpList }
+        if ($tunNamesActive.Count -gt 0 -and $physCidrsForTunBlk.Count -gt 0) {
             $blkPhysTun = Get-NetFirewallRule -Name 'AI-Guard-Block-PhysicalIP-On-TUN' -ErrorAction SilentlyContinue
             if ($blkPhysTun) {
-                $curIfs = @(($blkPhysTun | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
-                $mergedIfs = @($curIfs + $tunNamesActive | Select-Object -Unique)
-                Set-NetFirewallRule -InputObject $blkPhysTun -InterfaceAlias $mergedIfs -LocalAddress $physIpList -Enabled True -ErrorAction SilentlyContinue
+                Set-NetFirewallRule -InputObject $blkPhysTun -InterfaceAlias $tunNamesActive -LocalAddress $physCidrsForTunBlk -Enabled True -ErrorAction SilentlyContinue
             }
             else {
                 New-NetFirewallRule -Name 'AI-Guard-Block-PhysicalIP-On-TUN' -DisplayName 'AI-Guard-Block-PhysicalIP-On-TUN' `
-                    -Direction Outbound -Action Block -InterfaceAlias $tunNamesActive -LocalAddress $physIpList -Protocol Any -Profile Any -Enabled True `
-                    -Description 'Explicitly block sockets bound to physical NIC IPs from matching Xray TUN soft-permit on TUN interface.' | Out-Null
+                    -Direction Outbound -Action Block -InterfaceAlias $tunNamesActive -LocalAddress $physCidrsForTunBlk -Protocol Any -Profile Any -Enabled True `
+                    -Description 'Explicitly block sockets bound to physical NIC subnets from matching Xray TUN soft-permit on TUN interface.' | Out-Null
             }
         }
     }
@@ -828,23 +886,13 @@ else {
             }
         }
         Write-Ok 'DisableLlmnrNetbios = OFF (restored default multicast & NetBIOS)'
-        try {
-            Stop-Service -Name 'DiagTrack' -Force -ErrorAction SilentlyContinue
-            Set-Service -Name 'DiagTrack' -StartupType Disabled -ErrorAction SilentlyContinue
-            Stop-Service -Name 'dmwappushservice' -Force -ErrorAction SilentlyContinue
-            Set-Service -Name 'dmwappushservice' -StartupType Disabled -ErrorAction SilentlyContinue
-            $dcKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
-            if (-not (Test-Path -LiteralPath $dcKey)) { New-Item -Path $dcKey -Force | Out-Null }
-            Set-ItemProperty -LiteralPath $dcKey -Name 'AllowTelemetry' -Value 0 -Type DWord -ErrorAction SilentlyContinue
-            Set-ItemProperty -LiteralPath $dcKey -Name 'MaxTelemetryAllowed' -Value 0 -Type DWord -ErrorAction SilentlyContinue
-            Write-Ok 'WindowsTelemetry = OFF (DiagTrack disabled, AllowTelemetry=0)'
-        } catch { }
     }
 
-    # 2c. BlockWebRtcLeak (physical NIC STUN/TURN firewall rules + LocalIP rules + Chrome/Edge policy)
+    # 2c. BlockWebRtcLeak (physical NIC STUN/TURN firewall rules + LocalIP subnet rules + 15-webrtc-browser-shield + Chrome/Edge policy)
     $wrtcPorts = @(Get-StunGuardPortStrings)
     $cPolKey = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
     $ePolKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+    $shieldScript = Get-PolicyScriptPath '15-webrtc-browser-shield.ps1'
     $ruleWrtcUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-UDP' -ErrorAction SilentlyContinue
     $ruleWrtcTcp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-TCP' -ErrorAction SilentlyContinue
     $ruleWrtcLocalUdp = Get-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -ErrorAction SilentlyContinue
@@ -870,29 +918,32 @@ else {
                     -InterfaceAlias $physAliasList -Profile Any -Enabled True `
                     -Description 'Block WebRTC STUN/TURN outbound TCP on physical NICs (anti-leak for all proxy cores).' | Out-Null
             }
-            $physIpv4s = @(Get-NetIPAddress -InterfaceAlias $physAliasList -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-                Where-Object { $_.IPAddress -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
-                Select-Object -ExpandProperty IPAddress -Unique)
-            if ($physIpv4s.Count -gt 0) {
+            $physCidrs = @(Get-PhysicalEgressCidrsPolicy -PhysicalAlias $physAliasList -TunAlias $knownTuns)
+            if ($physCidrs.Count -gt 0) {
                 if ($ruleWrtcLocalUdp) {
-                    Set-NetFirewallRule -InputObject $ruleWrtcLocalUdp -LocalAddress $physIpv4s -Enabled True -ErrorAction SilentlyContinue
+                    Set-NetFirewallRule -InputObject $ruleWrtcLocalUdp -LocalAddress $physCidrs -Enabled True -ErrorAction SilentlyContinue
                 }
                 else {
                     New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-UDP' -DisplayName 'AI-Guard-Block-WebRTC-LocalIP-UDP' `
-                        -Direction Outbound -Action Block -Protocol UDP -LocalAddress $physIpv4s -RemotePort $wrtcPorts `
+                        -Direction Outbound -Action Block -Protocol UDP -LocalAddress $physCidrs -RemotePort $wrtcPorts `
                         -Profile Any -Enabled True `
-                        -Description 'Block WebRTC STUN/TURN UDP bound to physical NIC IPs even when TUN metric 0 captures ALE routing.' | Out-Null
+                        -Description 'Block WebRTC STUN/TURN UDP bound to physical NIC subnets even when TUN metric 0 captures ALE routing.' | Out-Null
                 }
                 if ($ruleWrtcLocalTcp) {
-                    Set-NetFirewallRule -InputObject $ruleWrtcLocalTcp -LocalAddress $physIpv4s -Enabled True -ErrorAction SilentlyContinue
+                    Set-NetFirewallRule -InputObject $ruleWrtcLocalTcp -LocalAddress $physCidrs -Enabled True -ErrorAction SilentlyContinue
                 }
                 else {
                     New-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -DisplayName 'AI-Guard-Block-WebRTC-LocalIP-TCP' `
-                        -Direction Outbound -Action Block -Protocol TCP -LocalAddress $physIpv4s -RemotePort $wrtcPorts `
+                        -Direction Outbound -Action Block -Protocol TCP -LocalAddress $physCidrs -RemotePort $wrtcPorts `
                         -Profile Any -Enabled True `
-                        -Description 'Block WebRTC STUN/TURN TCP bound to physical NIC IPs even when TUN metric 0 captures ALE routing.' | Out-Null
+                        -Description 'Block WebRTC STUN/TURN TCP bound to physical NIC subnets even when TUN metric 0 captures ALE routing.' | Out-Null
                 }
             }
+        }
+        if (Test-Path -LiteralPath $shieldScript) {
+            try {
+                & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $shieldScript -Apply -Quiet | Out-Null
+            } catch { }
         }
         try {
             if (-not (Test-Path -LiteralPath $cPolKey)) { New-Item -Path $cPolKey -Force | Out-Null }
@@ -901,7 +952,7 @@ else {
             New-ItemProperty -Path $ePolKey -Name 'WebRtcIPHandlingPolicy' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
             New-ItemProperty -Path $ePolKey -Name 'WebRtcLocalhostIpHandling' -Value 'disable_non_proxied_udp' -PropertyType String -Force | Out-Null
         } catch { }
-        Write-Ok 'BlockWebRtcLeak = ON (physical NIC + LocalIP STUN/TURN blocked + Chrome/Edge disable_non_proxied_udp)'
+        Write-Ok 'BlockWebRtcLeak = ON (physical NIC + LocalIP subnet + browser shield + Chrome/Edge policy)'
     }
     else {
         foreach ($wr in @($ruleWrtcUdp, $ruleWrtcTcp, $ruleWrtcLocalUdp, $ruleWrtcLocalTcp)) {
@@ -909,6 +960,16 @@ else {
                 Disable-NetFirewallRule -InputObject $wr -ErrorAction SilentlyContinue
             }
         }
+        if (Test-Path -LiteralPath $shieldScript) {
+            try {
+                & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $shieldScript -Remove -Quiet | Out-Null
+            } catch { }
+        }
+        try {
+            Get-NetFirewallRule -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^AI-Guard-Block-WebRTC-(?:.+-PhysUDP|.+-CoreSTUN-(?:UDP|TCP))$' -and $_.Enabled -eq 'True' } |
+                Disable-NetFirewallRule -ErrorAction SilentlyContinue
+        } catch { }
         try {
             if (Test-Path -LiteralPath $cPolKey) {
                 if ($dnsBackup -and ($dnsBackup.PSObject.Properties.Name -contains 'ChromeWebRtcPolicy') -and $null -ne $dnsBackup.ChromeWebRtcPolicy) {
@@ -1131,5 +1192,5 @@ if (Test-Path -LiteralPath $aclScript) {
 
 & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Status -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns
 Write-Host ''
-Write-Host '[SUCCESS] AI-Net-Guard v5.8.6 configuration applied successfully.' -ForegroundColor Green
+Write-Host '[SUCCESS] AI-Net-Guard v5.8.7 configuration applied successfully.' -ForegroundColor Green
 exit 0

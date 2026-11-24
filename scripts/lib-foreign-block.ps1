@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.8.6 - shared helper for explicit physical-NIC foreign IPv4 block rule
+# AI-Net-Guard v5.8.7 - shared helper for explicit physical-NIC foreign IPv4 block rule
 # Pure ASCII script. Dot-sourced by 02-killswitch.ps1, 07-mode.ps1, 10-sync-node-rule.ps1, 14-apply-policy.ps1.
 #
 # Why this exists:
@@ -88,6 +88,47 @@ function Get-ForeignComplementRanges {
     return ,$comp.ToArray()
 }
 
+function Sync-ForeignPhysicalIpv6BlockRule {
+    param(
+        [string[]]$PhysicalAliases = @(),
+        [switch]$Force
+    )
+
+    $ruleName = 'AI-Guard-Block-Foreign-Physical-IPv6'
+    $physClean = @($PhysicalAliases | Where-Object { $_ -and $_ -notmatch '(?i)tun|wintun|sing-tun|mihomo|loopback' } | Sort-Object -Unique)
+    if ($physClean.Count -eq 0) { return $false }
+
+    $v6Scopes = @('2000::/3')
+    $oldRule = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
+    if ($oldRule) {
+        if (-not $Force -and $oldRule.Enabled -eq 'True' -and $oldRule.Action -eq 'Block') {
+            try {
+                $curIf = @(($oldRule | Get-NetFirewallInterfaceFilter -ErrorAction SilentlyContinue).InterfaceAlias | Where-Object { $_ -and $_ -ne 'Any' } | Sort-Object -Unique)
+                if (($curIf -join ',') -eq ($physClean -join ',')) { return $false }
+            }
+            catch { }
+        }
+        try {
+            Set-NetFirewallRule -InputObject $oldRule -InterfaceAlias $physClean -RemoteAddress $v6Scopes `
+                -Action Block -Profile Any -Enabled True -ErrorAction Stop
+        }
+        catch {
+            $oldRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+            New-NetFirewallRule -Name $ruleName -DisplayName $ruleName `
+                -Direction Outbound -Action Block -Protocol Any `
+                -InterfaceAlias $physClean -RemoteAddress $v6Scopes -Profile Any -Enabled True `
+                -Description 'Explicitly block global unicast IPv6 egress on physical NICs (vetoes third-party WFP soft-permit callouts).' | Out-Null
+        }
+    }
+    else {
+        New-NetFirewallRule -Name $ruleName -DisplayName $ruleName `
+            -Direction Outbound -Action Block -Protocol Any `
+            -InterfaceAlias $physClean -RemoteAddress $v6Scopes -Profile Any -Enabled True `
+            -Description 'Explicitly block global unicast IPv6 egress on physical NICs (vetoes third-party WFP soft-permit callouts).' | Out-Null
+    }
+    return $true
+}
+
 function Sync-ForeignPhysicalBlockRule {
     param(
         [string]$Root = 'C:\AI-Net-Guard',
@@ -122,7 +163,8 @@ function Sync-ForeignPhysicalBlockRule {
             $oldSig = [System.IO.File]::ReadAllText($metaFile, [System.Text.Encoding]::UTF8).Trim()
             if ($oldSig -eq $wantSig) {
                 $existing = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
-                if ($existing -and $existing.Enabled -eq 'True') { return $false }
+                $existingV6 = Get-NetFirewallRule -Name 'AI-Guard-Block-Foreign-Physical-IPv6' -ErrorAction SilentlyContinue
+                if ($existing -and $existing.Enabled -eq 'True' -and $existingV6 -and $existingV6.Enabled -eq 'True') { return $false }
             }
         }
         catch { }
@@ -158,6 +200,8 @@ function Sync-ForeignPhysicalBlockRule {
             -InterfaceAlias $physClean -RemoteAddress $ranges -Profile Any -Enabled True `
             -Description 'Explicitly block non-CN/non-LAN/non-Node IPv4 egress on physical NICs (vetoes third-party WFP soft-permit callouts).' | Out-Null
     }
+
+    [void](Sync-ForeignPhysicalIpv6BlockRule -PhysicalAliases $physClean -Force:$Force)
 
     $metaDir = Split-Path -Parent $metaFile
     if (-not (Test-Path -LiteralPath $metaDir)) { New-Item -ItemType Directory -Path $metaDir -Force | Out-Null }

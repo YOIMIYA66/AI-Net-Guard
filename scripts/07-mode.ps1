@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.6 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
+    AI-Net-Guard v5.8.7 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
 
 .DESCRIPTION
     The guard itself is 100% STATIC in Windows kernel WFP (BFE / tcpip.sys):
@@ -152,6 +152,7 @@ $cnList = Join-Path $Root 'cn-ipv4.txt'
 $cnSig = Join-Path $Root 'backup\cn-rule.sig'
 $cnMeta = Join-Path $Root 'backup\cn-file.meta'
 $nodeMeta = Join-Path $Root 'backup\node-sync.meta'
+$nodeRoutesMeta = Join-Path $Root 'backup\node-routes.meta'
 $v54Flag = Join-Path $Root 'backup\v54-migrated.flag'
 $quarantineFile = Join-Path $Root 'backup\auto-disabled-outbound-allow.json'
 $allowExceptionsFile = Join-Path $Root 'backup\allowed-outbound-rules.json'
@@ -628,7 +629,7 @@ function Get-FirewallRuleAnalysis {
                                    ($v -notmatch '(^|\|)RA[46]=') -and ($v -notmatch '(^|\|)IF=') -and ($v -notmatch '(^|\|)App='))
             $ruleIdent = if ($dn) { $dn } else { $pr.Name }
             $isAuthorizedAiGuard = $isAiGuard -and (-not $isDangerousBlanket) -and
-                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|PhysicalIP-On-TUN|Foreign-Physical|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$')
+                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|PhysicalIP-On-TUN|Foreign-Physical|Foreign-Physical-IPv6|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$')
 
             if ($isAuthorizedAiGuard) {
                 if (-not $rawByRule.ContainsKey($pr.Name) -or $active) { $rawByRule[$pr.Name] = $v }
@@ -889,47 +890,7 @@ function Sync-NodeRuleFast {
 
         $udp = [bool]$parsed.Udp
         $udpPorts = @($parsed.UdpPorts)
-
-        # Scan test configs in binConfigs (e.g. Reality port 443 or Hysteria2 server_ports while active config differs)
-        $binCfgDir = Join-Path $V2rayNRoot 'binConfigs'
-        if (Test-Path -LiteralPath $binCfgDir) {
-            foreach ($testFile in (Get-ChildItem -LiteralPath $binCfgDir -Filter 'configTest*.json' -ErrorAction SilentlyContinue)) {
-                try {
-                    $tCfg = Get-Content -LiteralPath $testFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-                    if ($tCfg.outbounds) {
-                        foreach ($ob in $tCfg.outbounds) {
-                            $tAddr = [string]$(if ($ob.server) { $ob.server } elseif ($ob.settings.address) { $ob.settings.address } elseif ($ob.settings.vnext) { $ob.settings.vnext[0].address } elseif ($ob.settings.servers) { $ob.settings.servers[0].address } else { '' })
-                            $tPortsList = @()
-                            if ($ob.server_port) { $tPortsList += ([string]$ob.server_port) }
-                            elseif ($ob.settings.port) { $tPortsList += ([string]$ob.settings.port) }
-                            elseif ($ob.settings.vnext -and $ob.settings.vnext[0].port) { $tPortsList += ([string]$ob.settings.vnext[0].port) }
-                            elseif ($ob.settings.servers -and $ob.settings.servers[0].port) { $tPortsList += ([string]$ob.settings.servers[0].port) }
-                            if ($ob.server_ports) {
-                                foreach ($sp in @($ob.server_ports)) {
-                                    $norm = ([string]$sp).Replace(':', '-').Trim()
-                                    if ($norm) { $tPortsList += $norm }
-                                }
-                            }
-                            if ($tAddr) {
-                                if ($tAddr -match '^\d{1,3}(\.\d{1,3}){3}$') { $ips += @($tAddr) }
-                                else { $usedDomain = $true; $ips += @(Resolve-DomainIpsSafe -Domain $tAddr) }
-                            }
-                            if ($tPortsList.Count -gt 0) {
-                                $tPortsList = @($tPortsList | Where-Object { $_ } | Select-Object -Unique)
-                                if ($ob.type -match 'hysteria|tuic|wireguard' -or $ob.protocol -match 'hysteria|wireguard') {
-                                    $parsed.TcpPorts += @($tPortsList[0])
-                                    $udpPorts += $tPortsList
-                                    $udp = $true
-                                }
-                                else {
-                                    $parsed.TcpPorts += $tPortsList
-                                }
-                            }
-                        }
-                    }
-                } catch { }
-            }
-        }
+        # Only active config.json outbounds are authorized (ignore transient configTest*.json)
         $ips = @($ips | Where-Object { $_ } | Select-Object -Unique)
         $udpPorts = @($udpPorts | Where-Object { $_ } | Select-Object -Unique)
 
@@ -1009,11 +970,18 @@ function Sync-NodeRuleFast {
                 }
             }
 
-            # Keep companion rules (TCP/UDP node + AliDNS DoH) for all installed proxy cores synchronized
-            foreach ($candRel in @('bin\xray\xray.exe', 'bin\sing_box\sing-box.exe', 'v2rayN.exe')) {
+            # Sync companion rules (TCP/UDP node + AliDNS DoH) for standby cores, and prune redundant Core-* rules for active core
+            foreach ($candRel in @('bin\xray\xray.exe', 'bin\sing_box\sing-box.exe', 'bin\mihomo\mihomo-windows-amd64-v1.exe', 'bin\mihomo\mihomo.exe', 'v2rayN.exe')) {
                 $compExe = Join-Path $V2rayNRoot $candRel
-                if ((Test-Path -LiteralPath $compExe) -and ($compExe -ine $coreExe)) {
-                    $cName = if ($candRel -like '*xray*') { 'Xray' } elseif ($candRel -like '*sing*') { 'SingBox' } else { 'V2rayN' }
+                $cName = if ($candRel -like '*xray*') { 'Xray' } elseif ($candRel -like '*sing*') { 'SingBox' } elseif ($candRel -like '*v2rayn*') { 'V2rayN' } else { [System.IO.Path]::GetFileNameWithoutExtension($candRel) }
+                if ($compExe -ieq $coreExe) {
+                    foreach ($sfx in @('TCP', 'UDP', 'DoH')) {
+                        $dup = Get-NetFirewallRule -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-' + $sfx) -ErrorAction SilentlyContinue
+                        if ($dup) { $dup | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
+                    }
+                    continue
+                }
+                if (Test-Path -LiteralPath $compExe) {
                     $cRuleTcp = Get-NetFirewallRule -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-TCP') -ErrorAction SilentlyContinue | Select-Object -First 1
                     if ($cRuleTcp) {
                         Set-NetFirewallRule -InputObject $cRuleTcp -Program $compExe -RemoteAddress $ips -RemotePort $tcpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction SilentlyContinue
@@ -1048,17 +1016,29 @@ function Sync-NodeRuleFast {
                     }
                 }
             }
+            if (-not $udp) {
+                Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-Core-*-UDP' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+            }
 
-            # Ensure /32 physical host route for proxy node IPs and prune stale old node /32 host routes
+            # Ensure /32 physical host route for proxy node IPs (ActiveStore only - never PersistentStore)
             try {
+                $staleRouteIps = @()
                 if (Test-Path -LiteralPath $nodeMeta) {
                     $oldMetaRaw = Get-Content -LiteralPath $nodeMeta -Raw -ErrorAction SilentlyContinue
                     if ($oldMetaRaw -match '\|([\d\.,]+)\|') {
-                        foreach ($prevIp in ($Matches[1].Split(','))) {
-                            if ($prevIp -match '^\d{1,3}(\.\d{1,3}){3}$' -and ($ips -notcontains $prevIp)) {
-                                Remove-NetRoute -DestinationPrefix ($prevIp + '/32') -Confirm:$false -ErrorAction SilentlyContinue
-                            }
-                        }
+                        $staleRouteIps += @($Matches[1].Split(','))
+                    }
+                }
+                if (Test-Path -LiteralPath $nodeRoutesMeta) {
+                    $oldNrRaw = [System.IO.File]::ReadAllText($nodeRoutesMeta, [System.Text.Encoding]::UTF8).Trim()
+                    if ($oldNrRaw) {
+                        $staleRouteIps += @($oldNrRaw.Split(','))
+                    }
+                }
+                foreach ($prevIp in @($staleRouteIps | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Select-Object -Unique)) {
+                    if ($ips -notcontains $prevIp) {
+                        Remove-NetRoute -DestinationPrefix ($prevIp + '/32') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                        Remove-NetRoute -DestinationPrefix ($prevIp + '/32') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
                     }
                 }
                 $physRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
@@ -1067,17 +1047,20 @@ function Sync-NodeRuleFast {
                 if ($physRoute -and $physRoute.NextHop) {
                     foreach ($nodeIp in $ips) {
                         if ($nodeIp -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') {
-                            $curHostRoute = Get-NetRoute -DestinationPrefix ($nodeIp + '/32') -ErrorAction SilentlyContinue
-                            if (-not $curHostRoute) {
-                                New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -ErrorAction SilentlyContinue | Out-Null
+                            Remove-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+                            $curHostRoute = @(Get-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore ActiveStore -ErrorAction SilentlyContinue)
+                            if ($curHostRoute.Count -eq 0) {
+                                New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
                             }
-                            elseif ($curHostRoute.NextHop -ne $physRoute.NextHop -or $curHostRoute.InterfaceAlias -ne $physRoute.InterfaceAlias -or $curHostRoute.RouteMetric -ne 1) {
-                                Remove-NetRoute -DestinationPrefix ($nodeIp + '/32') -Confirm:$false -ErrorAction SilentlyContinue
-                                New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -ErrorAction SilentlyContinue | Out-Null
+                            elseif ($curHostRoute[0].NextHop -ne $physRoute.NextHop -or $curHostRoute[0].InterfaceAlias -ne $physRoute.InterfaceAlias -or $curHostRoute[0].RouteMetric -ne 1) {
+                                Remove-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                                New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
                             }
                         }
                     }
                 }
+                New-Item -ItemType Directory -Path (Split-Path $nodeRoutesMeta) -Force | Out-Null
+                [System.IO.File]::WriteAllText($nodeRoutesMeta, ($ips -join ','), (New-Object System.Text.UTF8Encoding($false)))
             } catch { }
 
             $coreLabel = Split-Path -Leaf $coreExe
@@ -1393,7 +1376,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>AI-Net-Guard v5.8.6 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
+    <Description>AI-Net-Guard v5.8.7 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
@@ -1621,7 +1604,7 @@ function Show-Status {
     else { 'stopped' }
 
     Write-Host ''
-    Write-Host '=== AI-Net-Guard v5.8.6 Status (read-only) ===' -ForegroundColor Cyan
+    Write-Host '=== AI-Net-Guard v5.8.7 Status (read-only) ===' -ForegroundColor Cyan
     Write-Host ('TUN : ' + $tunLabel + '   core : ' + $coreLabel)
     if (Test-Path -LiteralPath $policyFile) {
         Write-Host ('  policy preset     : ' + $guardPolicy.Preset + ' (guard-policy.json active)') -ForegroundColor Cyan
@@ -1657,6 +1640,7 @@ function Show-Status {
     if ($ruleStates.ContainsKey('AI-Guard-Allow-TUN-Alt')) { $displayRules += 'AI-Guard-Allow-TUN-Alt' }
     $displayRules += 'AI-Guard-Allow-NCSI'
     $displayRules += 'AI-Guard-Block-Foreign-Physical'
+    $displayRules += 'AI-Guard-Block-Foreign-Physical-IPv6'
 
     foreach ($rn in $displayRules) {
         $optDisabled = ($rn -eq 'AI-Guard-Allow-LAN' -and -not $guardPolicy.AllowLan) -or ($rn -eq 'AI-Guard-Allow-NCSI' -and -not $guardPolicy.AllowNcsi)
@@ -1775,7 +1759,16 @@ function Show-Status {
 
     $modeTasks = @(Get-ScheduledTask -TaskName 'AI-Guard-Mode-*' -ErrorAction SilentlyContinue)
     if ($modeTasks.Count -eq 0) {
-        Write-Host '  monitor tasks     : none registered (run .\07-mode.ps1 -InstallTasks)' -ForegroundColor Yellow
+        if ($script:ReadOnlyStatusMode) {
+            Write-Host '  monitor tasks     : inconclusive (non-elevated session cannot enumerate SYSTEM tasks; verify elevated or via 17-autorepair-task.ps1)' -ForegroundColor Yellow
+            $prevSt = Read-PrevState
+            if ($prevSt -and $prevSt.Updated) {
+                Write-Host ('                      (last mode-state.json update: ' + $prevSt.Updated + ')') -ForegroundColor DarkGray
+            }
+        }
+        else {
+            Write-Host '  monitor tasks     : none registered (run .\07-mode.ps1 -InstallTasks)' -ForegroundColor Yellow
+        }
     }
     else {
         foreach ($t in $modeTasks) {
@@ -1803,7 +1796,7 @@ function Show-Status {
 }
 
 function Invoke-UpgradeV54 {
-    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.8.6 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
+    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.8.7 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
 
     # 1. Backfill new rollback fields into existing DNS baseline JSON without altering original values
     $bf = Join-Path $Root 'backup\baseline.json'
@@ -2160,20 +2153,25 @@ function Ensure-Guard {
 
     # 3d. multi-core dynamic TUN interface rule (e.g. singbox_tun / mihomo_tun / xray_tun)
     # Also enforce TUN-only LocalAddress scope AND explicit AI-Guard-Block-PhysicalIP-On-TUN
-    # (overrides Xray TUN's "permit through the TUN" WFP soft-permit when a socket binds a physical NIC IP).
+    # (overrides Xray TUN's "permit through the TUN" WFP soft-permit when a socket binds a physical NIC subnet).
+    # Prune dead/orphaned interface GUIDs whenever live TUN adapters are present.
     $rawMainTun = if ($analysis.RawByRule.ContainsKey('AI-Guard-Allow-TUN')) { [string]$analysis.RawByRule['AI-Guard-Allow-TUN'] } else { '' }
     $rawAltTun = if ($analysis.RawByRule.ContainsKey('AI-Guard-Allow-TUN-Alt')) { [string]$analysis.RawByRule['AI-Guard-Allow-TUN-Alt'] } else { '' }
     $rawBlkPhysTun = if ($analysis.RawByRule.ContainsKey('AI-Guard-Block-PhysicalIP-On-TUN')) { [string]$analysis.RawByRule['AI-Guard-Block-PhysicalIP-On-TUN'] } else { '' }
     $blkPhysTunActive = ($ruleStates.ContainsKey('AI-Guard-Block-PhysicalIP-On-TUN') -and $ruleStates['AI-Guard-Block-PhysicalIP-On-TUN'])
     $activeTunObjs = New-Object System.Collections.Generic.List[object]
     $physIpsForTunBlock = New-Object System.Collections.Generic.List[string]
+    $physNicsForTunBlock = New-Object System.Collections.Generic.List[object]
+    $allLiveNicIds = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     try {
         foreach ($ni in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            if ($ni.Id) { [void]$allLiveNicIds.Add('{' + ([string]$ni.Id).Trim('{', '}') + '}') }
             if ($ni.OperationalStatus -eq 'Up') {
                 if (Test-IsTunInterface $ni) {
                     $activeTunObjs.Add($ni)
                 }
                 elseif ($ni.Description -notmatch 'Loopback|WAN Miniport' -and $ni.NetworkInterfaceType -ne 'Loopback') {
+                    $physNicsForTunBlock.Add($ni)
                     foreach ($ua in $ni.GetIPProperties().UnicastAddresses) {
                         if ($ua.Address -and $ua.Address.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
                             $ipS = $ua.Address.IPAddressToString
@@ -2187,33 +2185,85 @@ function Ensure-Guard {
         }
     } catch { }
 
+    $physCidrsForTunBlock = @(Get-PhysicalEgressCidrsFast $physNicsForTunBlock)
+    if ($physCidrsForTunBlock.Count -eq 0) { $physCidrsForTunBlock = @($physIpsForTunBlock.ToArray()) }
+
     $needMainScope = ($rawMainTun -and ($rawMainTun -notmatch '(^|\|)LA4='))
     $needAltScope = ($rawAltTun -and ($rawAltTun -notmatch '(^|\|)LA4='))
     $needTunAdd = $false
-    $needBlkPhysTun = ($activeTunObjs.Count -gt 0 -and $physIpsForTunBlock.Count -gt 0 -and (-not $blkPhysTunActive -or -not $rawBlkPhysTun))
+    $needTunPrune = $false
+    $needBlkPhysTun = ($activeTunObjs.Count -gt 0 -and $physCidrsForTunBlock.Count -gt 0 -and (-not $blkPhysTunActive -or -not $rawBlkPhysTun))
     foreach ($tObj in $activeTunObjs) {
         $ifPat = '(?i)(^|\|)IF=' + [regex]::Escape($tObj.Id) + '(\||$)'
         if (($rawMainTun -notmatch $ifPat) -and ($rawAltTun -notmatch $ifPat)) {
             $needTunAdd = $true
         }
-        if (-not $needBlkPhysTun -and $physIpsForTunBlock.Count -gt 0 -and ($rawBlkPhysTun -notmatch $ifPat)) {
+        if (-not $needBlkPhysTun -and $physCidrsForTunBlock.Count -gt 0 -and ($rawBlkPhysTun -notmatch $ifPat)) {
             $needBlkPhysTun = $true
         }
     }
-    if (-not $needBlkPhysTun -and $activeTunObjs.Count -gt 0) {
-        foreach ($pip in $physIpsForTunBlock) {
-            $laPat = '(?:^|\|)LA4=' + [regex]::Escape($pip) + '(?:/32)?(?:/255\.255\.255\.255)?(?:\||$)'
-            if ($rawBlkPhysTun -notmatch $laPat) {
-                $needBlkPhysTun = $true
-                break
+    if ($activeTunObjs.Count -gt 0) {
+        foreach ($rawRuleTxt in @($rawMainTun, $rawAltTun, $rawBlkPhysTun)) {
+            if (-not $rawRuleTxt) { continue }
+            foreach ($m in [regex]::Matches($rawRuleTxt, '(?i)(?:^|\|)IF=(\{[^|]+\})')) {
+                if (-not $allLiveNicIds.Contains($m.Groups[1].Value)) { $needTunPrune = $true; break }
             }
+            if ($needTunPrune) { break }
         }
     }
+    if (-not $needBlkPhysTun -and $activeTunObjs.Count -gt 0 -and $physCidrsForTunBlock.Count -gt 0) {
+        $curBlkLa = @([regex]::Matches($rawBlkPhysTun, '(?:^|\|)LA4=([^|]+)') | ForEach-Object { $_.Groups[1].Value })
+        $curBlkNorm = (@(ConvertTo-IPv4CidrSet $curBlkLa) | Sort-Object -Unique) -join ';'
+        $expBlkNorm = (@(ConvertTo-IPv4CidrSet $physCidrsForTunBlock) | Sort-Object -Unique) -join ';'
+        if ($curBlkNorm -ne $expBlkNorm) { $needBlkPhysTun = $true }
+    }
 
-    if ($needMainScope -or $needAltScope -or $needTunAdd -or $needBlkPhysTun) {
+    if ($needMainScope -or $needAltScope -or $needTunAdd -or $needTunPrune -or $needBlkPhysTun) {
         $tunLocalAddrs = Get-TunAllowedLocalAddressesFast
         $mainTunRule = Get-GuardRule 'AI-Guard-Allow-TUN'
         $altRule = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
+        $activeTunNamesNow = @(Get-ActiveTunNamesFast)
+
+        # Prune dead GUIDs from AI-Guard-Allow-TUN / AI-Guard-Allow-TUN-Alt when live TUNs exist
+        if ($needTunPrune -and $activeTunNamesNow.Count -gt 0) {
+            $mainLiveNames = @($activeTunObjs | Where-Object { $rawMainTun -match ('(?i)(^|\|)IF=' + [regex]::Escape($_.Id) + '(\||$)') } | Select-Object -ExpandProperty Name -Unique)
+            $mainHasDead = $false
+            foreach ($m in [regex]::Matches($rawMainTun, '(?i)(?:^|\|)IF=(\{[^|]+\})')) {
+                if (-not $allLiveNicIds.Contains($m.Groups[1].Value)) { $mainHasDead = $true; break }
+            }
+            if ($mainTunRule -and (($mainLiveNames.Count -eq 0) -or $mainHasDead)) {
+                $targetMainIfs = if ($mainLiveNames.Count -gt 0) { $mainLiveNames } else { $activeTunNamesNow }
+                try {
+                    Set-NetFirewallRule -InputObject $mainTunRule -InterfaceAlias $targetMainIfs -LocalAddress $tunLocalAddrs -Enabled True -ErrorAction Stop
+                    Reset-RuleCache
+                    $mainTunRule = Get-GuardRule 'AI-Guard-Allow-TUN'
+                    $script:repairedItems += 'TUN-pruned'
+                    Say ('    pruned dead GUIDs on AI-Guard-Allow-TUN -> ' + ($targetMainIfs -join ','))
+                } catch { }
+            }
+            if ($altRule) {
+                $altExtraTuns = @($activeTunObjs | Where-Object {
+                    -not (Test-FirewallRuleHasTun $mainTunRule $_.Name)
+                } | Select-Object -ExpandProperty Name -Unique)
+                if ($altExtraTuns.Count -gt 0) {
+                    try {
+                        Set-NetFirewallRule -InputObject $altRule -InterfaceAlias $altExtraTuns -LocalAddress $tunLocalAddrs -Enabled True -ErrorAction Stop
+                        Reset-RuleCache
+                        $altRule = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
+                        $script:repairedItems += 'TUN-Alt-pruned'
+                    } catch { }
+                }
+                else {
+                    try {
+                        $altRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+                        Reset-RuleCache
+                        $altRule = $null
+                        $script:repairedItems += 'TUN-Alt-pruned'
+                        Say '    removed redundant AI-Guard-Allow-TUN-Alt (dead GUIDs cleaned)'
+                    } catch { }
+                }
+            }
+        }
 
         if ($needMainScope -and $mainTunRule -and $tunLocalAddrs.Count -gt 0) {
             try {
@@ -2232,7 +2282,6 @@ function Ensure-Guard {
             } catch { }
         }
 
-        $activeTunNamesNow = @(Get-ActiveTunNamesFast)
         foreach ($activeTun in $activeTunNamesNow) {
             if (Test-FirewallRuleHasTun $mainTunRule $activeTun) { continue }
             if (Test-FirewallRuleHasTun $altRule $activeTun) { continue }
@@ -2268,24 +2317,21 @@ function Ensure-Guard {
             catch { }
         }
 
-        if ($needBlkPhysTun -and $activeTunNamesNow.Count -gt 0 -and $physIpsForTunBlock.Count -gt 0) {
+        if (($needBlkPhysTun -or $needTunPrune) -and $activeTunNamesNow.Count -gt 0 -and $physCidrsForTunBlock.Count -gt 0) {
             try {
                 $blkRule = Get-GuardRule 'AI-Guard-Block-PhysicalIP-On-TUN'
-                $physIpArr = @($physIpsForTunBlock.ToArray())
                 if ($blkRule) {
-                    $curBlkIf = @(Get-GuardRuleFilter ([string]$blkRule.Name) 'Interface' | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
-                    $mergedBlkIf = @($curBlkIf + $activeTunNamesNow | Select-Object -Unique)
-                    Set-NetFirewallRule -InputObject $blkRule -InterfaceAlias $mergedBlkIf -LocalAddress $physIpArr -Enabled True -ErrorAction Stop
+                    Set-NetFirewallRule -InputObject $blkRule -InterfaceAlias $activeTunNamesNow -LocalAddress $physCidrsForTunBlock -Enabled True -ErrorAction Stop
                     Reset-RuleCache
                     $script:repairedItems += 'Block-PhysicalIP-On-TUN-updated'
                 }
                 else {
                     New-NetFirewallRule -Name 'AI-Guard-Block-PhysicalIP-On-TUN' -DisplayName 'AI-Guard-Block-PhysicalIP-On-TUN' `
-                        -Direction Outbound -Action Block -InterfaceAlias $activeTunNamesNow -LocalAddress $physIpArr -Protocol Any -Profile Any -Enabled True `
-                        -Description 'Explicitly block sockets bound to physical NIC IPs from matching Xray TUN soft-permit on TUN interface.' | Out-Null
+                        -Direction Outbound -Action Block -InterfaceAlias $activeTunNamesNow -LocalAddress $physCidrsForTunBlock -Protocol Any -Profile Any -Enabled True `
+                        -Description 'Explicitly block sockets bound to physical NIC subnets from matching Xray TUN soft-permit on TUN interface.' | Out-Null
                     $script:repairedItems += 'Block-PhysicalIP-On-TUN-created'
                 }
-                Say ('    enforced AI-Guard-Block-PhysicalIP-On-TUN (LA=' + ($physIpArr -join ',') + ' on ' + ($activeTunNamesNow -join ',') + ')')
+                Say ('    enforced AI-Guard-Block-PhysicalIP-On-TUN (LA=' + ($physCidrsForTunBlock -join ',') + ' on ' + ($activeTunNamesNow -join ',') + ')')
             } catch { }
         }
     }
@@ -2680,6 +2726,12 @@ function Ensure-Guard {
                 Disable-NetFirewallRule -Name 'AI-Guard-Block-WebRTC-LocalIP-TCP' -ErrorAction SilentlyContinue
                 $script:repairedItems += 'WebRTC-LocalIP-TCP-disabled(policy)'
             }
+            foreach ($rk in @($ruleStates.Keys)) {
+                if ($ruleStates[$rk] -and ($rk -match '^AI-Guard-Block-WebRTC-(?:.+-PhysUDP|.+-CoreSTUN-(?:UDP|TCP))$')) {
+                    Disable-NetFirewallRule -Name $rk -ErrorAction SilentlyContinue
+                    $script:repairedItems += ($rk + '-disabled(policy)')
+                }
+            }
             if (Set-WebRtcPolicy -Enable $false) {
                 $script:repairedItems += 'WebRTC-policy-removed(policy)'
                 Say '    enforced policy: Chromium WebRtcIPHandlingPolicy removed (BlockWebRtcLeak=false)'
@@ -2715,7 +2767,14 @@ function Ensure-Guard {
                     Write-MonitorLog ('WARNING: B1 STUN route guard is loaded but SHADOWED - ' + $script:B1State.Detail)
                 }
                 elseif ($script:B1State.Caveat -gt 0) {
-                    Write-MonitorLog ('B1 STUN route guard: loaded, caveat=' + $script:B1State.Caveat + ' (' + $script:B1State.Detail + ')')
+                    $prevB1 = if ($prevState -and ($prevState.PSObject.Properties.Name -contains 'B1Guard')) { $prevState.B1Guard } else { $null }
+                    $b1Changed = (-not $prevB1) -or
+                        ([string]$prevB1.State -ne [string]$script:B1State.State) -or
+                        ([int]$prevB1.Caveat -ne [int]$script:B1State.Caveat) -or
+                        ([string]$prevB1.Detail -ne [string]$script:B1State.Detail)
+                    if ($b1Changed) {
+                        Write-MonitorLog ('B1 STUN route guard: loaded, caveat=' + $script:B1State.Caveat + ' (' + $script:B1State.Detail + ')')
+                    }
                 }
             }
             'no-config' { }
@@ -2742,6 +2801,7 @@ function Ensure-Guard {
         }
         if (Test-Path -LiteralPath $libForeign) {
             $fpActive = $ruleStates.ContainsKey('AI-Guard-Block-Foreign-Physical') -and $ruleStates['AI-Guard-Block-Foreign-Physical']
+            $fpV6Active = $ruleStates.ContainsKey('AI-Guard-Block-Foreign-Physical-IPv6') -and $ruleStates['AI-Guard-Block-Foreign-Physical-IPv6']
             $physFastFp = @(Get-ActivePhysicalNicsFast)
             $physNamesFastFp = @($physFastFp | Select-Object -ExpandProperty Name | Sort-Object -Unique)
 
@@ -2763,7 +2823,7 @@ function Ensure-Guard {
             }
 
             $fpMetaFile = Join-Path $Root 'backup\foreign-block.meta'
-            $fpNeedsSync = (-not $fpActive)
+            $fpNeedsSync = (-not $fpActive) -or (-not $fpV6Active)
             if (-not $fpNeedsSync -and (Test-Path -LiteralPath $fpMetaFile)) {
                 try {
                     # UTF-8 must match how Sync-ForeignPhysicalBlockRule writes it: the

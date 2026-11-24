@@ -66,6 +66,15 @@ $script:StunNarrowingKeys = @(
     'sourcePort', 'user', 'source', 'localIP', 'localPort', 'attrs'
 )
 
+# Equivalent narrowing keys for sing-box route.rules schema.
+$script:SingBoxNarrowingKeys = @(
+    'domain', 'domain_suffix', 'domain_keyword', 'domain_regex', 'geosite',
+    'ip_cidr', 'geoip', 'ip_is_private', 'source_ip_cidr', 'source_port',
+    'source_port_range', 'inbound', 'protocol', 'process_name', 'process_path',
+    'process_path_regex', 'package_name', 'user', 'user_id', 'clash_mode',
+    'rule_set', 'wifi_ssid', 'wifi_bssid', 'invert'
+)
+
 function Get-StunPortSet {
     param([string]$Spec)
     $set = New-Object 'System.Collections.Generic.HashSet[int]'
@@ -101,15 +110,135 @@ function Test-StunPortBlockRule {
 
 function Get-TunInboundTags {
     # STUN probes leave through the TUN inbound, so a rule scoped to any other inbound
-    # cannot match them. This is the only inboundTag verdict that can be proven, and it
-    # depends on reading the actual tag names rather than assuming "tun-in".
+    # cannot match them. Supports both Xray (protocol='tun') and sing-box (type='tun').
     param($Config)
     $tags = New-Object System.Collections.ArrayList
     foreach ($inb in @($Config.inbounds)) {
         if (-not $inb) { continue }
-        if ([string]$inb.protocol -eq 'tun' -and $inb.tag) { [void]$tags.Add([string]$inb.tag) }
+        $isTun = ([string]$inb.protocol -eq 'tun') -or ([string]$inb.type -eq 'tun')
+        if ($isTun -and $inb.tag) { [void]$tags.Add([string]$inb.tag) }
     }
     return , @($tags)
+}
+
+function Get-SingBoxRulePortSet {
+    param($Rule)
+    $set = New-Object 'System.Collections.Generic.HashSet[int]'
+    if (-not $Rule) { return , $set }
+    if ($Rule.PSObject.Properties.Name -contains 'port' -and $null -ne $Rule.port) {
+        foreach ($p in @($Rule.port)) {
+            $ps = ([string]$p).Trim()
+            if ($ps -match '^\d+$') { [void]$set.Add([int]$ps) }
+        }
+    }
+    if ($Rule.PSObject.Properties.Name -contains 'port_range' -and $null -ne $Rule.port_range) {
+        foreach ($pr in @($Rule.port_range)) {
+            $t = ([string]$pr).Trim()
+            if ($t -match '^(\d+)\s*[:\-]\s*(\d+)$') {
+                $lo = [int]$Matches[1]; $hi = [int]$Matches[2]
+                if ($hi -lt $lo) { $swap = $lo; $lo = $hi; $hi = $swap }
+                for ($x = $lo; $x -le $hi; $x++) { [void]$set.Add($x) }
+            }
+            elseif ($t -match '^\d+$') { [void]$set.Add([int]$t) }
+        }
+    }
+    return , $set
+}
+
+function Test-SingBoxIsBlockRule {
+    param($Rule)
+    if (-not $Rule) { return $false }
+    return (([string]$Rule.action -eq 'reject') -or ([string]$Rule.outbound -eq 'block'))
+}
+
+function Test-SingBoxStunPortBlockRule {
+    param($Rule, [string]$Network, [int[]]$Expected)
+    if (-not (Test-SingBoxIsBlockRule $Rule)) { return $false }
+    foreach ($k in $script:SingBoxNarrowingKeys) {
+        if ($Rule.PSObject.Properties.Name -contains $k) { return $false }
+    }
+    $nets = @()
+    if ($Rule.PSObject.Properties.Name -contains 'network' -and $null -ne $Rule.network) {
+        $nets = @($Rule.network | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ } | Select-Object -Unique)
+    }
+    if ($Network -eq 'both') {
+        if ($nets.Count -gt 0 -and (-not (($nets -contains 'udp') -and ($nets -contains 'tcp')))) { return $false }
+    }
+    else {
+        if ($nets.Count -ne 1 -or $nets[0] -ne $Network) { return $false }
+    }
+    $got = Get-SingBoxRulePortSet $Rule
+    if ($got.Count -ne $Expected.Count) { return $false }
+    foreach ($p in $Expected) { if (-not $got.Contains($p)) { return $false } }
+    return $true
+}
+
+function Get-SingBoxStunRuleVerdict {
+    param($Rule, [string[]]$TunTags, [int[]]$Expected)
+
+    $res = [pscustomobject]@{ Kind = 'matches'; Why = 'no constraining field - matches every destination' }
+
+    if ($Rule.PSObject.Properties.Name -contains 'action' -and ([string]$Rule.action -in @('sniff', 'resolve'))) {
+        $res.Kind = 'excluded'
+        $res.Why = 'non-terminating action: ' + [string]$Rule.action
+        return $res
+    }
+
+    foreach ($dk in @('domain', 'domain_suffix', 'domain_keyword', 'domain_regex', 'geosite')) {
+        if ($Rule.PSObject.Properties.Name -contains $dk) {
+            $res.Kind = 'excluded'
+            $res.Why = 'domain rule - STUN destination is an IP literal'
+            return $res
+        }
+    }
+
+    if (($Rule.PSObject.Properties.Name -contains 'port') -or ($Rule.PSObject.Properties.Name -contains 'port_range')) {
+        $got = Get-SingBoxRulePortSet $Rule
+        $hit = @($Expected | Where-Object { $got.Contains($_) })
+        if ($hit.Count -eq 0) {
+            $res.Kind = 'excluded'
+            $res.Why = 'port list excludes every STUN/TURN port'
+            return $res
+        }
+    }
+
+    if ($Rule.PSObject.Properties.Name -contains 'network' -and $null -ne $Rule.network) {
+        $nets = @($Rule.network | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ })
+        if ($nets.Count -gt 0 -and -not ($nets -contains 'udp') -and -not ($nets -contains 'tcp')) {
+            $res.Kind = 'excluded'
+            $res.Why = 'network excludes udp and tcp'
+            return $res
+        }
+    }
+
+    if ($Rule.PSObject.Properties.Name -contains 'inbound') {
+        $inbs = @($Rule.inbound | ForEach-Object { [string]$_ })
+        $common = @($inbs | Where-Object { $TunTags -contains $_ })
+        if ($common.Count -eq 0) {
+            $res.Kind = 'excluded'
+            $res.Why = 'inbound ' + ($inbs -join '|') + ' is not the TUN inbound (' + ($TunTags -join '|') + ')'
+            return $res
+        }
+        $res.Why = 'inbound includes the TUN inbound'
+    }
+
+    foreach ($ik in @('ip_cidr', 'geoip', 'ip_is_private', 'rule_set')) {
+        if ($Rule.PSObject.Properties.Name -contains $ik) {
+            $res.Kind = 'matches'
+            $res.Why = 'ip/rule_set rule may match STUN destinations'
+            break
+        }
+    }
+
+    foreach ($k in @('process_name', 'process_path', 'process_path_regex', 'package_name', 'user', 'user_id', 'source_ip_cidr', 'source_port', 'source_port_range', 'protocol', 'clash_mode', 'wifi_ssid', 'wifi_bssid', 'invert')) {
+        if ($Rule.PSObject.Properties.Name -contains $k) {
+            $res.Kind = 'restricted'
+            $res.Why = 'scoped by ' + $k + ' (' + ((@($Rule.$k) | ForEach-Object { [string]$_ }) -join '|') + ')'
+            return $res
+        }
+    }
+
+    return $res
 }
 
 function Get-StunRuleVerdict {
@@ -200,6 +329,131 @@ function Get-StunRuleVerdict {
     return $res
 }
 
+function Get-StunGuardAnalysisFromObject {
+    param($Cfg, [int[]]$Expected, [string]$ConfigPath = '')
+
+    $res = [pscustomobject]@{
+        State = 'absent'; Index = -1; Preceding = 0; Shadow = 0; Caveat = 0
+        ShadowRules = @(); CaveatRules = @(); Detail = ''; Config = $ConfigPath; TunTags = @()
+    }
+    if (-not $Cfg) { return $res }
+
+    $res.TunTags = Get-TunInboundTags $Cfg
+
+    # 1. Xray schema (routing.rules)
+    if ($Cfg.PSObject.Properties.Name -contains 'routing' -and $Cfg.routing -and ($Cfg.routing.PSObject.Properties.Name -contains 'rules')) {
+        $rules = @($Cfg.routing.rules | Where-Object { $_ })
+
+        # The pair must be ADJACENT and in this order: udp then tcp, each carrying the complete
+        # port set. Xray routing is first-match, so "somewhere in the table" is not enough.
+        $pairAt = -1
+        for ($i = 0; $i -lt $rules.Count - 1; $i++) {
+            if ((Test-StunPortBlockRule $rules[$i] 'udp' $Expected) -and
+                (Test-StunPortBlockRule $rules[$i + 1] 'tcp' $Expected)) { $pairAt = $i; break }
+        }
+
+        if ($pairAt -lt 0) {
+            # Diagnose a half-written table instead of reporting "absent" for both cases.
+            for ($i = 0; $i -lt $rules.Count; $i++) {
+                $r = $rules[$i]
+                if ([string]$r.outboundTag -ne 'block') { continue }
+                if (([string]$r.port) -notmatch '(^|,)3478(,|$)') { continue }
+                $got = Get-StunPortSet ([string]$r.port)
+                $missing = @($Expected | Where-Object { -not $got.Contains($_) })
+                $res.State = 'partial'
+                $res.Index = $i
+                $res.Detail = 'rule #' + $i + ' net=' + $r.network + ' carries ' + $got.Count + '/' + $Expected.Count + ' ports'
+                if ($missing.Count -gt 0) { $res.Detail += ', missing ' + (($missing | Select-Object -First 6) -join ',') }
+                foreach ($k in $script:StunNarrowingKeys) {
+                    if ($r.PSObject.Properties.Name -contains $k) { $res.Detail += ', also narrowed by ' + $k }
+                }
+                return $res
+            }
+            $res.State = 'absent'
+            return $res
+        }
+
+        $res.State = 'present'
+        $res.Index = $pairAt
+        if ($pairAt -gt 0) {
+            $before = @(0..($pairAt - 1) | ForEach-Object { $rules[$_] } |
+                Where-Object { [string]$_.outboundTag -ne 'block' })
+            $res.Preceding = $before.Count
+            foreach ($r in $before) {
+                $v = Get-StunRuleVerdict $r $res.TunTags $Expected
+                if ($v.Kind -eq 'matches') {
+                    $res.Shadow++
+                    $res.ShadowRules += ('out=' + ([string]$r.outboundTag) + ' : ' + $v.Why)
+                }
+                elseif ($v.Kind -eq 'restricted') {
+                    $res.Caveat++
+                    $res.CaveatRules += ('out=' + ([string]$r.outboundTag) + ' : ' + $v.Why)
+                }
+            }
+        }
+        return $res
+    }
+
+    # 2. sing-box schema (route.rules)
+    if ($Cfg.PSObject.Properties.Name -contains 'route' -and $Cfg.route -and ($Cfg.route.PSObject.Properties.Name -contains 'rules')) {
+        $rules = @($Cfg.route.rules | Where-Object { $_ })
+        $pairAt = -1
+        for ($i = 0; $i -lt $rules.Count - 1; $i++) {
+            if ((Test-SingBoxStunPortBlockRule $rules[$i] 'udp' $Expected) -and
+                (Test-SingBoxStunPortBlockRule $rules[$i + 1] 'tcp' $Expected)) { $pairAt = $i; break }
+        }
+        if ($pairAt -lt 0) {
+            for ($i = 0; $i -lt $rules.Count; $i++) {
+                if (Test-SingBoxStunPortBlockRule $rules[$i] 'both' $Expected) { $pairAt = $i; break }
+            }
+        }
+        if ($pairAt -lt 0) {
+            for ($i = 0; $i -lt $rules.Count; $i++) {
+                $r = $rules[$i]
+                if (-not (Test-SingBoxIsBlockRule $r)) { continue }
+                $got = Get-SingBoxRulePortSet $r
+                if (-not $got.Contains(3478)) { continue }
+                $missing = @($Expected | Where-Object { -not $got.Contains($_) })
+                $res.State = 'partial'
+                $res.Index = $i
+                $netStr = if ($r.network) { (@($r.network) -join ',') } else { 'any' }
+                $res.Detail = 'sing-box rule #' + $i + ' net=' + $netStr + ' carries ' + $got.Count + '/' + $Expected.Count + ' ports'
+                if ($missing.Count -gt 0) { $res.Detail += ', missing ' + (($missing | Select-Object -First 6) -join ',') }
+                foreach ($k in $script:SingBoxNarrowingKeys) {
+                    if ($r.PSObject.Properties.Name -contains $k) { $res.Detail += ', also narrowed by ' + $k }
+                }
+                return $res
+            }
+            $res.State = 'absent'
+            return $res
+        }
+
+        $res.State = 'present'
+        $res.Index = $pairAt
+        if ($pairAt -gt 0) {
+            $before = @(0..($pairAt - 1) | ForEach-Object { $rules[$_] } |
+                Where-Object { -not (Test-SingBoxIsBlockRule $_) })
+            $res.Preceding = $before.Count
+            foreach ($r in $before) {
+                $v = Get-SingBoxStunRuleVerdict $r $res.TunTags $Expected
+                $outLbl = if ($r.outbound) { [string]$r.outbound } elseif ($r.action) { [string]$r.action } else { 'unknown' }
+                if ($v.Kind -eq 'matches') {
+                    $res.Shadow++
+                    $res.ShadowRules += ('out=' + $outLbl + ' : ' + $v.Why)
+                }
+                elseif ($v.Kind -eq 'restricted') {
+                    $res.Caveat++
+                    $res.CaveatRules += ('out=' + $outLbl + ' : ' + $v.Why)
+                }
+            }
+        }
+        return $res
+    }
+
+    $res.State = 'absent'
+    return $res
+}
+
 function Get-StunGuardAnalysis {
     # Locate the guard pair in the config the core actually loaded and decide whether
     # anything ahead of it can hide it.
@@ -214,55 +468,5 @@ function Get-StunGuardAnalysis {
     try { $cfg = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json }
     catch { $res.State = 'unparsable'; $res.Detail = $_.Exception.Message; return $res }
 
-    $res.TunTags = Get-TunInboundTags $cfg
-    $rules = @($cfg.routing.rules | Where-Object { $_ })
-
-    # The pair must be ADJACENT and in this order: udp then tcp, each carrying the complete
-    # port set. Xray routing is first-match, so "somewhere in the table" is not enough.
-    $pairAt = -1
-    for ($i = 0; $i -lt $rules.Count - 1; $i++) {
-        if ((Test-StunPortBlockRule $rules[$i] 'udp' $Expected) -and
-            (Test-StunPortBlockRule $rules[$i + 1] 'tcp' $Expected)) { $pairAt = $i; break }
-    }
-
-    if ($pairAt -lt 0) {
-        # Diagnose a half-written table instead of reporting "absent" for both cases.
-        for ($i = 0; $i -lt $rules.Count; $i++) {
-            $r = $rules[$i]
-            if ([string]$r.outboundTag -ne 'block') { continue }
-            if (([string]$r.port) -notmatch '(^|,)3478(,|$)') { continue }
-            $got = Get-StunPortSet ([string]$r.port)
-            $missing = @($Expected | Where-Object { -not $got.Contains($_) })
-            $res.State = 'partial'
-            $res.Index = $i
-            $res.Detail = 'rule #' + $i + ' net=' + $r.network + ' carries ' + $got.Count + '/' + $Expected.Count + ' ports'
-            if ($missing.Count -gt 0) { $res.Detail += ', missing ' + (($missing | Select-Object -First 6) -join ',') }
-            foreach ($k in $script:StunNarrowingKeys) {
-                if ($r.PSObject.Properties.Name -contains $k) { $res.Detail += ', also narrowed by ' + $k }
-            }
-            return $res
-        }
-        $res.State = 'absent'
-        return $res
-    }
-
-    $res.State = 'present'
-    $res.Index = $pairAt
-    if ($pairAt -gt 0) {
-        $before = @(0..($pairAt - 1) | ForEach-Object { $rules[$_] } |
-            Where-Object { [string]$_.outboundTag -ne 'block' })
-        $res.Preceding = $before.Count
-        foreach ($r in $before) {
-            $v = Get-StunRuleVerdict $r $res.TunTags $Expected
-            if ($v.Kind -eq 'matches') {
-                $res.Shadow++
-                $res.ShadowRules += ('out=' + ([string]$r.outboundTag) + ' : ' + $v.Why)
-            }
-            elseif ($v.Kind -eq 'restricted') {
-                $res.Caveat++
-                $res.CaveatRules += ('out=' + ([string]$r.outboundTag) + ' : ' + $v.Why)
-            }
-        }
-    }
-    return $res
+    return Get-StunGuardAnalysisFromObject -Cfg $cfg -Expected $Expected -ConfigPath $ConfigPath
 }

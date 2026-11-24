@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.6 - step 2: static default-deny firewall + CN & TUN allowlist.
+    AI-Net-Guard v5.8.7 - step 2: static default-deny firewall + CN & TUN allowlist.
 
 .DESCRIPTION
     Configures Windows Defender Firewall for the v5.1 zero-switch static guard:
@@ -60,7 +60,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $V2rayNRoot) {
     if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
     else {
-        foreach ($cand in @('C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
+        foreach ($cand in @('D:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64-desktop', 'C:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
             if ($cand -and ((Test-Path -LiteralPath (Join-Path $cand 'v2rayN.exe')) -or (Test-Path -LiteralPath (Join-Path $cand 'binConfigs')))) { $V2rayNRoot = $cand; break }
         }
         if (-not $V2rayNRoot) { try { $vp = [System.Diagnostics.Process]::GetProcessesByName('v2rayN'); if ($vp.Length -gt 0 -and $vp[0].MainModule.FileName) { $V2rayNRoot = Split-Path -Parent $vp[0].MainModule.FileName } } catch { } }
@@ -254,26 +254,10 @@ if (-not (Test-Path -LiteralPath $cfgPath)) { throw ('missing proxy config: ' + 
 $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $node = Get-NodeEndpoint -Cfg $cfg
 
-# Collect all configured node endpoints (active config + test configs in binConfigs)
+# Collect active configured node endpoints from config.json only (ignore transient configTest*.json)
 $allNodeAddresses = if ($node.PSObject.Properties.Name -contains 'Addresses' -and $node.Addresses) { @($node.Addresses) } else { @($node.Address) }
 $allTcpPorts = @($node.TcpPorts)
 $allUdpPorts = @($node.UdpPorts)
-
-$binCfgDir = Join-Path $V2rayNRoot 'binConfigs'
-if (Test-Path -LiteralPath $binCfgDir) {
-    foreach ($testFile in (Get-ChildItem -LiteralPath $binCfgDir -Filter 'configTest*.json' -ErrorAction SilentlyContinue)) {
-        try {
-            $tCfg = Get-Content -LiteralPath $testFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-            $tNode = Get-NodeEndpoint -Cfg $tCfg
-            if ($tNode -and $tNode.Address) {
-                $tAddrs = if ($tNode.PSObject.Properties.Name -contains 'Addresses' -and $tNode.Addresses) { @($tNode.Addresses) } else { @($tNode.Address) }
-                $allNodeAddresses += $tAddrs
-                $allTcpPorts += $tNode.TcpPorts
-                $allUdpPorts += $tNode.UdpPorts
-            }
-        } catch { }
-    }
-}
 if ($NodePorts.Count -gt 0) { $allTcpPorts += $NodePorts }
 if ($NodeUdpPorts.Count -gt 0) { $allUdpPorts += $NodeUdpPorts }
 $allNodeAddresses = @($allNodeAddresses | Where-Object { $_ } | Select-Object -Unique)
@@ -609,15 +593,19 @@ New-AiRule @{
     Protocol       = 'Any'
     Description    = 'Traffic routed into TUN interface (TUN-scoped LocalAddress prevents physical-IP bypass).'
 }
-if ($physIpSet.Count -gt 0 -and $allTunAliases.Count -gt 0) {
-    New-AiRule @{
-        DisplayName    = 'AI-Guard-Block-PhysicalIP-On-TUN'
-        Direction      = 'Outbound'
-        Action         = 'Block'
-        InterfaceAlias = $allTunAliases
-        LocalAddress   = $physIpSet
-        Protocol       = 'Any'
-        Description    = 'Explicitly block sockets bound to physical NIC IPs from matching Xray TUN soft-permit on TUN interface.'
+if ($allTunAliases.Count -gt 0) {
+    $physTunBlockCidrs = @(Get-PhysicalEgressCidrs -PhysicalAlias $physicalAll -TunAlias $allTunAliases)
+    if ($physTunBlockCidrs.Count -eq 0) { $physTunBlockCidrs = $physIpSet }
+    if ($physTunBlockCidrs.Count -gt 0) {
+        New-AiRule @{
+            DisplayName    = 'AI-Guard-Block-PhysicalIP-On-TUN'
+            Direction      = 'Outbound'
+            Action         = 'Block'
+            InterfaceAlias = $allTunAliases
+            LocalAddress   = $physTunBlockCidrs
+            Protocol       = 'Any'
+            Description    = 'Explicitly block sockets bound to physical NIC subnets from matching Xray TUN soft-permit on TUN interface.'
+        }
     }
 }
 

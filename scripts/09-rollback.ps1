@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.8.6 - rollback & baseline restore (100% thorough uninstaller)
+# AI-Net-Guard v5.8.7 - rollback & baseline restore (100% thorough uninstaller)
 [CmdletBinding()]
 param(
     [string]$Root = 'C:\AI-Net-Guard',
@@ -18,11 +18,11 @@ $Log = Join-Path $LogDir ('rollback-' + $stamp + '.txt')
 function Log ($msg) {
     $line = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '  ' + $msg
     Write-Host $line
-    Add-Content -LiteralPath $Log -Value $line -Encoding ASCII
+    [System.IO.File]::AppendAllText($Log, $line + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 $DohServer = '223.5.5.5'
-Log 'AI-Net-Guard v5.8.6 thorough rollback started'
+Log 'AI-Net-Guard v5.8.7 thorough rollback started'
 Log ('user: ' + [System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
 
 # ------------------------------------------------------------------ admin check
@@ -367,18 +367,25 @@ Log 'flushed Windows DNS client cache'
 
 # ------------------------------------------------------------------ 8.5. Remove proxy node /32 host routes
 try {
+    $nodeIpsToRemove = @()
     $nodeMeta = Join-Path $BackupDir 'node-sync.meta'
     if (Test-Path -LiteralPath $nodeMeta) {
         $metaContent = Get-Content -LiteralPath $nodeMeta -Raw -ErrorAction SilentlyContinue
         if ($metaContent -match '\|([\d\.,]+)\|') {
-            $nodeIps = $Matches[1].Split(',')
-            foreach ($nip in $nodeIps) {
-                if ($nip -match '^\d{1,3}(\.\d{1,3}){3}$') {
-                    Remove-NetRoute -DestinationPrefix ($nip + '/32') -Confirm:$false -ErrorAction SilentlyContinue
-                    Log ('removed node host route: ' + $nip + '/32')
-                }
-            }
+            $nodeIpsToRemove += @($Matches[1].Split(','))
         }
+    }
+    $nodeRoutesMeta = Join-Path $BackupDir 'node-routes.meta'
+    if (Test-Path -LiteralPath $nodeRoutesMeta) {
+        $nrContent = [System.IO.File]::ReadAllText($nodeRoutesMeta, [System.Text.Encoding]::UTF8).Trim()
+        if ($nrContent) {
+            $nodeIpsToRemove += @($nrContent.Split(','))
+        }
+    }
+    foreach ($nip in @($nodeIpsToRemove | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Select-Object -Unique)) {
+        Remove-NetRoute -DestinationPrefix ($nip + '/32') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-NetRoute -DestinationPrefix ($nip + '/32') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+        Log ('removed node host route: ' + $nip + '/32')
     }
 } catch { }
 
@@ -398,7 +405,7 @@ if (Test-Path -LiteralPath $pf) {
 }
 
 # Remove dynamic metadata files
-foreach ($metaFile in @('mode-state.json', 'node-sync.meta', 'cn-rule.sig', 'cn-file.meta', 'auto-disabled-outbound-allow.json', 'hotplug-ipv6.json', 'b1-guard.meta')) {
+foreach ($metaFile in @('mode-state.json', 'node-sync.meta', 'node-routes.meta', 'cn-rule.sig', 'cn-file.meta', 'auto-disabled-outbound-allow.json', 'hotplug-ipv6.json', 'b1-guard.meta')) {
     $mf = Join-Path $BackupDir $metaFile
     if (Test-Path -LiteralPath $mf) {
         Remove-Item -LiteralPath $mf -Force -ErrorAction SilentlyContinue

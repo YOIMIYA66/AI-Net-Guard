@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.6 - lock the install directory ACL (O1) and run the first
+    AI-Net-Guard v5.8.7 - lock the install directory ACL (O1) and run the first
     elevated v5.4 verification (O2).
 
 .DESCRIPTION
@@ -154,7 +154,7 @@ if ($Undo) {
 
 # ---------------------------------------------------------------- 1. ACL lock
 Write-Host ''
-Write-Host '=== AI-Net-Guard v5.8.6: install directory ACL hardening (O1) ===' -ForegroundColor Cyan
+Write-Host '=== AI-Net-Guard v5.8.7: install directory ACL hardening (O1) ===' -ForegroundColor Cyan
 $before = @(Get-InstallAclIssues -Path $Root)
 Write-Host ('    issues before: ' + $before.Count)
 $before | Select-Object -First 6 | ForEach-Object { Write-Host ('      ' + $_) -ForegroundColor DarkGray }
@@ -165,6 +165,12 @@ New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
 $aclBackup = Join-Path $backupDir ('acl-before-' + $ts + '.txt')
 Invoke-Icacls @($Root, '/save', $aclBackup, '/T', '/C', '/Q')
 if (Test-Path -LiteralPath $aclBackup) { Write-Host ('    saved previous ACL: ' + $aclBackup) -ForegroundColor DarkGray }
+$aclFiles = @(Get-ChildItem -LiteralPath $backupDir -Filter 'acl-before-*.txt' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+if ($aclFiles.Count -gt 6) {
+    foreach ($df in $aclFiles[1..($aclFiles.Count - 6)]) {
+        Remove-Item -LiteralPath $df.FullName -Force -ErrorAction SilentlyContinue
+    }
+}
 
 Invoke-Icacls @($Root, '/setowner', '*S-1-5-32-544', '/T', '/C', '/Q')
 Invoke-Icacls @($Root, '/inheritance:r', '/grant:r', '*S-1-5-32-544:(OI)(CI)F', '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-545:(OI)(CI)RX')

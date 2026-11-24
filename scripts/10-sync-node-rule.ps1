@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.6 - maintenance: re-sync node allow rule after switching proxy node or core.
+    AI-Net-Guard v5.8.7 - maintenance: re-sync node allow rule after switching proxy node or core.
 
 .DESCRIPTION
     Note: In v5.4, 07-mode.ps1 automatically syncs AI-Guard-Allow-Node-TCP/UDP
@@ -24,6 +24,7 @@ param(
     [string]$V2rayNRoot = '',
     [string[]]$ExtraTcpPorts = @(),
     [switch]$ReplacePorts,
+    [switch]$PruneStaleNodeRoutes,
     [switch]$WhatIfOnly
 )
 
@@ -31,7 +32,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $V2rayNRoot) {
     if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
     else {
-        foreach ($cand in @('C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
+        foreach ($cand in @('D:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64-desktop', 'C:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
             if ($cand -and ((Test-Path -LiteralPath (Join-Path $cand 'v2rayN.exe')) -or (Test-Path -LiteralPath (Join-Path $cand 'binConfigs')))) { $V2rayNRoot = $cand; break }
         }
         if (-not $V2rayNRoot) { try { $vp = [System.Diagnostics.Process]::GetProcessesByName('v2rayN'); if ($vp.Length -gt 0 -and $vp[0].MainModule.FileName) { $V2rayNRoot = Split-Path -Parent $vp[0].MainModule.FileName } } catch { } }
@@ -191,46 +192,7 @@ foreach ($raItem in $rawAddrList) {
 }
 if ($ips.Count -eq 0) { throw ('cannot resolve node address: ' + $address) }
 
-# Scan test configs in binConfigs (e.g. Reality port 443 or Hysteria2 server_ports while active config differs)
-$binCfgDir = Join-Path $V2rayNRoot 'binConfigs'
-if (Test-Path -LiteralPath $binCfgDir) {
-    foreach ($testFile in (Get-ChildItem -LiteralPath $binCfgDir -Filter 'configTest*.json' -ErrorAction SilentlyContinue)) {
-        try {
-            $tCfg = Get-Content -LiteralPath $testFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($tCfg.outbounds) {
-                foreach ($ob in $tCfg.outbounds) {
-                    $tAddr = [string]$(if ($ob.server) { $ob.server } elseif ($ob.settings.address) { $ob.settings.address } elseif ($ob.settings.vnext) { $ob.settings.vnext[0].address } elseif ($ob.settings.servers) { $ob.settings.servers[0].address } else { '' })
-                    $tPortsList = @()
-                    if ($ob.server_port) { $tPortsList += ([string]$ob.server_port) }
-                    elseif ($ob.settings.port) { $tPortsList += ([string]$ob.settings.port) }
-                    elseif ($ob.settings.vnext -and $ob.settings.vnext[0].port) { $tPortsList += ([string]$ob.settings.vnext[0].port) }
-                    elseif ($ob.settings.servers -and $ob.settings.servers[0].port) { $tPortsList += ([string]$ob.settings.servers[0].port) }
-                    if ($ob.server_ports) {
-                        foreach ($sp in @($ob.server_ports)) {
-                            $norm = ([string]$sp).Replace(':', '-').Trim()
-                            if ($norm) { $tPortsList += $norm }
-                        }
-                    }
-                    if ($tAddr) {
-                        if ($tAddr -match '^\d{1,3}(\.\d{1,3}){3}$') { $ips += @($tAddr) }
-                        else { $usedDomain = $true; $ips += @(Resolve-NodeDomainSafe -Domain $tAddr) }
-                    }
-                    if ($tPortsList.Count -gt 0) {
-                        $tPortsList = @($tPortsList | Where-Object { $_ } | Select-Object -Unique)
-                        if ($ob.type -match 'hysteria|tuic|wireguard' -or $ob.protocol -match 'hysteria|wireguard') {
-                            $baseTcpPorts += @($tPortsList[0])
-                            $baseUdpPorts += $tPortsList
-                            $udp = $true
-                        }
-                        else {
-                            $baseTcpPorts += $tPortsList
-                        }
-                    }
-                }
-            }
-        } catch { }
-    }
-}
+# Only active config.json outbounds are authorized (ignore transient configTest*.json)
 $ips = @($ips | Where-Object { $_ } | Select-Object -Unique)
 $baseTcpPorts = @($baseTcpPorts | Where-Object { $_ } | Select-Object -Unique)
 $baseUdpPorts = @($baseUdpPorts | Where-Object { $_ } | Select-Object -Unique)
@@ -299,41 +261,78 @@ elseif ($udpRule) {
     Write-Host '[+] AI-Guard-Allow-Node-UDP removed (node uses TCP)' -ForegroundColor Green
 }
 
-# Ensure /32 physical host route for proxy node IPs so Xray connects directly on physical NIC (avoids TUN double-hop relay)
+# Ensure /32 physical host route for proxy node IPs (ActiveStore only - never PersistentStore)
+$nodeRoutesMeta = Join-Path $Root 'backup\node-routes.meta'
 try {
-    # Clean up stale node /32 host routes if node IP changed
+    $staleCandidates = @()
     $nodeMetaOld = Join-Path $Root 'backup\node-sync.meta'
     if (Test-Path -LiteralPath $nodeMetaOld) {
         $oldMetaContent = Get-Content -LiteralPath $nodeMetaOld -Raw -ErrorAction SilentlyContinue
         if ($oldMetaContent -match '\|([\d\.,]+)\|') {
-            $prevIps = $Matches[1].Split(',')
-            foreach ($pIp in $prevIps) {
-                if ($pIp -match '^\d{1,3}(\.\d{1,3}){3}$' -and ($ips -notcontains $pIp)) {
-                    Remove-NetRoute -DestinationPrefix ($pIp + '/32') -Confirm:$false -ErrorAction SilentlyContinue
-                    Write-Host ('[-] removed stale node host route: ' + $pIp + '/32') -ForegroundColor Yellow
-                }
-            }
+            $staleCandidates += @($Matches[1].Split(','))
         }
     }
+    if (Test-Path -LiteralPath $nodeRoutesMeta) {
+        $oldRoutesRaw = [System.IO.File]::ReadAllText($nodeRoutesMeta, [System.Text.Encoding]::UTF8).Trim()
+        if ($oldRoutesRaw) {
+            $staleCandidates += @($oldRoutesRaw.Split(','))
+        }
+    }
+    $staleCandidates = @($staleCandidates | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Select-Object -Unique)
+    foreach ($pIp in $staleCandidates) {
+        if ($ips -notcontains $pIp) {
+            Remove-NetRoute -DestinationPrefix ($pIp + '/32') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-NetRoute -DestinationPrefix ($pIp + '/32') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+            Write-Host ('[-] removed stale node host route: ' + $pIp + '/32') -ForegroundColor Yellow
+        }
+    }
+
+    if ($PruneStaleNodeRoutes) {
+        $prunedOrphanCount = 0
+        $persistRoutes = @(Get-NetRoute -PolicyStore PersistentStore -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.DestinationPrefix -like '*/32' -and
+                $_.RouteMetric -eq 1 -and
+                $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback'
+            })
+        foreach ($pr in $persistRoutes) {
+            $rip = ($pr.DestinationPrefix -split '/')[0]
+            if (-not $rip -or ($rip -notmatch '^\d{1,3}(\.\d{1,3}){3}$')) { continue }
+            if ($rip -match '^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)') { continue }
+            $oct0 = [int]($rip.Split('.')[0])
+            if ($oct0 -ge 224) { continue }
+            Remove-NetRoute -DestinationPrefix $pr.DestinationPrefix -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+            if ($ips -notcontains $rip) {
+                Remove-NetRoute -DestinationPrefix $pr.DestinationPrefix -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+            }
+            $prunedOrphanCount++
+        }
+        Write-Host ('[-] pruned orphaned PersistentStore /32 host routes: ' + $prunedOrphanCount) -ForegroundColor Green
+    }
+
     $physRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
         Where-Object { $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback' -and $_.NextHop -ne '0.0.0.0' } |
         Select-Object -First 1
     if ($physRoute -and $physRoute.NextHop) {
         foreach ($nodeIp in $ips) {
             if ($nodeIp -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$') {
-                $curHostRoute = Get-NetRoute -DestinationPrefix ($nodeIp + '/32') -ErrorAction SilentlyContinue
-                if (-not $curHostRoute) {
-                    New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -ErrorAction SilentlyContinue | Out-Null
-                    Write-Host ('[+] proxy node physical /32 host route added: ' + $nodeIp + '/32 -> ' + $physRoute.NextHop + ' on ' + $physRoute.InterfaceAlias) -ForegroundColor Green
+                # Never leave a PersistentStore duplicate for active node either
+                Remove-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+                $curHostRoute = @(Get-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore ActiveStore -ErrorAction SilentlyContinue)
+                if ($curHostRoute.Count -eq 0) {
+                    New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+                    Write-Host ('[+] proxy node physical /32 host route added (ActiveStore): ' + $nodeIp + '/32 -> ' + $physRoute.NextHop + ' on ' + $physRoute.InterfaceAlias) -ForegroundColor Green
                 }
-                elseif ($curHostRoute.NextHop -ne $physRoute.NextHop -or $curHostRoute.InterfaceAlias -ne $physRoute.InterfaceAlias -or $curHostRoute.RouteMetric -ne 1) {
-                    Remove-NetRoute -DestinationPrefix ($nodeIp + '/32') -Confirm:$false -ErrorAction SilentlyContinue
-                    New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -ErrorAction SilentlyContinue | Out-Null
-                    Write-Host ('[+] proxy node physical /32 host route updated: ' + $nodeIp + '/32 -> ' + $physRoute.NextHop + ' on ' + $physRoute.InterfaceAlias) -ForegroundColor Green
+                elseif ($curHostRoute[0].NextHop -ne $physRoute.NextHop -or $curHostRoute[0].InterfaceAlias -ne $physRoute.InterfaceAlias -or $curHostRoute[0].RouteMetric -ne 1) {
+                    Remove-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                    New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+                    Write-Host ('[+] proxy node physical /32 host route updated (ActiveStore): ' + $nodeIp + '/32 -> ' + $physRoute.NextHop + ' on ' + $physRoute.InterfaceAlias) -ForegroundColor Green
                 }
             }
         }
     }
+    New-Item -ItemType Directory -Path (Split-Path $nodeRoutesMeta) -Force | Out-Null
+    [System.IO.File]::WriteAllText($nodeRoutesMeta, ($ips -join ','), (New-Object System.Text.UTF8Encoding($false)))
 } catch { }
 
 $dohRule = Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-DoH-Ali' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -341,11 +340,17 @@ if ($dohRule) {
     Set-NetFirewallRule -InputObject $dohRule -Program $coreExe -RemoteAddress @('223.5.5.5', '223.6.6.6') -RemotePort @('443') -Enabled True -ErrorAction SilentlyContinue
 }
 
-# Sync companion rules (TCP/UDP node + AliDNS DoH) for all other detected cores
+# Sync companion rules (TCP/UDP node + AliDNS DoH) for standby cores, and prune redundant Core-* rules for active core
 foreach ($ck in $allCores.Keys) {
     $cExe = $allCores[$ck]
-    if ($cExe -ieq $coreExe) { continue }
     $cName = if ($ck -like '*xray*') { 'Xray' } elseif ($ck -like '*sing*') { 'SingBox' } elseif ($ck -like '*v2rayn*') { 'V2rayN' } else { $ck }
+    if ($cExe -ieq $coreExe) {
+        foreach ($sfx in @('TCP', 'UDP', 'DoH')) {
+            $dup = Get-NetFirewallRule -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-' + $sfx) -ErrorAction SilentlyContinue
+            if ($dup) { $dup | Remove-NetFirewallRule -ErrorAction SilentlyContinue }
+        }
+        continue
+    }
     $cRuleTcp = Get-NetFirewallRule -DisplayName ('AI-Guard-Allow-Core-' + $cName + '-TCP') -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($cRuleTcp) {
         Set-NetFirewallRule -InputObject $cRuleTcp -Program $cExe -RemoteAddress $ips -RemotePort $tcpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction SilentlyContinue
@@ -378,6 +383,9 @@ foreach ($ck in $allCores.Keys) {
             -Direction Outbound -Action Allow -Program $cExe -Protocol TCP `
             -RemoteAddress @('223.5.5.5', '223.6.6.6') -RemotePort @('443') -Profile Any -Enabled True -ErrorAction SilentlyContinue | Out-Null
     }
+}
+if (-not $udp) {
+    Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-Core-*-UDP' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
 }
 
 $nodeMeta = Join-Path $Root 'backup\node-sync.meta'

@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.8.6 · GUI 跳过项归因 + ip/attrs 遮蔽判定补全 + 有限结论口径）
+# AI-Net-Guard 实现方案与持续审查文档（v5.8.7 · 根治持久化 /32 路由污染 + sing-box B1 适配 + IPv6 显式阻断 + 策略引擎修复）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.8.6 正式版**（v5.8.5 全部内容 + GUI 识别 `[SKIP]` 并改用 Warning 中性格、`ip` 分支改为 fall-through 且收敛循环补 `attrs`、成功态去除「零泄漏健康状态」绝对化措辞、门禁扩至 24 条，详见 16.12）
+> 版本状态：**v5.8.7 正式版**（v5.8.6 全部内容 + 停止扫描 `configTest*.json` 且 `/32` 路由限定 `ActiveStore` + `-PruneStaleNodeRoutes` 清理历史孤儿路由、`lib-stun-guard` 补齐 `sing-box` `route.rules` B1 检测、`lib-foreign-block` 新增物理网卡 IPv6 显式 `Block`、`14-apply-policy` 修复三处增量回退/错位、`07-mode` 清理僵尸核心规则/TUN GUID 与 `-Status` 非提权任务口径，门禁扩至 33 条，详见 16.13）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -724,3 +724,38 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 3. **生产目录 `C:\AI-Net-Guard` 需提权同步**：本版真实逻辑差异集中在 `lib-stun-guard.ps1` 与 GUI exe；`12-regression.ps1` 的 SKIP 计数自 v5.8.5 起尚未在生产真机跑过。
 4. **未改的 follow-up**：`09-rollback.ps1` 的 `Log` 仍用 `Add-Content -Encoding ASCII`，本地化日志文本会变 `?`。
 5. **防护范围未变**：仍是 12 端口 udp+tcp，`udp/443` 与 origin-scoped direct 的 caveat 保持；`-Apply` / `-Restore` 一律人工，B1 不自动修复。
+
+---
+
+### 16.13 v5.8.7：根治持久化 `/32` 路由污染、`sing-box` B1 适配、IPv6 显式阻断与策略引擎修复（2026-11-24）
+
+本轮针对现网机与全仓库代码联动深查，定位并修复了 1 项已经在主机 `PersistentStore` 真实触发的路由污染缺陷（P0），以及多内核可观测性、第三方 WFP 否决、增量策略应用与规则卫生方面的 8 项缺口（P1/P2）。
+
+#### 16.13.1 P0：停止扫描 `configTest*.json` 与持久化 `/32` 路由污染
+
+1. **现网问题**：实机路由表 `PersistentStore` 中积压了 368 条挂在 `WLAN -> 192.168.1.1` 下的 `/32` 主机路由（除活跃节点 `20.89.232.246/32` 外有 367 条历史孤儿路由，涵盖 Cloudflare / AWS / Fastly 及国内中转 IP）。
+2. **根因**：`02-killswitch.ps1`、`07-mode.ps1`、`10-sync-node-rule.ps1` 会扫描 `binConfigs\configTest*.json`（v2rayN 批量延迟测速产生的临时订阅节点表），合并所有 IP 并调用未指定 `-PolicyStore` 的 `New-NetRoute`——Windows 默认写入 `PersistentStore` 持久化，且旧版仅凭前一次 `node-sync.meta` 差集清理，一旦临时文件消失便永久失联。
+3. **修法**：
+   - `02` / `07` / `10` 全部移除 `configTest*.json` 扫描，只信任活跃 `binConfigs\config.json`；
+   - `07` / `10` 写 `/32` 路由强制限定 `-PolicyStore ActiveStore`，同时清理同名 `PersistentStore` 副本并写入独立账本 `backup\node-routes.meta`（`09-rollback.ps1` 一并清理两类 store 与该账本）；
+   - `10-sync-node-rule.ps1` 新增 `-PruneStaleNodeRoutes` 开关，用于提权清理物理网卡下 metric=1 的历史孤儿非私网 `PersistentStore` `/32` 路由。
+
+#### 16.13.2 P1：`sing-box` B1 适配、物理网卡 IPv6 显式阻断与增量策略修复
+
+1. **`lib-stun-guard.ps1` 补齐 `sing-box` schema**：`Get-TunInboundTags` 同时识别 `protocol='tun'` 与 `type='tun'`；新增 `Get-SingBoxRulePortSet`（支持 `port` 与 `port_range`）、`Test-SingBoxIsBlockRule`（`action='reject'` 或 `outbound='block'`）、`Test-SingBoxStunPortBlockRule`、`Get-SingBoxStunRuleVerdict` 与内存分析入口 `Get-StunGuardAnalysisFromObject`。现网 `config.json`（Xray）复核结果保持 `present / index=5 / shadow=0 / caveat=1` 未漂移。
+2. **`lib-foreign-block.ps1` 新增物理网卡 IPv6 显式 `Block`**：新增 `Sync-ForeignPhysicalIpv6BlockRule`，在物理网卡上创建 `AI-Guard-Block-Foreign-Physical-IPv6`（出站 `Block` `2000::/3`），与 IPv4 规则共同否决火绒等第三方 WFP callout 在热插拔窗口或用户放开 IPv6 时的软放行；`07-mode.ps1` 的 `Get-FirewallRuleAnalysis`、`Show-Status` 与 `Ensure-Guard` 第 10 段同步纳入观测与自愈。
+3. **`14-apply-policy.ps1` 与 `02`/`07` 协同修复**：
+   - `AI-Guard-Block-PhysicalIP-On-TUN`（`02`/`07`/`14`）与 `14` 中的 `AI-Guard-Block-WebRTC-LocalIP-UDP/TCP` 统一改为物理网卡子网 CIDR（重叠 TUN 时回落 `/32`），不再被裸 `/32` 覆盖；
+   - 关闭 `BlockWebRtcLeak` 时，`14-apply-policy.ps1` 调用 `15-webrtc-browser-shield.ps1 -Remove -Quiet`，且 `14` 与 `07` 同步禁用 `AI-Guard-Block-WebRTC-*-PhysUDP` 与 `*-CoreSTUN-*`；
+   - 删除 `14-apply-policy.ps1` 中误置在 `DisableLlmnrNetbios = OFF` 分支内的 `DiagTrack` / `dmwappushservice` 遥测关闭代码。
+
+#### 16.13.3 P2：规则卫生、`-Status` 非提权口径与日志/备份收敛
+
+1. `07-mode.ps1` 与 `10-sync-node-rule.ps1` 对当前主核心移除冗余的 `AI-Guard-Allow-Core-<ActiveCore>-*`（清掉旧端口 `25000` 残留），并在非 UDP 节点时清扫全部 `AI-Guard-Allow-Core-*-UDP`；`07-mode.ps1` 3d 段在 TUN 在线时剪除 `Allow-TUN` / `Allow-TUN-Alt` / `Block-PhysicalIP-On-TUN` 上的失效历史适配器 GUID。
+2. `07-mode.ps1` `Show-Status` 在 `$script:ReadOnlyStatusMode`（非提权）且找不到任务时输出 `inconclusive` 及最近 `mode-state.json` 更新时间，不再误报 `none registered`。
+3. `07-mode.ps1` 9b 段仅在 B1 `State`/`Caveat`/`Detail` 变化时写入 `caveat` 日志；`02`/`10`/`14`/`18` 统一包含 `D:\v2rayN-windows-64-desktop\v2rayN-windows-64` 自动探测路径（`18` 取消硬编码默认值）；`13-harden-acl.ps1` 将 `acl-before-*.txt` 保留上限收敛为「最旧 1 份 + 最新 5 份」；`09-rollback.ps1` 的 `Log` 改为 UTF-8 无 BOM 写入。
+
+#### 16.13.4 门禁、验收与如实披露边界
+
+1. **构建门禁扩展**：`tests\test-stun-ports.ps1` 扩至 19 组断言段（新增 `sing-box` 内存探针、`ActiveStore`/禁扫 `configTest*`、`node-routes.meta` 与 UTF-8 回滚日志、IPv6 显式 `Block`、`14` 禁用与去遥测、`-Status` 非提权口径）。
+2. **本轮未在本机提权执行生产同步与 `12-regression.ps1`**：发版会话为非提权上下文，`C:\AI-Net-Guard` 同步、清理本机 367 条历史 `/32` 孤儿路由、生成 IPv6 Block 规则及全链路回归需由用户在提权管理员终端执行。

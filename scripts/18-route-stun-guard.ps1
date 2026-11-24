@@ -128,7 +128,7 @@
 [CmdletBinding()]
 param(
     [string]$Root = '',
-    [string]$V2rayNRoot = 'D:\v2rayN-windows-64-desktop\v2rayN-windows-64',
+    [string]$V2rayNRoot = '',
     [switch]$Apply,
     [switch]$Verify,
     [switch]$Restore,
@@ -146,6 +146,28 @@ if (-not $Root) {
     if ((Split-Path -Leaf $selfDir) -eq 'scripts') { $Root = Split-Path -Parent $selfDir } else { $Root = $selfDir }
 }
 $Root = $Root.TrimEnd('\')
+
+if (-not $V2rayNRoot) {
+    $polFile = Join-Path $Root 'backup\guard-policy.json'
+    if (Test-Path -LiteralPath $polFile) {
+        try {
+            $polObj = Get-Content -LiteralPath $polFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($polObj -and $polObj.V2rayNRoot -and (Test-Path -LiteralPath $polObj.V2rayNRoot)) {
+                $V2rayNRoot = [string]$polObj.V2rayNRoot
+            }
+        } catch { }
+    }
+}
+if (-not $V2rayNRoot) {
+    if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
+    else {
+        foreach ($cand in @('D:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64-desktop', 'C:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
+            if ($cand -and ((Test-Path -LiteralPath (Join-Path $cand 'v2rayN.exe')) -or (Test-Path -LiteralPath (Join-Path $cand 'binConfigs')))) { $V2rayNRoot = $cand; break }
+        }
+        if (-not $V2rayNRoot) { try { $vp = [System.Diagnostics.Process]::GetProcessesByName('v2rayN'); if ($vp.Length -gt 0 -and $vp[0].MainModule.FileName) { $V2rayNRoot = Split-Path -Parent $vp[0].MainModule.FileName } } catch { } }
+        if (-not $V2rayNRoot) { $V2rayNRoot = 'C:\v2rayN-windows-64' }
+    }
+}
 
 # The routing database stores localised remarks. Child stdout is decoded with the console
 # code page by default, which turns those into mojibake on a zh-CN host, so force UTF-8
