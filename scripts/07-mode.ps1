@@ -103,13 +103,29 @@ function Get-GuardPolicy {
     return (Read-GuardPolicyStrict -PolicyPath $policyFile -Defaults $pol -LastGoodPath $lastGoodFile -IsDeployed:$isDeployedHost)
 }
 
+function Resolve-EffectiveV2rayNRoot {
+    if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { return $env:V2RAYN_ROOT }
+    foreach ($cand in @('D:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64-desktop', 'C:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
+        if ($cand -and ((Test-Path -LiteralPath (Join-Path $cand 'v2rayN.exe')) -or (Test-Path -LiteralPath (Join-Path $cand 'binConfigs')))) { return $cand }
+    }
+    try {
+        $vp = [System.Diagnostics.Process]::GetProcessesByName('v2rayN')
+        if ($vp.Length -gt 0 -and $vp[0].MainModule.FileName) { return (Split-Path -Parent $vp[0].MainModule.FileName) }
+    }
+    catch { }
+    return 'C:\v2rayN-windows-64'
+}
+
 function Apply-GuardPolicyToScriptVars {
     if (-not $script:CliBoundParams.ContainsKey('V2rayNRoot')) {
         if ($script:guardPolicy.V2rayNRoot -and (Test-Path -LiteralPath $script:guardPolicy.V2rayNRoot)) {
             $script:V2rayNRoot = $script:guardPolicy.V2rayNRoot
         }
-        else {
+        elseif ($script:CliDefaultV2rayNRoot -and (Test-Path -LiteralPath $script:CliDefaultV2rayNRoot)) {
             $script:V2rayNRoot = $script:CliDefaultV2rayNRoot
+        }
+        else {
+            $script:V2rayNRoot = Resolve-EffectiveV2rayNRoot
         }
     }
     if (-not $script:CliBoundParams.ContainsKey('DnsServer')) {
@@ -130,17 +146,6 @@ function Apply-GuardPolicyToScriptVars {
 
 $script:guardPolicy = Get-GuardPolicy
 Apply-GuardPolicyToScriptVars
-
-if (-not $V2rayNRoot) {
-    if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
-    else {
-        foreach ($cand in @('D:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64-desktop', 'C:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
-            if ($cand -and ((Test-Path -LiteralPath (Join-Path $cand 'v2rayN.exe')) -or (Test-Path -LiteralPath (Join-Path $cand 'binConfigs')))) { $V2rayNRoot = $cand; break }
-        }
-        if (-not $V2rayNRoot) { try { $vp = [System.Diagnostics.Process]::GetProcessesByName('v2rayN'); if ($vp.Length -gt 0 -and $vp[0].MainModule.FileName) { $V2rayNRoot = Split-Path -Parent $vp[0].MainModule.FileName } } catch { } }
-        if (-not $V2rayNRoot) { $V2rayNRoot = 'C:\v2rayN-windows-64' }
-    }
-}
 
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 $p = New-Object Security.Principal.WindowsPrincipal($id)

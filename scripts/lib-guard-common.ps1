@@ -297,6 +297,79 @@ function Save-GuardPolicyLastGood {
     Move-Item -LiteralPath $tmpLg -Destination $LastGoodPath -Force -ErrorAction Stop
 }
 
+function Invoke-GuardPolicyTransaction {
+    param(
+        [Parameter(Mandatory = $true)][string]$CanonicalPolicyPath,
+        [string]$PendingPolicyPath = '',
+        [Parameter(Mandatory = $true)][string]$LastGoodPolicyPath,
+        [Parameter(Mandatory = $true)][scriptblock]$ApplyAction
+    )
+
+    $hadPrevCanonical = Test-Path -LiteralPath $CanonicalPolicyPath
+    $prevCanonicalRaw = if ($hadPrevCanonical) {
+        [System.IO.File]::ReadAllText($CanonicalPolicyPath, [System.Text.Encoding]::UTF8)
+    }
+    else { '' }
+
+    $state = [pscustomobject]@{
+        CanonicalStaged = $false
+        PolicyCommitted = $false
+        ExitCode        = 0
+        ErrorMessage    = ''
+    }
+
+    $stageCanonical = ({
+        param([string]$JsonText)
+        $canDir = Split-Path -Parent $CanonicalPolicyPath
+        if ($canDir -and -not (Test-Path -LiteralPath $canDir)) {
+            New-Item -ItemType Directory -Path $canDir -Force | Out-Null
+        }
+        $tmpCan = $CanonicalPolicyPath + '.tmp.' + $PID
+        [System.IO.File]::WriteAllText($tmpCan, $JsonText, (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmpCan -Destination $CanonicalPolicyPath -Force -ErrorAction Stop
+        $state.CanonicalStaged = $true
+    }).GetNewClosure()
+
+    $commitPolicy = ({
+        Save-GuardPolicyLastGood -PolicyPath $CanonicalPolicyPath -LastGoodPath $LastGoodPolicyPath
+        $state.PolicyCommitted = $true
+    }).GetNewClosure()
+
+    try {
+        & $ApplyAction $state $stageCanonical $commitPolicy
+    }
+    catch {
+        $state.ErrorMessage = $_.Exception.Message
+        if ($state.ExitCode -eq 0 -or $state.ExitCode -eq -1) {
+            $state.ExitCode = 5
+        }
+    }
+    finally {
+        if ($state.CanonicalStaged -and (-not $state.PolicyCommitted)) {
+            try {
+                if ($hadPrevCanonical) {
+                    $tmpRestore = $CanonicalPolicyPath + '.restore.' + $PID
+                    [System.IO.File]::WriteAllText($tmpRestore, $prevCanonicalRaw, (New-Object System.Text.UTF8Encoding($false)))
+                    Move-Item -LiteralPath $tmpRestore -Destination $CanonicalPolicyPath -Force -ErrorAction Stop
+                    Write-Host '    [!] restored previous guard-policy.json because policy application did not commit' -ForegroundColor Yellow
+                }
+                elseif (Test-Path -LiteralPath $CanonicalPolicyPath) {
+                    Remove-Item -LiteralPath $CanonicalPolicyPath -Force -ErrorAction SilentlyContinue
+                    Write-Host '    [!] removed uncommitted guard-policy.json because policy application did not commit' -ForegroundColor Yellow
+                }
+            }
+            catch {
+                Write-Host ('    [!] failed to restore previous guard-policy.json: ' + $_.Exception.Message) -ForegroundColor Red
+            }
+        }
+        if ($PendingPolicyPath -and ([System.IO.Path]::GetFileName($PendingPolicyPath) -ieq 'guard-policy.pending.json') -and (Test-Path -LiteralPath $PendingPolicyPath)) {
+            Remove-Item -LiteralPath $PendingPolicyPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    return $state
+}
+
 function Read-GuardPolicyStrict {
     param(
         [string]$PolicyPath,

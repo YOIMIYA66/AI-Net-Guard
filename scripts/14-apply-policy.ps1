@@ -258,21 +258,15 @@ $pendingRollbackCancel = $false
 $lastGoodPolicyPath = Join-Path $BackupDir 'guard-policy.last-good.json'
 $canonicalPolicyPath = Join-Path $BackupDir 'guard-policy.json'
 $applyWriteLock = Enter-GuardWriteLock -TimeoutMs 30000
+$txResult = $null
 try {
-
-# Transactional staging (#02): remember previous committed policy so failed applies never
-# overwrite guard-policy.json in place for background tasks to consume.
-$hadPrevCanonical = Test-Path -LiteralPath $canonicalPolicyPath
-$prevCanonicalRaw = if ($hadPrevCanonical) { [System.IO.File]::ReadAllText($canonicalPolicyPath, [System.Text.Encoding]::UTF8) } else { '' }
-$canonicalStaged = $false
+$txResult = Invoke-GuardPolicyTransaction -CanonicalPolicyPath $canonicalPolicyPath -PendingPolicyPath $PolicyPath -LastGoodPolicyPath $lastGoodPolicyPath -ApplyAction {
+param($txState, $txStageCanonical, $txCommitPolicy)
 
 function Write-CanonicalPolicyAtomic {
     $policy.UpdatedAt = (Get-Date).ToString('o')
-    $tmpCan = $canonicalPolicyPath + '.tmp.' + $PID
     $canJson = ([pscustomobject]$policy) | ConvertTo-Json -Depth 4
-    [System.IO.File]::WriteAllText($tmpCan, $canJson, (New-Object System.Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $tmpCan -Destination $canonicalPolicyPath -Force -ErrorAction Stop
-    $script:canonicalStaged = $true
+    & $txStageCanonical $canJson
 }
 
 $isDeployedHost = (Test-Path -LiteralPath (Join-Path $BackupDir 'baseline.json'))
@@ -1357,42 +1351,34 @@ public static class AiGuardWinInet {
         foreach ($ae in $applyErrors) { Write-Host ('  - ' + $ae) -ForegroundColor Red }
     }
     else {
-        # Persist last-good ONLY after full apply & verification succeeded (#04)
+        # Commit policy (persist last-good and mark PolicyCommitted=$true) ONLY after zero errors
         try {
-            Save-GuardPolicyLastGood -PolicyPath $canonicalPolicyPath -LastGoodPath $lastGoodPolicyPath
+            & $txCommitPolicy
+            Write-Host '[SUCCESS] AI-Net-Guard v5.9.1 configuration applied successfully.' -ForegroundColor Green
         }
         catch {
-            Write-Warn ('could not update guard-policy.last-good.json: ' + $_.Exception.Message)
+            $applyExitCode = 5
+            Write-Host ('[FAILED] AI-Net-Guard v5.9.1 failed while committing last-good policy: ' + $_.Exception.Message) -ForegroundColor Red
         }
-        Write-Host '[SUCCESS] AI-Net-Guard v5.9.1 configuration applied successfully.' -ForegroundColor Green
     }
 }
+}
+$txState.ExitCode = $applyExitCode
+}
+if ($txResult -and $txResult.ErrorMessage) {
+    Write-Host ('[FAILED] Unhandled exception during AI-Net-Guard policy application: ' + $txResult.ErrorMessage) -ForegroundColor Red
+}
+if ($txResult) {
+    $applyExitCode = $txResult.ExitCode
+    if ($txResult.CanonicalStaged -and (-not $txResult.PolicyCommitted) -and ($applyExitCode -eq 0 -or $applyExitCode -eq -1)) {
+        $applyExitCode = 5
+    }
+}
+else {
+    $applyExitCode = 5
 }
 }
 finally {
-    if ($canonicalStaged) {
-        $applySucceeded = ($applyExitCode -eq 0 -and $applyErrors.Count -eq 0)
-        if (-not $applySucceeded) {
-            try {
-                if ($hadPrevCanonical) {
-                    $tmpRestore = $canonicalPolicyPath + '.restore.' + $PID
-                    [System.IO.File]::WriteAllText($tmpRestore, $prevCanonicalRaw, (New-Object System.Text.UTF8Encoding($false)))
-                    Move-Item -LiteralPath $tmpRestore -Destination $canonicalPolicyPath -Force -ErrorAction Stop
-                    Write-Warn 'restored previous guard-policy.json because policy application did not succeed'
-                }
-                elseif (Test-Path -LiteralPath $canonicalPolicyPath) {
-                    Remove-Item -LiteralPath $canonicalPolicyPath -Force -ErrorAction SilentlyContinue
-                    Write-Warn 'removed uncommitted guard-policy.json because initial deployment did not succeed'
-                }
-            }
-            catch {
-                Write-Warn ('failed to restore previous guard-policy.json: ' + $_.Exception.Message)
-            }
-        }
-    }
-    if ($PolicyPath -and ([System.IO.Path]::GetFileName($PolicyPath) -ieq 'guard-policy.pending.json') -and (Test-Path -LiteralPath $PolicyPath)) {
-        Remove-Item -LiteralPath $PolicyPath -Force -ErrorAction SilentlyContinue
-    }
     Exit-GuardWriteLock $applyWriteLock
 }
 if ($applyExitCode -eq -1) { $applyExitCode = 0 }

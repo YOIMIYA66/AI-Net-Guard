@@ -596,10 +596,11 @@ $ksRegIdx = $ks02Raw.IndexOf("Register-ScheduledTask -TaskName 'AI-Guard-Test-Ro
 $modeLockIdx = $mode07Raw.IndexOf('Enter-GuardWriteLock')
 $modeRemIdx = $mode07Raw.IndexOf('if ($RemoveTasks)')
 
-Assert-True '14-apply-policy locks before read, verifies ACL & rollback cancel, and saves last-good on success' `
+Assert-True '14-apply-policy locks before read, verifies ACL & rollback cancel, and commits last-good via transaction' `
     (($aclIdx -gt 0) -and ($taskIdx -gt $aclIdx) -and ($applyLockIdx -gt 0) -and ($applyReadIdx -gt $applyLockIdx) -and `
      ($applyPol -match 'Invoke-GuardChild') -and ($applyPol -match '\$pendingRollbackCancel') -and `
-     ($applyPol -match 'Save-GuardPolicyLastGood') -and ($applyPol -match 'AI-Guard-Test-Rollback still registered') -and `
+     ($applyPol -match 'txCommitPolicy') -and ($libCommonRaw -match 'Save-GuardPolicyLastGood') -and `
+     ($applyPol -match 'AI-Guard-Test-Rollback still registered') -and `
      ($libCommonRaw -match 'Get-ChildItem -LiteralPath \$scriptsDir -Recurse') -and `
      ($libCommonRaw -notmatch "Local\\AI-Net-Guard-PolicyEngine") -and `
      ($libCommonRaw -match 'ReparsePoint') -and ($aclScriptRaw -match 'Get-GuardInstallAclIssues')) `
@@ -647,6 +648,83 @@ Assert-True '09-rollback defers self-tasks, aborts destructive steps on baseline
      ($rollback -match '\$remainingAiTasks\.Count -gt 0') -and `
      ($boot06Raw -match 'Get-GuardInstallAclIssues') -and ($ks02Raw -match 'Enter-GuardWriteLock')) `
     '09-rollback self-task/abort/ACL guard or 06-boot-guard ACL / 02-killswitch lock check failed'
+
+# ---------------------------------------------------------------- 23. Runtime exception-path transaction, V2rayNRoot preservation & Boot Guard exit checks
+$tmpTxDir = Join-Path ([System.IO.Path]::GetTempPath()) ('ai-guard-tx-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmpTxDir -Force | Out-Null
+try {
+    $utf8NoBomTx = New-Object System.Text.UTF8Encoding($false)
+    $oldJson = '{"Preset":"StrictLock","AllowCnDirect":false}'
+    $newJson = '{"Preset":"Recommended","AllowCnDirect":true}'
+    $canPath = Join-Path $tmpTxDir 'guard-policy.json'
+    $pendPath = Join-Path $tmpTxDir 'guard-policy.pending.json'
+    $lgPath = Join-Path $tmpTxDir 'guard-policy.last-good.json'
+
+    # Case A: unhandled exception after staging restores existing canonical policy & preserves last-good
+    [System.IO.File]::WriteAllText($canPath, $oldJson, $utf8NoBomTx)
+    [System.IO.File]::WriteAllText($pendPath, $newJson, $utf8NoBomTx)
+    [System.IO.File]::WriteAllText($lgPath, $oldJson, $utf8NoBomTx)
+    $sawStagedRef = [ref]$false
+    $resA = Invoke-GuardPolicyTransaction -CanonicalPolicyPath $canPath -PendingPolicyPath $pendPath -LastGoodPolicyPath $lgPath -ApplyAction {
+        param($st, $stageFn, $commitFn)
+        & $stageFn $newJson
+        $sawStagedRef.Value = (([System.IO.File]::ReadAllText($canPath)).Trim() -eq $newJson)
+        throw 'simulated mid-apply failure'
+    }
+    $caseAOk = $sawStagedRef.Value -and (-not $resA.PolicyCommitted) -and ($resA.ExitCode -eq 5) -and ($resA.ErrorMessage -eq 'simulated mid-apply failure') -and `
+               (([System.IO.File]::ReadAllText($canPath)).Trim() -eq $oldJson) -and `
+               (([System.IO.File]::ReadAllText($lgPath)).Trim() -eq $oldJson) -and `
+               (-not (Test-Path -LiteralPath $pendPath))
+
+    # Case B: unhandled exception on initial deploy deletes uncommitted canonical file & leaves no last-good
+    Remove-Item -LiteralPath $canPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $lgPath -Force -ErrorAction SilentlyContinue
+    [System.IO.File]::WriteAllText($pendPath, $newJson, $utf8NoBomTx)
+    $resB = Invoke-GuardPolicyTransaction -CanonicalPolicyPath $canPath -PendingPolicyPath $pendPath -LastGoodPolicyPath $lgPath -ApplyAction {
+        param($st, $stageFn, $commitFn)
+        & $stageFn $newJson
+        throw 'simulated initial deploy exception'
+    }
+    $caseBOk = (-not $resB.PolicyCommitted) -and ($resB.ExitCode -eq 5) -and (-not (Test-Path -LiteralPath $canPath)) -and (-not (Test-Path -LiteralPath $lgPath)) -and (-not (Test-Path -LiteralPath $pendPath))
+
+    # Case C: Save-GuardPolicyLastGood failure keeps PolicyCommitted=$false and restores canonical policy
+    [System.IO.File]::WriteAllText($canPath, $oldJson, $utf8NoBomTx)
+    $blockerFile = Join-Path $tmpTxDir 'dir-blocker'
+    [System.IO.File]::WriteAllText($blockerFile, 'file', $utf8NoBomTx)
+    $badLgPath = Join-Path $blockerFile 'guard-policy.last-good.json'
+    $resC = Invoke-GuardPolicyTransaction -CanonicalPolicyPath $canPath -PendingPolicyPath $pendPath -LastGoodPolicyPath $badLgPath -ApplyAction {
+        param($st, $stageFn, $commitFn)
+        & $stageFn $newJson
+        & $commitFn
+    }
+    $caseCOk = (-not $resC.PolicyCommitted) -and ($resC.ExitCode -eq 5) -and (([System.IO.File]::ReadAllText($canPath)).Trim() -eq $oldJson)
+
+    # Case D: clean commit updates canonical + last-good, marks PolicyCommitted=$true, removes pending
+    [System.IO.File]::WriteAllText($canPath, $oldJson, $utf8NoBomTx)
+    [System.IO.File]::WriteAllText($pendPath, $newJson, $utf8NoBomTx)
+    $resD = Invoke-GuardPolicyTransaction -CanonicalPolicyPath $canPath -PendingPolicyPath $pendPath -LastGoodPolicyPath $lgPath -ApplyAction {
+        param($st, $stageFn, $commitFn)
+        & $stageFn $newJson
+        & $commitFn
+    }
+    $caseDOk = $resD.PolicyCommitted -and ($resD.ExitCode -eq 0) -and `
+               (([System.IO.File]::ReadAllText($canPath)).Trim() -eq $newJson) -and `
+               (([System.IO.File]::ReadAllText($lgPath)).Trim() -eq $newJson) -and `
+               (-not (Test-Path -LiteralPath $pendPath))
+
+    Assert-True 'Invoke-GuardPolicyTransaction handles mid-apply exceptions, initial deploy failure, commit failure, and clean commit' `
+        ($caseAOk -and $caseBOk -and $caseCOk -and $caseDOk) `
+        ('A=' + $caseAOk + ' B=' + $caseBOk + ' C=' + $caseCOk + ' D=' + $caseDOk)
+}
+finally {
+    Remove-Item -LiteralPath $tmpTxDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Assert-True '14-apply-policy uses PolicyCommitted transaction; 07-mode resolves V2rayNRoot safely; 06-boot-guard propagates rollback exit code' `
+    (($applyPol -match 'Invoke-GuardPolicyTransaction') -and ($applyPol -match '\$txResult\.PolicyCommitted') -and `
+     ($mode07Raw -match 'function Resolve-EffectiveV2rayNRoot') -and ($mode07Raw -match '\$script:V2rayNRoot = Resolve-EffectiveV2rayNRoot') -and `
+     ($boot06Raw -match '\$bootGuardExit') -and ($boot06Raw -match 'exit \$bootGuardExit')) `
+    'transaction/V2rayNRoot/boot-guard exit propagation checks failed'
 
 Write-Host ' '
 if ($script:fail -gt 0) {

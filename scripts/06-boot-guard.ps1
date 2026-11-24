@@ -89,16 +89,29 @@ if ($RunIfArmed) {
         }
         catch { }
     }
+    $bootGuardExit = 0
     if ($armed) {
         Write-Host 'boot guard: armed window still open, rolling back' -ForegroundColor Yellow
-        & (if (Test-Path (Join-Path (Join-Path $Root 'scripts') '09-rollback.ps1')) { Join-Path (Join-Path $Root 'scripts') '09-rollback.ps1' } else { Join-Path $Root '09-rollback.ps1' }) -Auto -Root $Root
+        $rbPath = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '09-rollback.ps1')) { Join-Path (Join-Path $Root 'scripts') '09-rollback.ps1' } else { Join-Path $Root '09-rollback.ps1' }
+        $global:LASTEXITCODE = 0
+        try {
+            & $rbPath -Auto -Root $Root
+            if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+                $bootGuardExit = [int]$LASTEXITCODE
+                Write-Host ('[!] boot guard: rollback returned non-zero exit code ' + $bootGuardExit) -ForegroundColor Red
+            }
+        }
+        catch {
+            $bootGuardExit = 1
+            Write-Host ('[!] boot guard: rollback threw an error: ' + $_.Exception.Message) -ForegroundColor Red
+        }
     }
     else {
         Write-Host 'boot guard: window expired or marker missing, doing nothing'
     }
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $Marker -Force -ErrorAction SilentlyContinue
-    exit 0
+    exit $bootGuardExit
 }
 
 # ------------------------------------------------------------------ interactive modes
