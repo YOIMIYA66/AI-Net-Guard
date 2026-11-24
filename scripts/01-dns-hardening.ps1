@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.4 - step 1: DNS, IPv6/IPv4-precedence, SMHNR, and NTP hardening.
+    AI-Net-Guard v5.9.5 - step 1: DNS, IPv6/IPv4-precedence, SMHNR, and NTP hardening.
 
 .DESCRIPTION
     Prepares Windows networking for the v5.1 static guard:

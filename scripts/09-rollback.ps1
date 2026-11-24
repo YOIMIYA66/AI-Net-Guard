@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.9.4 - rollback & baseline restore (100% thorough uninstaller)
+# AI-Net-Guard v5.9.5 - rollback & baseline restore (100% thorough uninstaller)
 [CmdletBinding()]
 param(
     [string]$Root = 'C:\AI-Net-Guard',
@@ -24,7 +24,7 @@ function Log ($msg) {
 }
 
 $DohServer = '223.5.5.5'
-Log ('AI-Net-Guard v5.9.4 thorough rollback started' + $(if ($Auto) { ' (auto-rollback trigger)' } else { '' }))
+Log ('AI-Net-Guard v5.9.5 thorough rollback started' + $(if ($Auto) { ' (auto-rollback trigger)' } else { '' }))
 Log ('user: ' + [System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
 
 # ------------------------------------------------------------------ admin check

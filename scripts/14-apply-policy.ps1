@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.4 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.9.5 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 16
@@ -464,7 +464,7 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.9.4 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.9.5 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
 
 if (-not $isFreshInstall) {
@@ -1347,18 +1347,18 @@ public static class AiGuardWinInet {
     Write-Host ''
     if ($applyErrors.Count -gt 0) {
         $applyExitCode = 5
-        Write-Host ('[FAILED] AI-Net-Guard v5.9.4 policy application finished with ' + $applyErrors.Count + ' error(s):') -ForegroundColor Red
+        Write-Host ('[FAILED] AI-Net-Guard v5.9.5 policy application finished with ' + $applyErrors.Count + ' error(s):') -ForegroundColor Red
         foreach ($ae in $applyErrors) { Write-Host ('  - ' + $ae) -ForegroundColor Red }
     }
     else {
         # Commit policy (persist last-good and mark PolicyCommitted=$true) ONLY after zero errors
         try {
             & $txCommitPolicy
-            Write-Host '[SUCCESS] AI-Net-Guard v5.9.4 configuration applied successfully.' -ForegroundColor Green
+            Write-Host '[SUCCESS] AI-Net-Guard v5.9.5 configuration applied successfully.' -ForegroundColor Green
         }
         catch {
             $applyExitCode = 5
-            Write-Host ('[FAILED] AI-Net-Guard v5.9.4 failed while committing last-good policy: ' + $_.Exception.Message) -ForegroundColor Red
+            Write-Host ('[FAILED] AI-Net-Guard v5.9.5 failed while committing last-good policy: ' + $_.Exception.Message) -ForegroundColor Red
         }
     }
 }
