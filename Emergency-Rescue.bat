@@ -57,6 +57,8 @@ netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 35 4 >nul 2>&1
 :: 7. 清理本地策略与状态元数据，重置目录 ACL
 echo [6/8] 清理本地策略缓存并恢复目录权限...
 if exist "C:\AI-Net-Guard\backup\guard-policy.json" del /f /q "C:\AI-Net-Guard\backup\guard-policy.json" >nul 2>&1
+if exist "C:\AI-Net-Guard\backup\guard-policy.last-good.json" del /f /q "C:\AI-Net-Guard\backup\guard-policy.last-good.json" >nul 2>&1
+if exist "C:\AI-Net-Guard\backup\protected-lock.flag" del /f /q "C:\AI-Net-Guard\backup\protected-lock.flag" >nul 2>&1
 if exist "C:\AI-Net-Guard\backup\mode-state.json" del /f /q "C:\AI-Net-Guard\backup\mode-state.json" >nul 2>&1
 if exist "C:\AI-Net-Guard\backup\node-sync.meta" del /f /q "C:\AI-Net-Guard\backup\node-sync.meta" >nul 2>&1
 if exist "C:\AI-Net-Guard\backup\cn-rule.sig" del /f /q "C:\AI-Net-Guard\backup\cn-rule.sig" >nul 2>&1

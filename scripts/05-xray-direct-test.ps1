@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.9 - acceptance test: does xray.exe's own "direct" outbound
+    AI-Net-Guard v5.9.0 - acceptance test: does xray.exe's own "direct" outbound
     bypass the node allow list? (run as Administrator, AFTER 02-killswitch.ps1)
 
 .DESCRIPTION

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.9 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.9.0 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 16
@@ -252,57 +252,73 @@ $policyDefaults = [ordered]@{
     UpdatedAt            = (Get-Date).ToString('o')
 }
 
-$policyLoaded = Read-GuardPolicyStrict -PolicyPath $PolicyPath -Defaults $policyDefaults -LastGoodPath (Join-Path $BackupDir 'guard-policy.last-good.json')
+$applyExitCode = 0
+$applyErrors = New-Object System.Collections.Generic.List[string]
+$pendingRollbackCancel = $false
+$lastGoodPolicyPath = Join-Path $BackupDir 'guard-policy.last-good.json'
+$canonicalPolicyPath = Join-Path $BackupDir 'guard-policy.json'
+$applyWriteLock = Enter-GuardWriteLock -TimeoutMs 30000
+try {
+
+$isDeployedHost = (Test-Path -LiteralPath (Join-Path $BackupDir 'baseline.json'))
+$policyLoaded = Read-GuardPolicyStrict -PolicyPath $PolicyPath -Defaults $policyDefaults -LastGoodPath $lastGoodPolicyPath -IsDeployed:$isDeployedHost
 if ($policyLoaded.PolicyHealth -eq 'corrupt-fail-closed') {
     Write-Host ('ERROR: refusing to apply corrupted policy file: ' + $policyLoaded.PolicyWarning) -ForegroundColor Red
-    exit 2
+    $applyExitCode = 2
 }
-if ($policyLoaded.PolicyWarning) {
+if ($policyLoaded.PolicyWarning -and $applyExitCode -eq 0) {
     Write-Warn $policyLoaded.PolicyWarning
 }
 $policy = $policyLoaded
 
-# Rule coordination: StrictNrptDoh requires physical DNS locked to 1.1.1.1
-if ($policy.StrictNrptDoh) {
-    $policy.LockPhysicalDns = $true
-}
-
-if ($V2rayNRoot) {
-    $policy.V2rayNRoot = $V2rayNRoot
-}
-elseif ($policy.V2rayNRoot -and (Test-Path -LiteralPath $policy.V2rayNRoot)) {
-    $V2rayNRoot = $policy.V2rayNRoot
-}
-else {
-    if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
-    else {
-        foreach ($cand in @('D:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64-desktop', 'C:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
-            if ($cand -and ((Test-Path -LiteralPath (Join-Path $cand 'v2rayN.exe')) -or (Test-Path -LiteralPath (Join-Path $cand 'binConfigs')))) { $V2rayNRoot = $cand; break }
-        }
-        if (-not $V2rayNRoot) {
-            try {
-                $vp = [System.Diagnostics.Process]::GetProcessesByName('v2rayN')
-                if ($vp.Length -gt 0 -and $vp[0].MainModule.FileName) { $V2rayNRoot = Split-Path -Parent $vp[0].MainModule.FileName }
-            }
-            catch { }
-        }
-        if (-not $V2rayNRoot) { $V2rayNRoot = 'C:\v2rayN-windows-64' }
+if ($applyExitCode -eq 0) {
+    # Rule coordination: StrictNrptDoh requires physical DNS locked to 1.1.1.1
+    if ($policy.StrictNrptDoh) {
+        $policy.LockPhysicalDns = $true
     }
-}
 
-$policy.UpdatedAt = (Get-Date).ToString('o')
-$canonicalPolicyPath = Join-Path $BackupDir 'guard-policy.json'
-([pscustomobject]$policy) | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $canonicalPolicyPath -Encoding UTF8
+    if ($V2rayNRoot) {
+        $policy.V2rayNRoot = $V2rayNRoot
+    }
+    elseif ($policy.V2rayNRoot -and (Test-Path -LiteralPath $policy.V2rayNRoot)) {
+        $V2rayNRoot = $policy.V2rayNRoot
+    }
+    else {
+        if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
+        else {
+            foreach ($cand in @('D:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'D:\v2rayN-windows-64-desktop', 'C:\v2rayN-windows-64-desktop\v2rayN-windows-64', 'C:\v2rayN-windows-64', 'D:\v2rayN-windows-64', 'C:\v2rayN', 'D:\v2rayN', (Join-Path $env:LOCALAPPDATA 'v2rayN'), 'C:\Program Files\v2rayN')) {
+                if ($cand -and ((Test-Path -LiteralPath (Join-Path $cand 'v2rayN.exe')) -or (Test-Path -LiteralPath (Join-Path $cand 'binConfigs')))) { $V2rayNRoot = $cand; break }
+            }
+            if (-not $V2rayNRoot) {
+                try {
+                    $vp = [System.Diagnostics.Process]::GetProcessesByName('v2rayN')
+                    if ($vp.Length -gt 0 -and $vp[0].MainModule.FileName) { $V2rayNRoot = Split-Path -Parent $vp[0].MainModule.FileName }
+                }
+                catch { }
+            }
+            if (-not $V2rayNRoot) { $V2rayNRoot = 'C:\v2rayN-windows-64' }
+        }
+    }
+
+    $policy.UpdatedAt = (Get-Date).ToString('o')
+    $tmpCan = $canonicalPolicyPath + '.tmp.' + $PID
+    $canJson = ([pscustomobject]$policy) | ConvertTo-Json -Depth 4
+    [System.IO.File]::WriteAllText($tmpCan, $canJson, (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmpCan -Destination $canonicalPolicyPath -Force -ErrorAction Stop
+}
 
 $psExe = (Get-Process -Id $PID).Path
 if (-not $psExe -or -not (Test-Path -LiteralPath $psExe)) {
     $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 }
 
-if ($SyncNodeOnly) {
+if ($applyExitCode -eq 0 -and $SyncNodeOnly) {
     Write-Step 'forcing immediate proxy node & port sync'
     & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '10-sync-node-rule.ps1') -Root $Root -V2rayNRoot $V2rayNRoot
-    exit $LASTEXITCODE
+    $applyExitCode = $LASTEXITCODE
+    if ($applyExitCode -eq 0) {
+        $applyExitCode = -1
+    }
 }
 
 $targetDns = if ($policy.StrictNrptDoh) { '1.1.1.1' } elseif ($policy.DnsServer) { [string]$policy.DnsServer } else { '223.5.5.5' }
@@ -434,12 +450,7 @@ function Invoke-QuickConnectivityCheck([bool]$AllowCn) {
 }
 
 # ------------------------------------------------------------------ Determine Fresh Install vs Incremental Reconfigure
-$applyExitCode = 0
-$applyErrors = New-Object System.Collections.Generic.List[string]
-$pendingRollbackCancel = $false
-$applyWriteLock = Enter-GuardWriteLock -TimeoutMs 30000
-try {
-
+if ($applyExitCode -eq 0) {
 $baselineFile = Join-Path $BackupDir 'baseline.json'
 $baselineObj = $null
 if (Test-Path -LiteralPath $baselineFile) {
@@ -450,7 +461,7 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.8.9 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.9.0 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
 
 if ($isFreshInstall) {
@@ -1136,9 +1147,18 @@ if ($applyExitCode -eq 0) {
         }
     }
 
+    # Clear Protected persistence lock if user explicitly applied a policy enabling AllowCnDirect (#10)
+    $protectedLockPath = Join-Path $BackupDir 'protected-lock.flag'
+    if ([bool]$policy.AllowCnDirect -and (Test-Path -LiteralPath $protectedLockPath)) {
+        Remove-Item -LiteralPath $protectedLockPath -Force -ErrorAction SilentlyContinue
+        Write-Ok 'cleared Protected mode lock (AllowCnDirect enabled by applied policy)'
+    }
+
     Write-Step 'synchronizing active guard state'
     try {
-        Invoke-GuardChild -ScriptPath (Get-PolicyScriptPath '07-mode.ps1') -ChildArgs @('-Root', $Root, '-V2rayNRoot', $V2rayNRoot, '-DnsServer', $targetDns, '-Quiet') -Label '07-mode.ps1 sync' -AllowedExitCodes @(0, 3)
+        $modeSyncArgs = @('-Root', $Root, '-V2rayNRoot', $V2rayNRoot, '-DnsServer', $targetDns, '-Quiet')
+        if ([bool]$policy.AllowCnDirect) { $modeSyncArgs += '-ClearProtectedLock' }
+        Invoke-GuardChild -ScriptPath (Get-PolicyScriptPath '07-mode.ps1') -ChildArgs $modeSyncArgs -Label '07-mode.ps1 sync' -AllowedExitCodes @(0, 3)
         if ($LASTEXITCODE -eq 3) {
             $applyErrors.Add('07-mode.ps1 reported missing companion firewall rules (exit=3)')
         }
@@ -1279,8 +1299,18 @@ public static class AiGuardWinInet {
         if ($applyErrors.Count -eq 0) {
             $rbTask = Get-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -ErrorAction SilentlyContinue
             if ($rbTask) {
-                Unregister-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -Confirm:$false -ErrorAction SilentlyContinue
-                Write-Ok 'auto-rollback safety timer cancelled (deployment verified & committed)'
+                try {
+                    Unregister-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -Confirm:$false -ErrorAction Stop
+                    $rbAfter = Get-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -ErrorAction SilentlyContinue
+                    if ($rbAfter) {
+                        throw 'AI-Guard-Test-Rollback still registered after Unregister-ScheduledTask'
+                    }
+                    Write-Ok 'auto-rollback safety timer cancelled (deployment verified & committed)'
+                }
+                catch {
+                    $applyErrors.Add('failed to unregister AI-Guard-Test-Rollback: ' + $_.Exception.Message)
+                    Write-Warn ('failed to unregister AI-Guard-Test-Rollback (auto-rollback may still fire!): ' + $_.Exception.Message)
+                }
             }
         }
         else {
@@ -1292,15 +1322,24 @@ public static class AiGuardWinInet {
     Write-Host ''
     if ($applyErrors.Count -gt 0) {
         $applyExitCode = 5
-        Write-Host ('[FAILED] AI-Net-Guard v5.8.9 policy application finished with ' + $applyErrors.Count + ' error(s):') -ForegroundColor Red
+        Write-Host ('[FAILED] AI-Net-Guard v5.9.0 policy application finished with ' + $applyErrors.Count + ' error(s):') -ForegroundColor Red
         foreach ($ae in $applyErrors) { Write-Host ('  - ' + $ae) -ForegroundColor Red }
     }
     else {
-        Write-Host '[SUCCESS] AI-Net-Guard v5.8.9 configuration applied successfully.' -ForegroundColor Green
+        # Persist last-good ONLY after full apply & verification succeeded (#04)
+        try {
+            Save-GuardPolicyLastGood -PolicyPath $canonicalPolicyPath -LastGoodPath $lastGoodPolicyPath
+        }
+        catch {
+            Write-Warn ('could not update guard-policy.last-good.json: ' + $_.Exception.Message)
+        }
+        Write-Host '[SUCCESS] AI-Net-Guard v5.9.0 configuration applied successfully.' -ForegroundColor Green
     }
+}
 }
 }
 finally {
     Exit-GuardWriteLock $applyWriteLock
 }
+if ($applyExitCode -eq -1) { $applyExitCode = 0 }
 exit $applyExitCode

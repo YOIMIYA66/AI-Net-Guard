@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.9 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
+    AI-Net-Guard v5.9.0 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
 
 .DESCRIPTION
     The guard itself is 100% STATIC in Windows kernel WFP (BFE / tcpip.sys):
@@ -46,6 +46,7 @@ param(
     [switch]$DisableAutoNodeSync,
     [switch]$SkipQuarantineAllowRules,
     [switch]$SkipStaleProxyHeal,
+    [switch]$ClearProtectedLock,
     [int]$FallbackMinutes = 60,
     [switch]$Quiet,
     [string]$Root = $(if ($PSScriptRoot) { $PSScriptRoot } else { 'C:\AI-Net-Guard' }),
@@ -56,6 +57,7 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $policyFile = Join-Path $Root 'backup\guard-policy.json'
+$protectedLockFile = Join-Path $Root 'backup\protected-lock.flag'
 
 $libCommon = ''
 $commonCandidates = @((Join-Path $Root 'scripts\lib-guard-common.ps1'), (Join-Path $Root 'lib-guard-common.ps1'))
@@ -93,26 +95,31 @@ function Get-GuardPolicy {
         BlockWebRtcLeak      = $true
     }
     $lastGoodFile = Join-Path $Root 'backup\guard-policy.last-good.json'
-    return (Read-GuardPolicyStrict -PolicyPath $policyFile -Defaults $pol -LastGoodPath $lastGoodFile -NoSaveLastGood:([bool]$Status))
+    $isDeployedHost = (Test-Path -LiteralPath (Join-Path $Root 'backup\baseline.json'))
+    return (Read-GuardPolicyStrict -PolicyPath $policyFile -Defaults $pol -LastGoodPath $lastGoodFile -IsDeployed:$isDeployedHost)
 }
 
-$guardPolicy = Get-GuardPolicy
-if (-not $PSBoundParameters.ContainsKey('V2rayNRoot') -and $guardPolicy.V2rayNRoot -and (Test-Path -LiteralPath $guardPolicy.V2rayNRoot)) {
-    $V2rayNRoot = $guardPolicy.V2rayNRoot
+function Apply-GuardPolicyToScriptVars {
+    if (-not $PSBoundParameters.ContainsKey('V2rayNRoot') -and $script:guardPolicy.V2rayNRoot -and (Test-Path -LiteralPath $script:guardPolicy.V2rayNRoot)) {
+        $script:V2rayNRoot = $script:guardPolicy.V2rayNRoot
+    }
+    if (-not $PSBoundParameters.ContainsKey('DnsServer')) {
+        if ($script:guardPolicy.StrictNrptDoh) { $script:DnsServer = '1.1.1.1' }
+        elseif ($script:guardPolicy.DnsServer) { $script:DnsServer = $script:guardPolicy.DnsServer }
+    }
+    if (-not $PSBoundParameters.ContainsKey('DisableAutoNodeSync') -and (-not $script:guardPolicy.AutoNodeSync)) {
+        $script:DisableAutoNodeSync = [switch]::Present
+    }
+    if (-not $PSBoundParameters.ContainsKey('SkipQuarantineAllowRules') -and (-not $script:guardPolicy.QuarantineRogueAllow)) {
+        $script:SkipQuarantineAllowRules = [switch]::Present
+    }
+    if (-not $PSBoundParameters.ContainsKey('SkipStaleProxyHeal') -and (-not $script:guardPolicy.AutoHealStaleProxy)) {
+        $script:SkipStaleProxyHeal = [switch]::Present
+    }
 }
-if (-not $PSBoundParameters.ContainsKey('DnsServer')) {
-    if ($guardPolicy.StrictNrptDoh) { $DnsServer = '1.1.1.1' }
-    elseif ($guardPolicy.DnsServer) { $DnsServer = $guardPolicy.DnsServer }
-}
-if (-not $PSBoundParameters.ContainsKey('DisableAutoNodeSync') -and (-not $guardPolicy.AutoNodeSync)) {
-    $DisableAutoNodeSync = [switch]::Present
-}
-if (-not $PSBoundParameters.ContainsKey('SkipQuarantineAllowRules') -and (-not $guardPolicy.QuarantineRogueAllow)) {
-    $SkipQuarantineAllowRules = [switch]::Present
-}
-if (-not $PSBoundParameters.ContainsKey('SkipStaleProxyHeal') -and (-not $guardPolicy.AutoHealStaleProxy)) {
-    $SkipStaleProxyHeal = [switch]::Present
-}
+
+$script:guardPolicy = Get-GuardPolicy
+Apply-GuardPolicyToScriptVars
 
 if (-not $V2rayNRoot) {
     if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
@@ -1437,7 +1444,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>AI-Net-Guard v5.8.9 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
+    <Description>AI-Net-Guard v5.9.0 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
@@ -1481,6 +1488,12 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 }
 
 function Install-WatchdogTasks {
+    # Security boundary (#01): verify install ACL before registering any SYSTEM task directly.
+    $aclIssues = @(Get-GuardInstallAclIssues -Path $Root)
+    if ($aclIssues.Count -gt 0) {
+        throw ('Refusing to register SYSTEM watchdog tasks on untrusted install ACL: ' + ($aclIssues -join '; ') + '. Run 13-harden-acl.ps1 first.')
+    }
+
     $modePath = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '07-mode.ps1')) { Join-Path (Join-Path $Root 'scripts') '07-mode.ps1' } else { Join-Path $Root '07-mode.ps1' }
     if (-not (Test-Path -LiteralPath $modePath)) { throw ('missing: ' + $modePath) }
 
@@ -1669,8 +1682,11 @@ function Show-Status {
     else { 'stopped' }
 
     Write-Host ''
-    Write-Host '=== AI-Net-Guard v5.8.9 Status (read-only) ===' -ForegroundColor Cyan
+    Write-Host '=== AI-Net-Guard v5.9.0 Status (read-only) ===' -ForegroundColor Cyan
     Write-Host ('TUN : ' + $tunLabel + '   core : ' + $coreLabel)
+    if (Test-Path -LiteralPath $protectedLockFile) {
+        Write-Host '  Protected lock    : ACTIVE (backup\protected-lock.flag - Auto tasks keep CN direct disabled)' -ForegroundColor Yellow
+    }
     if (Test-Path -LiteralPath $policyFile) {
         $polCol = if ($guardPolicy.PolicyHealth -in @('ok', 'default')) { 'Cyan' } else { 'Yellow' }
         Write-Host ('  policy preset     : ' + $guardPolicy.Preset + ' (guard-policy.json active)') -ForegroundColor $polCol
@@ -1869,7 +1885,7 @@ function Show-Status {
 }
 
 function Invoke-UpgradeV54 {
-    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.8.9 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
+    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.9.0 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
 
     # 1. Backfill new rollback fields into existing DNS baseline JSON without altering original values
     $bf = Join-Path $Root 'backup\baseline.json'
@@ -1977,59 +1993,89 @@ function Invoke-UpgradeV54 {
 }
 
 # ---------------------------------------------------------------- task / status dispatch
-if ($RemoveTasks) {
-    try { Stop-WatchdogTasksAndProcesses }
-    catch { Write-Host ('[!] task removal error: ' + $_.Exception.Message) -ForegroundColor Red }
-    $leftTasks = @(Get-ScheduledTask -TaskName 'AI-Guard-Mode-*' -ErrorAction SilentlyContinue)
-    if ($leftTasks.Count -gt 0) {
-        Write-Host ('[!] still registered: ' + (($leftTasks | ForEach-Object { $_.TaskName }) -join ', ')) -ForegroundColor Red
-        Write-Host '    this normally means the shell is not elevated (tasks are owned by SYSTEM).' -ForegroundColor Yellow
-        exit 3
-    }
-    exit 0
-}
-if ($InstallTasks) {
-    # Registration errors are non-terminating under ErrorActionPreference=Continue,
-    # so success must be proven by reading the tasks back, not by the absence of an
-    # exception. A non-zero exit here is what 14-apply-policy.ps1 and
-    # 17-autorepair-task.ps1 report as a failure.
-    try { Install-WatchdogTasks }
-    catch {
-        Write-Host ('[!] task registration failed: ' + $_.Exception.Message) -ForegroundColor Red
-        exit 3
-    }
-    $evOk = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Event' -ErrorAction SilentlyContinue
-    $wdOk = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Watcher' -ErrorAction SilentlyContinue
-    $fbOk = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Fallback' -ErrorAction SilentlyContinue
-    if (-not $fbOk -or (-not $evOk -and -not $wdOk)) {
-        Write-Host ('[!] task registration incomplete (event=' + [bool]$evOk + ', watcher=' + [bool]$wdOk + ', fallback=' + [bool]$fbOk + ')') -ForegroundColor Red
-        Write-Host '    this normally means the shell is not elevated (tasks run as SYSTEM).' -ForegroundColor Yellow
-        exit 3
-    }
-    exit 0
-}
 if ($Status) {
     Show-Status
     exit 0
 }
-if ($Upgrade) {
-    Invoke-UpgradeV54
-}
 
-if ($OnNetworkEvent) {
-    # Brief settle so Wintun interface bring-up finishes reaching OperationalStatus=Up
-    Start-Sleep -Milliseconds 350
-}
+$scriptExitCode = 0
+$handledEarly = $false
+$modeWriteLock = Enter-GuardWriteLock -TimeoutMs 30000
+try {
+    # Security boundary (#03): re-read policy inside the cross-process write lock so every
+    # mutating decision observes the latest committed guard-policy.json.
+    $script:guardPolicy = Get-GuardPolicy
+    Apply-GuardPolicyToScriptVars
+    $requiredRules = @('AI-Guard-Allow-TUN', 'AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-DoH-Ali', 'AI-Guard-Allow-DHCP')
+    if ($guardPolicy.AllowLan) { $requiredRules += 'AI-Guard-Allow-LAN' }
 
-# ---------------------------------------------------------------- geo refresh (fast timestamp check)
-$geoFile = Join-Path $V2rayNRoot 'bin\geoip-only-cn-private.dat'
-if (-not (Test-Path -LiteralPath $geoFile)) { $geoFile = Join-Path $V2rayNRoot 'bin\geoip.dat' }
-$refresher = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '11-geo-cn.ps1')) { Join-Path (Join-Path $Root 'scripts') '11-geo-cn.ps1' } else { Join-Path $Root '11-geo-cn.ps1' }
-if ((Test-Path -LiteralPath $refresher) -and
-    ((-not (Test-Path -LiteralPath $cnList)) -or ((Test-Path -LiteralPath $geoFile) -and ((Get-Item -LiteralPath $geoFile).LastWriteTimeUtc -gt (Get-Item -LiteralPath $cnList).LastWriteTimeUtc)))) {
-    try { & $refresher -Root $Root -V2rayNRoot $V2rayNRoot -GeoFile $geoFile -OutFile $cnList -Quiet }
-    catch { Say ('    CN list refresh failed (keeping old list): ' + $_.Exception.Message) }
-}
+    # Bootstrap last-good once on already-deployed healthy hosts without touching it on reads.
+    $lastGoodBootstrapPath = Join-Path $Root 'backup\guard-policy.last-good.json'
+    if (($guardPolicy.PolicyHealth -eq 'ok') -and (Test-Path -LiteralPath $policyFile) -and (-not (Test-Path -LiteralPath $lastGoodBootstrapPath))) {
+        try { Save-GuardPolicyLastGood -PolicyPath $policyFile -LastGoodPath $lastGoodBootstrapPath } catch { }
+    }
+
+    if ($ClearProtectedLock -and (Test-Path -LiteralPath $protectedLockFile)) {
+        Remove-Item -LiteralPath $protectedLockFile -Force -ErrorAction SilentlyContinue
+        Write-MonitorLog 'cleared Protected mode lock (backup\protected-lock.flag removed)'
+        Say '[+] cleared Protected mode lock'
+    }
+
+    if ($RemoveTasks) {
+        try { Stop-WatchdogTasksAndProcesses }
+        catch { Write-Host ('[!] task removal error: ' + $_.Exception.Message) -ForegroundColor Red }
+        $leftTasks = @(Get-ScheduledTask -TaskName 'AI-Guard-Mode-*' -ErrorAction SilentlyContinue)
+        if ($leftTasks.Count -gt 0) {
+            Write-Host ('[!] still registered: ' + (($leftTasks | ForEach-Object { $_.TaskName }) -join ', ')) -ForegroundColor Red
+            Write-Host '    this normally means the shell is not elevated (tasks are owned by SYSTEM).' -ForegroundColor Yellow
+            $scriptExitCode = 3
+        }
+        $handledEarly = $true
+    }
+    elseif ($InstallTasks) {
+        # Registration errors are non-terminating under ErrorActionPreference=Continue,
+        # so success must be proven by reading the tasks back, not by the absence of an
+        # exception. A non-zero exit here is what 14-apply-policy.ps1 and
+        # 17-autorepair-task.ps1 report as a failure.
+        try { Install-WatchdogTasks }
+        catch {
+            Write-Host ('[!] task registration failed: ' + $_.Exception.Message) -ForegroundColor Red
+            $scriptExitCode = 3
+            $handledEarly = $true
+        }
+        if (-not $handledEarly) {
+            $evOk = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Event' -ErrorAction SilentlyContinue
+            $wdOk = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Watcher' -ErrorAction SilentlyContinue
+            $fbOk = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Fallback' -ErrorAction SilentlyContinue
+            if (-not $fbOk -or (-not $evOk -and -not $wdOk)) {
+                Write-Host ('[!] task registration incomplete (event=' + [bool]$evOk + ', watcher=' + [bool]$wdOk + ', fallback=' + [bool]$fbOk + ')') -ForegroundColor Red
+                Write-Host '    this normally means the shell is not elevated (tasks run as SYSTEM).' -ForegroundColor Yellow
+                $scriptExitCode = 3
+            }
+            $handledEarly = $true
+        }
+    }
+
+    if (-not $handledEarly) {
+        if ($Upgrade) {
+            Invoke-UpgradeV54
+        }
+
+        if ($OnNetworkEvent) {
+            # Brief settle so Wintun interface bring-up finishes reaching OperationalStatus=Up
+            Start-Sleep -Milliseconds 350
+        }
+
+        # ---------------------------------------------------------------- geo refresh (fast timestamp check)
+        $geoFile = Join-Path $V2rayNRoot 'bin\geoip-only-cn-private.dat'
+        if (-not (Test-Path -LiteralPath $geoFile)) { $geoFile = Join-Path $V2rayNRoot 'bin\geoip.dat' }
+        $refresher = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '11-geo-cn.ps1')) { Join-Path (Join-Path $Root 'scripts') '11-geo-cn.ps1' } else { Join-Path $Root '11-geo-cn.ps1' }
+        if ((Test-Path -LiteralPath $refresher) -and
+            ((-not (Test-Path -LiteralPath $cnList)) -or ((Test-Path -LiteralPath $geoFile) -and ((Get-Item -LiteralPath $geoFile).LastWriteTimeUtc -gt (Get-Item -LiteralPath $cnList).LastWriteTimeUtc)))) {
+            try { & $refresher -Root $Root -V2rayNRoot $V2rayNRoot -GeoFile $geoFile -OutFile $cnList -Quiet }
+            catch { Say ('    CN list refresh failed (keeping old list): ' + $_.Exception.Message) }
+        }
+    }
 
 # ---------------------------------------------------------------- static state (zero-CIM fast path when healthy)
 function Test-ShieldDriftFast($Analysis, $PhysNics) {
@@ -2963,9 +3009,7 @@ function Ensure-Guard {
 }
 
 # ---------------------------------------------------------------- mode dispatch
-$scriptExitCode = 0
-$modeWriteLock = Enter-GuardWriteLock -TimeoutMs 30000
-try {
+if (-not $handledEarly) {
     if ($guardPolicy.PolicyWarning) {
         Write-MonitorLog ('WARNING: ' + $guardPolicy.PolicyWarning)
     }
@@ -2973,13 +3017,25 @@ try {
     $prevState = Read-PrevState
     $prevTun = if ($prevState -and $null -ne $prevState.TunUp) { [bool]$prevState.TunUp } else { $null }
     $tunUp = Test-TunUp
+    $protectedLockActive = (Test-Path -LiteralPath $protectedLockFile)
 
-    if ($Mode -eq 'Protected') {
-        Say '[+] PROTECTED: default deny, CN allow disabled (fail closed)'
+    if ($Mode -eq 'Protected' -or $protectedLockActive) {
+        if ($Mode -eq 'Protected') {
+            $lockDir = Split-Path -Parent $protectedLockFile
+            if ($lockDir -and -not (Test-Path -LiteralPath $lockDir)) {
+                New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+            }
+            [System.IO.File]::WriteAllText($protectedLockFile, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+            Say '[+] PROTECTED: default deny, CN allow disabled (fail closed, persisted until -ClearProtectedLock or policy apply)'
+            Write-MonitorLog 'mode -> Protected (CN allow disabled, fail closed; protected-lock.flag written)'
+        }
+        else {
+            Say '[+] PROTECTED (locked): backup\protected-lock.flag active - keeping CN allow disabled (fail closed)'
+            Write-MonitorLog 'Protected lock active (backup\protected-lock.flag); keeping CN direct disabled (pass -ClearProtectedLock or apply policy to release)'
+        }
         Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Block -Enabled True
         Disable-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
         Write-State -Label 'Protected' -CnEnabled $false -Sig '' -TunState $tunUp
-        Write-MonitorLog 'mode -> Protected (CN allow disabled, fail closed)'
         $scriptExitCode = 0
     }
     else {
@@ -3103,6 +3159,7 @@ try {
             }
         }
     }
+}
 }
 finally {
     Exit-GuardWriteLock $modeWriteLock

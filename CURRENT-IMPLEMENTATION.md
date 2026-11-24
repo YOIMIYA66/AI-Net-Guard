@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.8.9 · P0 ACL/回滚/退出码加固 + Fail-Closed 策略 + 跨进程写锁）
+# AI-Net-Guard 实现方案与持续审查文档（v5.9.0 · 轻量安全收口：全入口 ACL/Global 写锁、Fail-Closed 策略与回滚保护、Protected 持久化、GUI 哈希增量释放）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.8.9 正式版**（修复 `10-sync-node-rule.ps1` 漏传 `-BlockPhysicalIpv6`，抽离 `scripts/lib-guard-common.ps1` 补齐递归 ACL+ReparsePoint 校验与先锁 ACL 再装 SYSTEM 任务、`09-rollback.ps1` 基线保留与错误拒绝、`14-apply-policy.ps1` 子进程退出码严格校验与延后取消回滚、`Read-GuardPolicyStrict` Fail-Closed+`last-good` 兜底、跨进程 Mutex 写锁、严格 CN CIDR 校验及任务健康严格判定，门禁扩至 45 条，详见 16.15）
+> 版本状态：**v5.9.0 正式版**（保持单 EXE 零常驻轻量架构，补齐 v5.8.9 第二轮复审 10 项细节：全入口 ACL 前置与 `Global\` 强制写锁、读写锁前移至读取策略前、已部署主机缺策略 Fail-Closed 与 `{}`/`null` 拒绝、成功后才更新 `last-good`、回滚禁用静默放开出站并补齐 `-Auto`/按基线恢复 IPv6/错误不删元数据、`AI-Guard-Test-Rollback` 注销回读校验、GUI Mutex+SHA-256 增量原子替换、`02-killswitch` 复用严格 CIDR、`Protected` 锁持久化，门禁扩至 49 条含真实双进程互斥测试，详见 16.16）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -567,7 +567,7 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 
 #### 16.9.3 P1：回归门禁进构建，且测试脚本不进发行物
 
-新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12），v5.8.7 起为 33 条（见 16.13），v5.8.8 为 39 条（见 16.14），v5.8.9 扩至 45 条（见 16.15）。）
+新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12），v5.8.7 起为 33 条（见 16.13），v5.8.8 为 39 条（见 16.14），v5.8.9 扩至 45 条（见 16.15），v5.9.0 扩至 49 条（见 16.16）。）
 
 #### 16.9.4 第二轮 review 修掉的 6 处
 
@@ -796,3 +796,30 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
    - **P1 #11（严格 CN CIDR 校验）**：`Get-ValidatedCnPrefixes` 使用 `IPAddress.TryParse`、前缀 `/8../32`、排除 `0/10/127/169.254/172.16-31/192.168/224+` 并去重归一化；
    - **P2 #12（任务健康严格判定）**：`17-autorepair-task.ps1` 仅在 `Ready`/`Running` 且上次结果码正常（`0`/`267009`/`267011`）时判为健康，`watchdog.ps1` 仅在 `$code -eq 0` 时记 `ok`。
 4. **文档与门禁同步**：更新 `docs/REPO-LAYOUT.md` 版本索引、`README_EN.md`（区分 `PASSED` 与 `PASSED WITH CAVEAT`）、`lib-foreign-block.ps1` 注释；`tests/test-stun-ports.ps1` 扩至 45 条断言。
+
+---
+
+### 16.16 v5.9.0：轻量安全收口（全入口 ACL/Global 锁、策略与回滚 Fail-Closed、Protected 持久化、GUI 增量原子释放与双进程门禁，2026-11-24）
+
+延续轻量级个人安全工具定位（不拆 20 个模块、不重写 MVVM、不引入服务/驱动/第三方依赖），完成 v5.8.9 第二轮复审全部 10 项加固及额外参数绑定缺陷修复：
+
+1. **P0 #01 全入口 SYSTEM 任务 ACL 前置校验**：
+   - `lib-guard-common.ps1` `Get-GuardInstallAclIssues` 补充非盘符根父目录检查，并将 `scripts\` 枚举失败记为显式 ACL 错误不再吞异常；
+   - `02-killswitch.ps1` 在注册 SYSTEM 任务 `AI-Guard-Test-Rollback` 前校验 ACL（未锁时先调用 `13-harden-acl.ps1 -SkipVerification -SkipRegression` 锁定并复验，仍异常则中止）；
+   - `07-mode.ps1` `Install-WatchdogTasks` 函数入口强制校验 `Get-GuardInstallAclIssues`，防止直接调用 `-InstallTasks` / `-Upgrade` 绕过 ACL 门禁。
+2. **P1 #02/#03 跨进程 `Global\` 写锁收敛**：
+   - `Enter-GuardWriteLock` 移除静默退化到 `Local\` 的分脑逻辑，强制使用带 `Administrators + SYSTEM` `MutexSecurity` 的 `Global\AI-Net-Guard-PolicyEngine`，并为 `AI_GUARD_LOCK_TOKEN` 增加存活宿主 PID 与锁名校验；
+   - `07-mode.ps1`（除只读 `-Status`）与 `14-apply-policy.ps1` 均改为**先抢锁再读取 `guard-policy.json`**，将 `-RemoveTasks` / `-InstallTasks` / `-Upgrade` / GeoIP 刷新全部纳入同一持锁事务。
+3. **P1 #04 策略加载 Fail-Closed 与后置保存 `last-good`**：
+   - `ConvertFrom-StrictPolicyJson` 拒绝空 `{}` 与显式 `null` 布尔/字符串字段；
+   - `Read-GuardPolicyStrict` 新增 `-IsDeployed`（检测到 `baseline.json`），已部署主机缺失 `guard-policy.json` 时优先恢复 `last-good`，均不可用时强制 Fail-Closed；取消“一读就覆盖 `last-good`”，仅在 `14-apply-policy.ps1` 零错误完成应用后调用 `Save-GuardPolicyLastGood`；
+   - `gui/Models/GuardPolicy.cs` `SaveToFile` 改为临时文件 + `File.Replace` 原子落盘。
+4. **P1 #05/#06 回滚基线 Fail-Closed、`[switch]$Auto` 修复与元数据保护**：
+   - `09-rollback.ps1` 补齐 `[switch]$Auto`（修复 `AI-Guard-Test-Rollback` 携带 `-Auto` 触发时的参数绑定失败），并规定基线导入失败或基线缺失时**不再静默改写 `DefaultOutboundAction Allow`**，仅在显式指定 `-ForceAllowOutbound`（或使用 `Emergency-Rescue.bat`）时放开出站；
+   - 收集关键 DNS / NRPT / DoH / 任务 / 注册表操作异常至 `$rollbackErrors`，按 `dnsBackup` + `hotplug-ipv6.json` 逐网卡还原 `ms_tcpip6` 绑定；有错误时完整保留 `guard-policy.json` 与动态元数据并返回退出码 `1`。
+5. **P1 #07 回滚任务注销严格核验**：`14-apply-policy.ps1` 注销 `AI-Guard-Test-Rollback` 启用 `-ErrorAction Stop` 并回查 `Get-ScheduledTask`，仍残留即计入 `$applyErrors`（`exit 5`）。
+6. **P2 #08/#09/#10 GUI 增量同步、CN 严格校验与 `Protected` 持久化**：
+   - `gui/Services/PayloadAndRunnerService.cs` 持有 `Global\AI-Net-Guard-PolicyEngine` 互斥锁，通过 SHA-256 跳过未变化组件，变更项经临时文件 + `File.Replace` 原子更新；
+   - `02-killswitch.ps1` 接入 `lib-guard-common.ps1` `Get-ValidatedCnPrefixes` 校验 CN 网段；
+   - `07-mode.ps1` 新增 `backup\protected-lock.flag` 持久化与 `-ClearProtectedLock`（`14-apply-policy.ps1` 启用 `AllowCnDirect` 或 `09-rollback.ps1` 清理时自动解除），防止后台事件任务在人工锁定后自动恢复国内直连。
+7. **门禁验证扩展**：`tests/test-stun-ports.ps1` 扩至 49 条断言，含真实双进程 `powershell.exe` `Global\` Mutex 争用超时与释放接管实测。

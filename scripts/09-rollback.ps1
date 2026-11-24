@@ -1,7 +1,8 @@
-# AI-Net-Guard v5.8.9 - rollback & baseline restore (100% thorough uninstaller)
+# AI-Net-Guard v5.9.0 - rollback & baseline restore (100% thorough uninstaller)
 [CmdletBinding()]
 param(
     [string]$Root = 'C:\AI-Net-Guard',
+    [switch]$Auto,
     [switch]$KeepAclLocked,
     [switch]$ForceAllowOutbound
 )
@@ -23,7 +24,7 @@ function Log ($msg) {
 }
 
 $DohServer = '223.5.5.5'
-Log 'AI-Net-Guard v5.8.9 thorough rollback started'
+Log ('AI-Net-Guard v5.9.0 thorough rollback started' + $(if ($Auto) { ' (auto-rollback trigger)' } else { '' }))
 Log ('user: ' + [System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
 
 # ------------------------------------------------------------------ admin check
@@ -51,10 +52,18 @@ $allTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $
 foreach ($tn in $allTasks) {
     try {
         Stop-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction Stop
+        $still = Get-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue
+        if ($still) {
+            throw ('scheduled task still present after Unregister-ScheduledTask: ' + $tn)
+        }
         Log ('removed scheduled task: ' + $tn)
     }
-    catch { Log ('warning removing task ' + $tn + ': ' + $_.Exception.Message) }
+    catch {
+        $msg = 'failed removing task ' + $tn + ': ' + $_.Exception.Message
+        $rollbackErrors.Add($msg)
+        Log ('ERROR: ' + $msg)
+    }
 }
 
 try {
@@ -103,7 +112,8 @@ $baseline = Get-Baseline
 
 # ------------------------------------------------------------------ 1. firewall restoration
 $fwImported = $false
-if ($baseline.Firewall -and (Test-Path -LiteralPath $baseline.Firewall)) {
+$hasFwBackupFile = [bool]($baseline.Firewall -and (Test-Path -LiteralPath $baseline.Firewall))
+if ($hasFwBackupFile) {
     Log ('importing firewall backup: ' + $baseline.Firewall)
     $out = netsh advfirewall import "$($baseline.Firewall)" 2>&1
     $impRc = $LASTEXITCODE
@@ -118,25 +128,27 @@ if ($baseline.Firewall -and (Test-Path -LiteralPath $baseline.Firewall)) {
         Log ('ERROR: ' + $errMsg)
     }
 }
+elseif (-not $ForceAllowOutbound) {
+    $errMsg = 'firewall baseline file missing; cannot restore exact pre-install firewall policy without -ForceAllowOutbound'
+    $rollbackErrors.Add($errMsg)
+    Log ('ERROR: ' + $errMsg)
+}
 
-# Only override default profile actions if no baseline could be imported OR -ForceAllowOutbound
-# (emergency rescue) was explicitly requested. Otherwise importing a pre-existing Block baseline
-# would be silently wiped out to Allow.
-if ((-not $fwImported) -or $ForceAllowOutbound) {
+# Only override default profile actions when -ForceAllowOutbound (emergency rescue) is
+# explicitly specified. If netsh import failed or the baseline is missing, never silently
+# force outbound Allow (#05).
+if ($ForceAllowOutbound) {
     try {
-        if ($ForceAllowOutbound) {
-            Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultInboundAction NotConfigured -DefaultOutboundAction Allow
-            Log 'emergency override (-ForceAllowOutbound): set DefaultInboundAction=NotConfigured, DefaultOutboundAction=Allow'
-        }
-        else {
-            Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Allow
-            Log 'no firewall baseline imported; restored DefaultOutboundAction=Allow across Domain, Private, Public'
-        }
+        Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultInboundAction NotConfigured -DefaultOutboundAction Allow -ErrorAction Stop
+        Log 'emergency override (-ForceAllowOutbound): set DefaultInboundAction=NotConfigured, DefaultOutboundAction=Allow'
     }
     catch {
         $rollbackErrors.Add('Set-NetFirewallProfile failed: ' + $_.Exception.Message)
-        Log ('warning setting firewall profile: ' + $_.Exception.Message)
+        Log ('ERROR setting firewall profile: ' + $_.Exception.Message)
     }
+}
+elseif (-not $fwImported) {
+    Log 'WARNING: leaving firewall profile DefaultOutboundAction untouched (pass -ForceAllowOutbound or run Emergency-Rescue.bat to force-open outbound)'
 }
 
 # Re-enable original outbound allow rules
@@ -147,11 +159,22 @@ if ($baseline.AllowRules -and (Test-Path -LiteralPath $baseline.AllowRules)) {
         $items = @($rawRules | ConvertFrom-Json)
         $n = 0
         foreach ($i in $items) {
-            try { Enable-NetFirewallRule -Name $i.Name -ErrorAction SilentlyContinue; $n++ } catch { }
+            try {
+                if ($i.Name -and (Get-NetFirewallRule -Name $i.Name -ErrorAction SilentlyContinue)) {
+                    Enable-NetFirewallRule -Name $i.Name -ErrorAction Stop
+                    $n++
+                }
+            }
+            catch {
+                $rollbackErrors.Add('Enable-NetFirewallRule failed for ' + $i.Name + ': ' + $_.Exception.Message)
+            }
         }
         Log ('re-enabled: ' + $n + ' / ' + $items.Count)
     }
-    catch { Log ('warning reading allow-rule list: ' + $_.Exception.Message) }
+    catch {
+        $rollbackErrors.Add('reading allow-rule list failed: ' + $_.Exception.Message)
+        Log ('ERROR reading allow-rule list: ' + $_.Exception.Message)
+    }
 }
 
 $autoQuarantine = Join-Path $BackupDir 'auto-disabled-outbound-allow.json'
@@ -161,11 +184,21 @@ if (Test-Path -LiteralPath $autoQuarantine) {
         $qItems = @($rawQ | ConvertFrom-Json)
         $qn = 0
         foreach ($qi in $qItems) {
-            try { Enable-NetFirewallRule -Name $qi.Name -ErrorAction SilentlyContinue; $qn++ } catch { }
+            try {
+                if ($qi.Name -and (Get-NetFirewallRule -Name $qi.Name -ErrorAction SilentlyContinue)) {
+                    Enable-NetFirewallRule -Name $qi.Name -ErrorAction Stop
+                    $qn++
+                }
+            }
+            catch {
+                $rollbackErrors.Add('re-enabling auto-quarantined rule ' + $qi.Name + ' failed: ' + $_.Exception.Message)
+            }
         }
         Log ('re-enabled auto-quarantined rules: ' + $qn + ' / ' + $qItems.Count)
     }
-    catch { }
+    catch {
+        $rollbackErrors.Add('reading auto-quarantined rule list failed: ' + $_.Exception.Message)
+    }
 }
 
 # Remove ALL AI-Guard firewall rules
@@ -174,24 +207,30 @@ try {
           @(Get-NetFirewallRule -Name '*AI-Guard*' -ErrorAction SilentlyContinue) |
           Select-Object -Unique
     if ($ai.Count -gt 0) {
-        $ai | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        $ai | Remove-NetFirewallRule -ErrorAction Stop
         Log ('removed AI-Guard firewall rules: ' + $ai.Count)
     }
     else {
         Log 'no AI-Guard firewall rules found'
     }
 }
-catch { Log ('warning removing AI-Guard rules: ' + $_.Exception.Message) }
+catch {
+    $rollbackErrors.Add('removing AI-Guard firewall rules failed: ' + $_.Exception.Message)
+    Log ('ERROR removing AI-Guard rules: ' + $_.Exception.Message)
+}
 
 # ------------------------------------------------------------------ 2. NRPT & DoH cleanup
 try {
     $nrpt = @(Get-DnsClientNrptRule -ErrorAction SilentlyContinue | Where-Object { $_.Comment -like '*AI-Guard*' -or $_.Namespace -eq '.' })
     if ($nrpt.Count -gt 0) {
-        $nrpt | Remove-DnsClientNrptRule -Force -ErrorAction SilentlyContinue
+        $nrpt | Remove-DnsClientNrptRule -Force -ErrorAction Stop
         Log ('removed NRPT rules: ' + $nrpt.Count)
     }
 }
-catch { Log ('warning removing NRPT: ' + $_.Exception.Message) }
+catch {
+    $rollbackErrors.Add('removing NRPT rules failed: ' + $_.Exception.Message)
+    Log ('ERROR removing NRPT: ' + $_.Exception.Message)
+}
 
 # Remove added DoH servers
 $dohCleanups = @('223.5.5.5', '1.1.1.1', '8.8.8.8', '9.9.9.9')
@@ -199,11 +238,14 @@ foreach ($srv in $dohCleanups) {
     try {
         $cur = Get-DnsClientDohServerAddress -ServerAddress $srv -ErrorAction SilentlyContinue
         if ($cur) {
-            Remove-DnsClientDohServerAddress -ServerAddress $srv -ErrorAction SilentlyContinue
+            Remove-DnsClientDohServerAddress -ServerAddress $srv -ErrorAction Stop
             Log ('removed DoH server: ' + $srv)
         }
     }
-    catch { }
+    catch {
+        $rollbackErrors.Add('removing DoH server ' + $srv + ' failed: ' + $_.Exception.Message)
+        Log ('ERROR removing DoH server ' + $srv + ': ' + $_.Exception.Message)
+    }
 }
 
 # ------------------------------------------------------------------ 3. DNS restoration
@@ -220,7 +262,8 @@ if ($baseline.Dns -and (Test-Path -LiteralPath $baseline.Dns)) {
             $dnsBackup = $rawDns | ConvertFrom-Json
         }
         catch {
-            Log ('warning reading DNS backup: ' + $_.Exception.Message)
+            $rollbackErrors.Add('reading DNS backup failed: ' + $_.Exception.Message)
+            Log ('ERROR reading DNS backup: ' + $_.Exception.Message)
         }
     }
 }
@@ -231,49 +274,92 @@ if ($dnsBackup -and $dnsBackup.Dns) {
             $exists = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $d.Name }
             if (-not $exists) { continue }
             if ($d.WasStatic -and @($d.Ipv4Servers).Count -gt 0) {
-                Set-DnsClientServerAddress -InterfaceAlias $d.Name -ServerAddresses @($d.Ipv4Servers) -ErrorAction SilentlyContinue
+                Set-DnsClientServerAddress -InterfaceAlias $d.Name -ServerAddresses @($d.Ipv4Servers) -ErrorAction Stop
                 Log ('DNS restored (static): ' + $d.Name + ' -> ' + (@($d.Ipv4Servers) -join ','))
             }
             else {
-                Set-DnsClientServerAddress -InterfaceAlias $d.Name -ResetServerAddresses -ErrorAction SilentlyContinue
+                Set-DnsClientServerAddress -InterfaceAlias $d.Name -ResetServerAddresses -ErrorAction Stop
                 Log ('DNS restored (DHCP): ' + $d.Name)
             }
         }
-        catch { }
+        catch {
+            $rollbackErrors.Add('DNS restore failed on ' + $d.Name + ': ' + $_.Exception.Message)
+            Log ('ERROR restoring DNS on ' + $d.Name + ': ' + $_.Exception.Message)
+        }
     }
 }
 else {
     Log 'resetting active network adapters to DHCP DNS'
     foreach ($a in (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun' })) {
-        try { Set-DnsClientServerAddress -InterfaceAlias $a.Name -ResetServerAddresses -ErrorAction SilentlyContinue } catch { }
+        try { Set-DnsClientServerAddress -InterfaceAlias $a.Name -ResetServerAddresses -ErrorAction Stop }
+        catch {
+            $rollbackErrors.Add('DNS DHCP reset failed on ' + $a.Name + ': ' + $_.Exception.Message)
+            Log ('ERROR resetting DNS on ' + $a.Name + ': ' + $_.Exception.Message)
+        }
     }
 }
 
 # ------------------------------------------------------------------ 4. IPv6 & prefix policy restoration
-# Re-enable IPv6 on all physical network adapters
+# Restore ms_tcpip6 binding per physical adapter from baseline (plus hotplug-ipv6.json).
+$origIpv6Map = @{}
+if ($dnsBackup -and $dnsBackup.Dns) {
+    foreach ($d in @($dnsBackup.Dns)) {
+        if ($d.Name -and ($d.PSObject.Properties.Name -contains 'Ipv6Binding') -and $null -ne $d.Ipv6Binding) {
+            $origIpv6Map[[string]$d.Name] = [bool]$d.Ipv6Binding
+        }
+    }
+}
+$hpNames = @()
+$hpFile = Join-Path $BackupDir 'hotplug-ipv6.json'
+if (Test-Path -LiteralPath $hpFile) {
+    try { $hpNames = @(Get-Content -LiteralPath $hpFile -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { }
+}
+$hasIpv6Baseline = ($origIpv6Map.Count -gt 0) -or ($hpNames.Count -gt 0)
 foreach ($a in (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun' })) {
     try {
-        Enable-NetAdapterBinding -Name $a.Name -ComponentID 'ms_tcpip6' -ErrorAction SilentlyContinue
+        if ($origIpv6Map.ContainsKey($a.Name)) {
+            if ($origIpv6Map[$a.Name]) {
+                Enable-NetAdapterBinding -Name $a.Name -ComponentID 'ms_tcpip6' -ErrorAction Stop
+            }
+            else {
+                Disable-NetAdapterBinding -Name $a.Name -ComponentID 'ms_tcpip6' -ErrorAction Stop
+            }
+        }
+        elseif ($hpNames -contains $a.Name) {
+            Enable-NetAdapterBinding -Name $a.Name -ComponentID 'ms_tcpip6' -ErrorAction Stop
+        }
+        elseif (-not $hasIpv6Baseline) {
+            Enable-NetAdapterBinding -Name $a.Name -ComponentID 'ms_tcpip6' -ErrorAction Stop
+        }
     }
-    catch { }
+    catch {
+        $rollbackErrors.Add('IPv6 binding restore failed on ' + $a.Name + ': ' + $_.Exception.Message)
+        Log ('ERROR restoring IPv6 binding on ' + $a.Name + ': ' + $_.Exception.Message)
+    }
 }
-Log 're-enabled IPv6 bindings on physical adapters'
+Log 'restored IPv6 bindings on physical adapters per baseline'
 
-# Restore Tcpip6 DisabledComponents to Windows default (remove property or set to 0)
+# Restore Tcpip6 DisabledComponents to Windows default (remove property or set to original)
 try {
     $tcpip6Key = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
     if (Test-Path -LiteralPath $tcpip6Key) {
         if ($dnsBackup -and $dnsBackup.PSObject.Properties.Name -contains 'Tcpip6DisabledComponents' -and $null -ne $dnsBackup.Tcpip6DisabledComponents) {
-            New-ItemProperty -Path $tcpip6Key -Name 'DisabledComponents' -Value ([int]$dnsBackup.Tcpip6DisabledComponents) -PropertyType DWord -Force | Out-Null
+            New-ItemProperty -Path $tcpip6Key -Name 'DisabledComponents' -Value ([int]$dnsBackup.Tcpip6DisabledComponents) -PropertyType DWord -Force -ErrorAction Stop | Out-Null
             Log ('restored Tcpip6 DisabledComponents to: ' + $dnsBackup.Tcpip6DisabledComponents)
         }
         else {
-            Remove-ItemProperty -Path $tcpip6Key -Name 'DisabledComponents' -ErrorAction SilentlyContinue
+            $curDcProp = Get-ItemProperty -LiteralPath $tcpip6Key -Name 'DisabledComponents' -ErrorAction SilentlyContinue
+            if ($null -ne $curDcProp) {
+                Remove-ItemProperty -Path $tcpip6Key -Name 'DisabledComponents' -ErrorAction Stop
+            }
             Log 'removed Tcpip6 DisabledComponents (Windows default IPv6 enabled)'
         }
     }
 }
-catch { }
+catch {
+    $rollbackErrors.Add('restoring Tcpip6 DisabledComponents failed: ' + $_.Exception.Message)
+    Log ('ERROR restoring Tcpip6 DisabledComponents: ' + $_.Exception.Message)
+}
 
 # Restore IPv4 prefix policy to Windows standard (precedence 35)
 try {
@@ -282,45 +368,61 @@ try {
         $wantPrec = [int]$dnsBackup.Ipv4PrefixPolicy.Precedence
         $wantLbl = [int]$dnsBackup.Ipv4PrefixPolicy.Label
     }
-    netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 $wantPrec $wantLbl | Out-Null
+    $ppOut = netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 $wantPrec $wantLbl 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw ('netsh prefixpolicy exit=' + $LASTEXITCODE + ' (' + ($ppOut -join ' ') + ')')
+    }
     Log ('restored IPv4 prefix policy: ::ffff:0:0/96 precedence=' + $wantPrec)
 }
-catch { }
+catch {
+    $rollbackErrors.Add('restoring IPv4 prefix policy failed: ' + $_.Exception.Message)
+    Log ('ERROR restoring IPv4 prefix policy: ' + $_.Exception.Message)
+}
 
 # ------------------------------------------------------------------ 5. NTP server restoration
 try {
     $w32TimeKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters'
     if (Test-Path -LiteralPath $w32TimeKey) {
         $targetNtp = if ($dnsBackup -and $dnsBackup.PSObject.Properties.Name -contains 'NtpServer' -and $dnsBackup.NtpServer) { [string]$dnsBackup.NtpServer } else { 'time.windows.com,0x9' }
-        New-ItemProperty -Path $w32TimeKey -Name 'NtpServer' -Value $targetNtp -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $w32TimeKey -Name 'NtpServer' -Value $targetNtp -PropertyType String -Force -ErrorAction Stop | Out-Null
         $w32svc = Get-Service -Name w32time -ErrorAction SilentlyContinue
         if ($w32svc -and $w32svc.Status -eq 'Running') { w32tm /config /update 2>$null | Out-Null }
         Log ('restored NTP server: ' + $targetNtp)
     }
 }
-catch { }
+catch {
+    $rollbackErrors.Add('restoring NTP server failed: ' + $_.Exception.Message)
+    Log ('ERROR restoring NTP server: ' + $_.Exception.Message)
+}
 
 # ------------------------------------------------------------------ 6. LLMNR, mDNS & SMHNR policy removal
 try {
     $key = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
     if (Test-Path -LiteralPath $key) {
-        Remove-ItemProperty -Path $key -Name 'EnableMulticast' -ErrorAction SilentlyContinue
-        Remove-ItemProperty -Path $key -Name 'DisableSmartNameResolution' -ErrorAction SilentlyContinue
+        if ($null -ne (Get-ItemProperty -LiteralPath $key -Name 'EnableMulticast' -ErrorAction SilentlyContinue)) {
+            Remove-ItemProperty -Path $key -Name 'EnableMulticast' -ErrorAction Stop
+        }
+        if ($null -ne (Get-ItemProperty -LiteralPath $key -Name 'DisableSmartNameResolution' -ErrorAction SilentlyContinue)) {
+            Remove-ItemProperty -Path $key -Name 'DisableSmartNameResolution' -ErrorAction Stop
+        }
         Log 'removed LLMNR & SMHNR group policies (Windows defaults restored)'
     }
     $svcKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters'
     if (Test-Path -LiteralPath $svcKey) {
         if ($dnsBackup -and ($dnsBackup.PSObject.Properties.Name -contains 'MdnsEnabled') -and $null -ne $dnsBackup.MdnsEnabled) {
-            New-ItemProperty -Path $svcKey -Name 'EnableMDNS' -Value ([int]$dnsBackup.MdnsEnabled) -PropertyType DWord -Force | Out-Null
+            New-ItemProperty -Path $svcKey -Name 'EnableMDNS' -Value ([int]$dnsBackup.MdnsEnabled) -PropertyType DWord -Force -ErrorAction Stop | Out-Null
             Log ('restored Dnscache EnableMDNS: ' + $dnsBackup.MdnsEnabled)
         }
-        else {
-            Remove-ItemProperty -Path $svcKey -Name 'EnableMDNS' -ErrorAction SilentlyContinue
+        elseif ($null -ne (Get-ItemProperty -LiteralPath $svcKey -Name 'EnableMDNS' -ErrorAction SilentlyContinue)) {
+            Remove-ItemProperty -Path $svcKey -Name 'EnableMDNS' -ErrorAction Stop
             Log 'removed Dnscache EnableMDNS (Windows mDNS default restored)'
         }
     }
 }
-catch { }
+catch {
+    $rollbackErrors.Add('restoring DNS client policies failed: ' + $_.Exception.Message)
+    Log ('ERROR restoring DNS client policies: ' + $_.Exception.Message)
+}
 
 # ------------------------------------------------------------------ 6.5. Browser WebRTC & DoH enterprise policy cleanup
 try {
@@ -377,7 +479,10 @@ try {
         }
     }
 }
-catch { Log ('warning removing WebRTC/DoH browser policy: ' + $_.Exception.Message) }
+catch {
+    $rollbackErrors.Add('restoring WebRTC/DoH browser policy failed: ' + $_.Exception.Message)
+    Log ('ERROR removing WebRTC/DoH browser policy: ' + $_.Exception.Message)
+}
 
 # ------------------------------------------------------------------ 7. WinINET system proxy cleanup
 try {
@@ -442,18 +547,28 @@ if (Test-Path -LiteralPath $bf) {
 
 $pf = Join-Path $BackupDir 'guard-policy.json'
 if (Test-Path -LiteralPath $pf) {
-    $archivedPol = Join-Path $BackupDir ('guard-policy-rolledback-' + $stamp + '.json')
-    Move-Item -LiteralPath $pf -Destination $archivedPol -Force -ErrorAction SilentlyContinue
-    Log ('archived guard-policy.json -> ' + (Split-Path -Leaf $archivedPol))
+    if ($rollbackErrors.Count -eq 0) {
+        $archivedPol = Join-Path $BackupDir ('guard-policy-rolledback-' + $stamp + '.json')
+        Move-Item -LiteralPath $pf -Destination $archivedPol -Force -ErrorAction SilentlyContinue
+        Log ('archived guard-policy.json -> ' + (Split-Path -Leaf $archivedPol))
+    }
+    else {
+        Log 'WARNING: preserving guard-policy.json because rollback encountered errors'
+    }
 }
 
-# Remove dynamic metadata files
-foreach ($metaFile in @('mode-state.json', 'node-sync.meta', 'node-routes.meta', 'foreign-block.meta', 'cn-rule.sig', 'cn-file.meta', 'auto-disabled-outbound-allow.json', 'hotplug-ipv6.json', 'b1-guard.meta', 'guard-policy.last-good.json')) {
-    $mf = Join-Path $BackupDir $metaFile
-    if (Test-Path -LiteralPath $mf) {
-        Remove-Item -LiteralPath $mf -Force -ErrorAction SilentlyContinue
-        Log ('cleaned up metadata: ' + $metaFile)
+# Remove dynamic metadata files only when rollback succeeded cleanly (#06)
+if ($rollbackErrors.Count -eq 0) {
+    foreach ($metaFile in @('mode-state.json', 'node-sync.meta', 'node-routes.meta', 'foreign-block.meta', 'cn-rule.sig', 'cn-file.meta', 'auto-disabled-outbound-allow.json', 'hotplug-ipv6.json', 'b1-guard.meta', 'guard-policy.last-good.json', 'protected-lock.flag', 'v54-migrated.flag')) {
+        $mf = Join-Path $BackupDir $metaFile
+        if (Test-Path -LiteralPath $mf) {
+            Remove-Item -LiteralPath $mf -Force -ErrorAction SilentlyContinue
+            Log ('cleaned up metadata: ' + $metaFile)
+        }
     }
+}
+else {
+    Log 'WARNING: preserving recovery metadata files because rollback encountered errors'
 }
 
 # ------------------------------------------------------------------ 10. Restore directory ACL

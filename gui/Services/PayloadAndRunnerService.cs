@@ -4,7 +4,11 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
+using System.Security.AccessControl;
+using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace AiNetGuard.Gui.Services
@@ -12,12 +16,68 @@ namespace AiNetGuard.Gui.Services
     public static class PayloadAndRunnerService
     {
         public const string PayloadResourceName = "AiNetGuard.Payload.zip";
+        private const string GlobalWriteLockName = @"Global\AI-Net-Guard-PolicyEngine";
 
         public static bool HasEmbeddedPayload()
         {
             using (Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream(PayloadResourceName))
             {
                 return s != null && s.Length > 0;
+            }
+        }
+
+        private static Mutex AcquireGlobalWriteLock(int timeoutMs = 30000)
+        {
+            var identity = WindowsIdentity.GetCurrent();
+            bool isAdmin = identity != null && new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+            var mtxSec = new MutexSecurity();
+            mtxSec.AddAccessRule(new MutexAccessRule(new SecurityIdentifier("S-1-5-32-544"), MutexRights.FullControl, AccessControlType.Allow));
+            mtxSec.AddAccessRule(new MutexAccessRule(new SecurityIdentifier("S-1-5-18"), MutexRights.FullControl, AccessControlType.Allow));
+            if (!isAdmin && identity?.User != null)
+            {
+                mtxSec.AddAccessRule(new MutexAccessRule(identity.User, MutexRights.FullControl, AccessControlType.Allow));
+            }
+
+            bool createdNew;
+            var mtx = new Mutex(false, GlobalWriteLockName, out createdNew, mtxSec);
+            bool acquired = false;
+            try
+            {
+                try
+                {
+                    acquired = mtx.WaitOne(timeoutMs);
+                }
+                catch (AbandonedMutexException)
+                {
+                    acquired = true;
+                }
+                if (!acquired)
+                {
+                    throw new TimeoutException($"等待全局写入锁超时 ({GlobalWriteLockName})");
+                }
+                return mtx;
+            }
+            catch
+            {
+                try { mtx.Dispose(); } catch { }
+                throw;
+            }
+        }
+
+        private static bool BytesSha256MatchFile(byte[] content, string existingPath)
+        {
+            if (!File.Exists(existingPath)) return false;
+            byte[] existingBytes = File.ReadAllBytes(existingPath);
+            if (existingBytes.Length != content.Length) return false;
+            using (var sha = SHA256.Create())
+            {
+                byte[] h1 = sha.ComputeHash(content);
+                byte[] h2 = sha.ComputeHash(existingBytes);
+                for (int i = 0; i < h1.Length; i++)
+                {
+                    if (h1[i] != h2[i]) return false;
+                }
+                return true;
             }
         }
 
@@ -31,7 +91,8 @@ namespace AiNetGuard.Gui.Services
             Directory.CreateDirectory(Path.Combine(installRoot, "logs"));
 
             string fullRoot = Path.GetFullPath(installRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            int extractedCount = 0;
+            int updatedCount = 0;
+            int skippedCount = 0;
 
             using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(PayloadResourceName))
             {
@@ -42,55 +103,93 @@ namespace AiNetGuard.Gui.Services
                     return 0;
                 }
 
-                using (var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: false))
+                Mutex writeLock = AcquireGlobalWriteLock(30000);
+                try
                 {
-                    foreach (ZipArchiveEntry entry in archive.Entries)
+                    int pid = Process.GetCurrentProcess().Id;
+                    using (var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: false))
                     {
-                        if (string.IsNullOrEmpty(entry.Name)) continue;
-
-                        string destPath = Path.GetFullPath(Path.Combine(installRoot, entry.FullName));
-                        if (!destPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
+                        foreach (ZipArchiveEntry entry in archive.Entries)
                         {
-                            continue; // Prevent Zip-Slip
-                        }
+                            if (string.IsNullOrEmpty(entry.Name)) continue;
 
-                        // Preserve newer user-refreshed cn-ipv4.txt if already healthy (>=50KB and newer than embedded entry)
-                        if (string.Equals(entry.Name, "cn-ipv4.txt", StringComparison.OrdinalIgnoreCase) && File.Exists(destPath))
-                        {
-                            var fi = new FileInfo(destPath);
-                            if (fi.Length >= 50000 && fi.LastWriteTimeUtc > entry.LastWriteTime.UtcDateTime)
+                            string destPath = Path.GetFullPath(Path.Combine(installRoot, entry.FullName));
+                            if (!destPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
                             {
+                                continue; // Prevent Zip-Slip
+                            }
+
+                            // Preserve newer user-refreshed cn-ipv4.txt if already healthy (>=50KB and newer than embedded entry)
+                            if (string.Equals(entry.Name, "cn-ipv4.txt", StringComparison.OrdinalIgnoreCase) && File.Exists(destPath))
+                            {
+                                var fi = new FileInfo(destPath);
+                                if (fi.Length >= 50000 && fi.LastWriteTimeUtc > entry.LastWriteTime.UtcDateTime)
+                                {
+                                    skippedCount++;
+                                    continue;
+                                }
+                            }
+
+                            byte[] entryBytes;
+                            using (Stream entryStream = entry.Open())
+                            using (var ms = new MemoryStream())
+                            {
+                                entryStream.CopyTo(ms);
+                                entryBytes = ms.ToArray();
+                            }
+
+                            if (BytesSha256MatchFile(entryBytes, destPath))
+                            {
+                                skippedCount++;
                                 continue;
                             }
-                        }
 
-                        string destDir = Path.GetDirectoryName(destPath);
-                        if (!string.IsNullOrEmpty(destDir) && !Directory.Exists(destDir))
-                        {
-                            Directory.CreateDirectory(destDir);
-                        }
-
-                        if (File.Exists(destPath))
-                        {
-                            FileAttributes attrs = File.GetAttributes(destPath);
-                            if ((attrs & FileAttributes.ReadOnly) != 0)
+                            string destDir = Path.GetDirectoryName(destPath);
+                            if (!string.IsNullOrEmpty(destDir) && !Directory.Exists(destDir))
                             {
-                                File.SetAttributes(destPath, attrs & ~FileAttributes.ReadOnly);
+                                Directory.CreateDirectory(destDir);
                             }
-                        }
 
-                        using (Stream entryStream = entry.Open())
-                        using (var outStream = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.Read))
-                        {
-                            entryStream.CopyTo(outStream);
+                            if (File.Exists(destPath))
+                            {
+                                FileAttributes attrs = File.GetAttributes(destPath);
+                                if ((attrs & FileAttributes.ReadOnly) != 0)
+                                {
+                                    File.SetAttributes(destPath, attrs & ~FileAttributes.ReadOnly);
+                                }
+                            }
+
+                            string tmpPath = destPath + ".tmp." + pid;
+                            try
+                            {
+                                File.WriteAllBytes(tmpPath, entryBytes);
+                                if (File.Exists(destPath))
+                                {
+                                    File.Replace(tmpPath, destPath, null);
+                                }
+                                else
+                                {
+                                    File.Move(tmpPath, destPath);
+                                }
+                            }
+                            catch
+                            {
+                                try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
+                                throw;
+                            }
+                            updatedCount++;
                         }
-                        extractedCount++;
                     }
+                }
+                finally
+                {
+                    try { writeLock.ReleaseMutex(); } catch { }
+                    try { writeLock.Dispose(); } catch { }
                 }
             }
 
-            onLog?.Invoke($"[载荷引擎] 已同步释放 {extractedCount} 个核心防护组件至 {installRoot}");
-            return extractedCount;
+            onLog?.Invoke($"[载荷引擎] 组件同步完成：更新 {updatedCount} 个，跳过未变更 {skippedCount} 个 ({installRoot})");
+            return updatedCount + skippedCount;
         }
 
         public static Task<int> RunPowerShellScriptAsync(

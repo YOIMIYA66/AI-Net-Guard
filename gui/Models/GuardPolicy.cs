@@ -405,7 +405,24 @@ namespace AiNetGuard.Gui.Models
             {
                 Directory.CreateDirectory(dir);
             }
-            File.WriteAllText(filePath, ToJson(), new UTF8Encoding(false));
+            string tmpPath = filePath + ".tmp." + System.Diagnostics.Process.GetCurrentProcess().Id;
+            try
+            {
+                File.WriteAllText(tmpPath, ToJson(), new UTF8Encoding(false));
+                if (File.Exists(filePath))
+                {
+                    File.Replace(tmpPath, filePath, null);
+                }
+                else
+                {
+                    File.Move(tmpPath, filePath);
+                }
+            }
+            catch
+            {
+                try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
+                throw;
+            }
         }
 
         public static GuardPolicy LoadFromFileOrNull(string filePath)

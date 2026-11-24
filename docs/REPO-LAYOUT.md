@@ -86,5 +86,6 @@ git tag v5.8.x ─> .github/workflows/release-exe.yml ─> GitHub Release（自�
 | [`docs/releases/v5.8.7.md`](releases/v5.8.7.md) | v5.8.7 发布说明（ActiveStore `/32` 防污染、`sing-box` B1 适配、物理网卡 IPv6 显式阻断、门禁 33 项） |
 | [`docs/releases/v5.8.8.md`](releases/v5.8.8.md) | v5.8.8 发布说明（`/32` 路由与嵌套数组自愈修复、RFC 5389 STUN、WFP 5157 与 ActiveStore 回读、门禁 39 项） |
 | [`docs/releases/v5.8.9.md`](releases/v5.8.9.md) | v5.8.9 发布说明（ACL/回滚/退出码 P0 安全加固、Fail-Closed 策略与写锁、10 IPv6 联动、门禁 45 项） |
+| [`docs/releases/v5.9.0.md`](releases/v5.9.0.md) | v5.9.0 发布说明（轻量安全收口：全入口 ACL/Global 锁前置、策略/回滚 Fail-Closed、GUI 哈希增量同步、Protected 持久化、真实双进程互斥门禁） |
 
 `dist/release-notes-v*.md` 是同样内容的工作副本，发版前需核对两者哈希一致；**以 `docs/releases/` 为权威来源**。

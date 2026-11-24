@@ -1,5 +1,5 @@
-# AI-Net-Guard v5.8.9 - shared security helpers (write lock, recursive ACL audit, Fail-Closed policy loader, strict CN CIDR validation).
-# Pure ASCII script. Dot-sourced by 07-mode.ps1, 09-rollback.ps1, 10-sync-node-rule.ps1, 12-regression.ps1, 13-harden-acl.ps1, 14-apply-policy.ps1.
+# AI-Net-Guard v5.9.0 - shared security helpers (write lock, recursive ACL audit, Fail-Closed policy loader, strict CN CIDR validation).
+# Pure ASCII script. Dot-sourced by 02-killswitch.ps1, 07-mode.ps1, 09-rollback.ps1, 10-sync-node-rule.ps1, 12-regression.ps1, 13-harden-acl.ps1, 14-apply-policy.ps1.
 
 function Enter-GuardWriteLock {
     param(
@@ -7,25 +7,53 @@ function Enter-GuardWriteLock {
         [string]$LockName = 'Global\AI-Net-Guard-PolicyEngine'
     )
 
-    # Allow nested parent -> child guard invocations in the same process tree to share
-    # the outer lock instead of self-deadlocking on a cross-process Mutex.
+    # Allow nested parent -> child guard invocations in the same live process tree to
+    # share the outer lock instead of self-deadlocking on a cross-process Mutex.
+    # Require matching lock name and an alive owner PID so stale env vars cannot bypass locking.
     if ($env:AI_GUARD_LOCK_TOKEN) {
-        return [pscustomobject]@{
-            Mutex     = $null
-            Owned     = $false
-            Inherited = $true
-            Token     = [string]$env:AI_GUARD_LOCK_TOKEN
+        $tokParts = ([string]$env:AI_GUARD_LOCK_TOKEN) -split '\|', 3
+        $ownerPid = 0
+        if ($tokParts.Count -eq 3 -and $tokParts[1] -eq $LockName -and [int]::TryParse($tokParts[0], [ref]$ownerPid) -and $ownerPid -gt 0) {
+            $ownerAlive = $null
+            if ($ownerPid -eq $PID) {
+                $ownerAlive = $true
+            }
+            else {
+                $ownerAlive = [bool](Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)
+            }
+            if ($ownerAlive) {
+                return [pscustomobject]@{
+                    Mutex     = $null
+                    Owned     = $false
+                    Inherited = $true
+                    Token     = [string]$env:AI_GUARD_LOCK_TOKEN
+                }
+            }
         }
     }
 
+    if ($LockName -like 'Local\*') {
+        throw ('Refusing insecure Local lock namespace: ' + $LockName + ' (Global\\ required)')
+    }
+
+    $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $isAdmin = ([System.Security.Principal.WindowsPrincipal]$id).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    $mtxSec = New-Object System.Security.AccessControl.MutexSecurity
+    $adminSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
+    $sysSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')
+    $mtxSec.AddAccessRule((New-Object System.Security.AccessControl.MutexAccessRule($adminSid, [System.Security.AccessControl.MutexRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow)))
+    $mtxSec.AddAccessRule((New-Object System.Security.AccessControl.MutexAccessRule($sysSid, [System.Security.AccessControl.MutexRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow)))
+    if ((-not $isAdmin) -and ($LockName -ne 'Global\AI-Net-Guard-PolicyEngine') -and $id -and $id.User) {
+        $mtxSec.AddAccessRule((New-Object System.Security.AccessControl.MutexAccessRule($id.User, [System.Security.AccessControl.MutexRights]::FullControl, [System.Security.AccessControl.AccessControlType]::Allow)))
+    }
+
     $mtx = $null
-    $effectiveName = $LockName
+    $createdNew = $false
     try {
-        $mtx = New-Object System.Threading.Mutex($false, $effectiveName)
+        $mtx = New-Object System.Threading.Mutex($false, $LockName, [ref]$createdNew, $mtxSec)
     }
     catch [System.UnauthorizedAccessException] {
-        $effectiveName = 'Local\AI-Net-Guard-PolicyEngine'
-        $mtx = New-Object System.Threading.Mutex($false, $effectiveName)
+        throw ('Access denied opening Global write lock (' + $LockName + '). Run elevated (Administrators/SYSTEM required).')
     }
 
     $acquired = $false
@@ -45,10 +73,10 @@ function Enter-GuardWriteLock {
 
     if (-not $acquired) {
         try { $mtx.Dispose() } catch { }
-        throw ('Timed out waiting for AI-Net-Guard write lock (' + $effectiveName + ')')
+        throw ('Timed out waiting for AI-Net-Guard write lock (' + $LockName + ')')
     }
 
-    $token = [guid]::NewGuid().ToString('N')
+    $token = ([string]$PID) + '|' + $LockName + '|' + ([guid]::NewGuid().ToString('N'))
     $env:AI_GUARD_LOCK_TOKEN = $token
     return [pscustomobject]@{
         Mutex     = $mtx
@@ -92,22 +120,60 @@ function Get-GuardInstallAclIssues {
         if ($seenPaths.Add($item.FullName)) { $targets.Add($item) }
     }
 
-    & $addTarget (Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue)
-    foreach ($rf in @(Get-ChildItem -LiteralPath $Path -Force -File -ErrorAction SilentlyContinue)) {
-        & $addTarget $rf
+    try {
+        $rootItem = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        & $addTarget $rootItem
+        $parentPath = Split-Path -Parent ($rootItem.FullName.TrimEnd('\'))
+        if ($parentPath -and ($parentPath.TrimEnd('\').Length -gt 2) -and (Test-Path -LiteralPath $parentPath)) {
+            $parentItem = Get-Item -LiteralPath $parentPath -Force -ErrorAction Stop
+            if (($parentItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                $issues.Add('parent(' + $parentItem.Name + '): reparse-point(symlink/junction) not allowed')
+            }
+            $pSections = [System.Security.AccessControl.AccessControlSections]'Owner, Access'
+            $pAcl = New-Object System.Security.AccessControl.DirectorySecurity($parentItem.FullName, $pSections)
+            $pOwner = $pAcl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+            if ($trusted -notcontains $pOwner) { $issues.Add('parent(' + $parentItem.Name + '): owner=' + $pOwner) }
+            foreach ($pAce in $pAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+                if ($pAce.AccessControlType -ne 'Allow') { continue }
+                $pSid = $pAce.IdentityReference.Value
+                if ($trusted -contains $pSid) { continue }
+                if (([int64]$pAce.FileSystemRights -band $writeMask) -ne 0) {
+                    $issues.Add('parent(' + $parentItem.Name + '): ' + $pSid + ' has ' + $pAce.FileSystemRights)
+                }
+            }
+        }
     }
+    catch {
+        $issues.Add('root/parent inspection failed: ' + $_.Exception.Message)
+    }
+
+    try {
+        foreach ($rf in @(Get-ChildItem -LiteralPath $Path -Force -File -ErrorAction Stop)) {
+            & $addTarget $rf
+        }
+    }
+    catch {
+        $issues.Add('root file enumeration failed: ' + $_.Exception.Message)
+    }
+
     foreach ($sub in @('backup', 'logs', 'scripts')) {
         $sp = Join-Path $Path $sub
         if (Test-Path -LiteralPath $sp) {
-            & $addTarget (Get-Item -LiteralPath $sp -Force -ErrorAction SilentlyContinue)
+            try { & $addTarget (Get-Item -LiteralPath $sp -Force -ErrorAction Stop) }
+            catch { $issues.Add($sub + ' inspection failed: ' + $_.Exception.Message) }
         }
     }
 
     # Recursively audit everything under scripts\ (files and directories executed as SYSTEM).
     $scriptsDir = Join-Path $Path 'scripts'
     if (Test-Path -LiteralPath $scriptsDir) {
-        foreach ($si in @(Get-ChildItem -LiteralPath $scriptsDir -Recurse -Force -ErrorAction SilentlyContinue)) {
-            & $addTarget $si
+        try {
+            foreach ($si in @(Get-ChildItem -LiteralPath $scriptsDir -Recurse -Force -ErrorAction Stop)) {
+                & $addTarget $si
+            }
+        }
+        catch {
+            $issues.Add('scripts enumeration failed: ' + $_.Exception.Message)
         }
     }
 
@@ -115,7 +181,8 @@ function Get-GuardInstallAclIssues {
     foreach ($bf in @('guard-policy.json', 'guard-policy.last-good.json', 'allowed-outbound-rules.json')) {
         $bp = Join-Path (Join-Path $Path 'backup') $bf
         if (Test-Path -LiteralPath $bp) {
-            & $addTarget (Get-Item -LiteralPath $bp -Force -ErrorAction SilentlyContinue)
+            try { & $addTarget (Get-Item -LiteralPath $bp -Force -ErrorAction Stop) }
+            catch { $issues.Add($bf + ' inspection failed: ' + $_.Exception.Message) }
         }
     }
 
@@ -158,32 +225,63 @@ function ConvertFrom-StrictPolicyJson {
     $out = [ordered]@{}
     foreach ($key in $BaseDefaults.Keys) { $out[$key] = $BaseDefaults[$key] }
 
+    $matchedKeys = 0
     $boolKeys = @(
         'AllowCnDirect', 'AllowLan', 'AllowNcsi', 'QuarantineRogueAllow', 'LockPhysicalDns',
         'DisableSmhnr', 'DisableLlmnrNetbios', 'StrictNrptDoh', 'DisablePhysicalIpv6', 'PreferIpv4Prefix',
         'ZeroResidentMonitor', 'AutoNodeSync', 'AutoHealStaleProxy', 'DomesticNtp', 'HardenInstallAcl', 'BlockWebRtcLeak'
     )
     foreach ($k in $boolKeys) {
-        if ($raw.PSObject.Properties.Name -contains $k -and $null -ne $raw.$k) {
+        if ($raw.PSObject.Properties.Name -contains $k) {
+            if ($null -eq $raw.$k) {
+                throw ('policy field ' + $k + ' must be boolean, got null')
+            }
             if ($raw.$k -isnot [bool]) {
                 throw ('policy field ' + $k + ' must be boolean, got ' + $raw.$k.GetType().Name)
             }
             $out[$k] = [bool]$raw.$k
+            $matchedKeys++
         }
     }
 
     $strKeys = @('Version', 'Preset', 'DnsServer', 'V2rayNRoot')
     foreach ($sk in $strKeys) {
-        if ($raw.PSObject.Properties.Name -contains $sk -and $null -ne $raw.$sk) {
+        if ($raw.PSObject.Properties.Name -contains $sk) {
+            if ($null -eq $raw.$sk) {
+                throw ('policy field ' + $sk + ' must be string, got null')
+            }
             if ($raw.$sk -isnot [string]) {
                 throw ('policy field ' + $sk + ' must be string, got ' + $raw.$sk.GetType().Name)
             }
             if ($raw.$sk.Length -gt 0) {
                 $out[$sk] = [string]$raw.$sk
             }
+            $matchedKeys++
         }
     }
+
+    if ($matchedKeys -eq 0) {
+        throw 'policy JSON contains no recognized policy fields'
+    }
     return $out
+}
+
+function Save-GuardPolicyLastGood {
+    param(
+        [Parameter(Mandatory = $true)][string]$PolicyPath,
+        [Parameter(Mandatory = $true)][string]$LastGoodPath
+    )
+    if (-not (Test-Path -LiteralPath $PolicyPath)) {
+        throw ('cannot save last-good policy: missing ' + $PolicyPath)
+    }
+    $lgDir = Split-Path -Parent $LastGoodPath
+    if ($lgDir -and -not (Test-Path -LiteralPath $lgDir)) {
+        New-Item -ItemType Directory -Path $lgDir -Force | Out-Null
+    }
+    $tmpLg = $LastGoodPath + '.tmp.' + $PID
+    $rawJson = [System.IO.File]::ReadAllText($PolicyPath, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($tmpLg, $rawJson, (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmpLg -Destination $LastGoodPath -Force -ErrorAction Stop
 }
 
 function Read-GuardPolicyStrict {
@@ -191,10 +289,52 @@ function Read-GuardPolicyStrict {
         [string]$PolicyPath,
         [System.Collections.IDictionary]$Defaults,
         [string]$LastGoodPath = '',
-        [switch]$NoSaveLastGood
+        [switch]$NoSaveLastGood,
+        [switch]$IsDeployed
     )
 
+    $buildFailClosed = {
+        param([string]$Reason)
+        $fc = [ordered]@{}
+        foreach ($key in $Defaults.Keys) { $fc[$key] = $Defaults[$key] }
+        $fc['Preset'] = 'FailClosed'
+        $fc['AllowCnDirect'] = $false
+        $fc['AllowLan'] = $false
+        $fc['AllowNcsi'] = $false
+        $fc['QuarantineRogueAllow'] = $true
+        $fc['LockPhysicalDns'] = $true
+        $fc['DisableSmhnr'] = $true
+        $fc['DisableLlmnrNetbios'] = $true
+        $fc['StrictNrptDoh'] = $false
+        $fc['BlockWebRtcLeak'] = $true
+        $fc['DisablePhysicalIpv6'] = $true
+        $fc['PreferIpv4Prefix'] = $true
+        $fc['ZeroResidentMonitor'] = $true
+        $fc['AutoNodeSync'] = $true
+        $fc['AutoHealStaleProxy'] = $true
+        $fc['DomesticNtp'] = $true
+        $fc['HardenInstallAcl'] = $true
+        $fc['PolicyHealth'] = 'corrupt-fail-closed'
+        $fc['PolicyWarning'] = $Reason
+        return [pscustomobject]$fc
+    }
+
     if (-not $PolicyPath -or -not (Test-Path -LiteralPath $PolicyPath)) {
+        $lgErr = ''
+        if ($LastGoodPath -and (Test-Path -LiteralPath $LastGoodPath)) {
+            try {
+                $lgParsed = ConvertFrom-StrictPolicyJson -FilePath $LastGoodPath -BaseDefaults $Defaults
+                $lgParsed['PolicyHealth'] = 'recovered-last-good'
+                $lgParsed['PolicyWarning'] = 'primary policy missing; fell back to last-known-good'
+                return [pscustomobject]$lgParsed
+            }
+            catch {
+                $lgErr = '; last-good also failed: ' + $_.Exception.Message
+            }
+        }
+        if ($IsDeployed -or ($LastGoodPath -and (Test-Path -LiteralPath $LastGoodPath))) {
+            return (& $buildFailClosed ('primary policy missing on deployed host' + $lgErr + '; entered Fail-Closed state'))
+        }
         $def = [ordered]@{}
         foreach ($key in $Defaults.Keys) { $def[$key] = $Defaults[$key] }
         $def['PolicyHealth'] = 'default'
@@ -205,19 +345,6 @@ function Read-GuardPolicyStrict {
     $primaryErr = ''
     try {
         $parsed = ConvertFrom-StrictPolicyJson -FilePath $PolicyPath -BaseDefaults $Defaults
-        if (-not $NoSaveLastGood -and $LastGoodPath) {
-            try {
-                $lgDir = Split-Path -Parent $LastGoodPath
-                if ($lgDir -and -not (Test-Path -LiteralPath $lgDir)) {
-                    New-Item -ItemType Directory -Path $lgDir -Force | Out-Null
-                }
-                $tmpLg = $LastGoodPath + '.tmp.' + $PID
-                $rawJson = [System.IO.File]::ReadAllText($PolicyPath, [System.Text.Encoding]::UTF8)
-                [System.IO.File]::WriteAllText($tmpLg, $rawJson, (New-Object System.Text.UTF8Encoding($false)))
-                Move-Item -LiteralPath $tmpLg -Destination $LastGoodPath -Force -ErrorAction Stop
-            }
-            catch { }
-        }
         $parsed['PolicyHealth'] = 'ok'
         $parsed['PolicyWarning'] = ''
         return [pscustomobject]$parsed
@@ -239,28 +366,7 @@ function Read-GuardPolicyStrict {
     }
 
     # Fail-Closed: never silently relax security switches when policy JSON is corrupted.
-    $fc = [ordered]@{}
-    foreach ($key in $Defaults.Keys) { $fc[$key] = $Defaults[$key] }
-    $fc['Preset'] = 'FailClosed'
-    $fc['AllowCnDirect'] = $false
-    $fc['AllowLan'] = $false
-    $fc['AllowNcsi'] = $false
-    $fc['QuarantineRogueAllow'] = $true
-    $fc['LockPhysicalDns'] = $true
-    $fc['DisableSmhnr'] = $true
-    $fc['DisableLlmnrNetbios'] = $true
-    $fc['StrictNrptDoh'] = $false
-    $fc['BlockWebRtcLeak'] = $true
-    $fc['DisablePhysicalIpv6'] = $true
-    $fc['PreferIpv4Prefix'] = $true
-    $fc['ZeroResidentMonitor'] = $true
-    $fc['AutoNodeSync'] = $true
-    $fc['AutoHealStaleProxy'] = $true
-    $fc['DomesticNtp'] = $true
-    $fc['HardenInstallAcl'] = $true
-    $fc['PolicyHealth'] = 'corrupt-fail-closed'
-    $fc['PolicyWarning'] = ('policy corrupt (' + $primaryErr + ') and no valid last-known-good; entered Fail-Closed state')
-    return [pscustomobject]$fc
+    return (& $buildFailClosed ('policy corrupt (' + $primaryErr + ') and no valid last-known-good; entered Fail-Closed state'))
 }
 
 function Get-ValidatedCnPrefixes {

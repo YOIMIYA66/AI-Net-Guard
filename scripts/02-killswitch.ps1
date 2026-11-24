@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.9 - step 2: static default-deny firewall + CN & TUN allowlist.
+    AI-Net-Guard v5.9.0 - step 2: static default-deny firewall + CN & TUN allowlist.
 
 .DESCRIPTION
     Configures Windows Defender Firewall for the v5.1 zero-switch static guard:
@@ -82,6 +82,16 @@ if (-not (Test-Path -LiteralPath $libStun)) {
     exit 1
 }
 . $libStun
+
+$libCommonKs = ''
+foreach ($cand in @((Join-Path $PSScriptRoot 'lib-guard-common.ps1'), (Join-Path (Join-Path $Root 'scripts') 'lib-guard-common.ps1'), (Join-Path $Root 'lib-guard-common.ps1'))) {
+    if ($cand -and (Test-Path -LiteralPath $cand)) { $libCommonKs = $cand; break }
+}
+if (-not $libCommonKs) {
+    Write-Host '[!] lib-guard-common.ps1 missing - cannot enforce ACL/CIDR invariants' -ForegroundColor Red
+    exit 1
+}
+. $libCommonKs
 
 function Assert-Admin {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -360,9 +370,8 @@ if (-not $StrictKillSwitchOnly) {
         & $geoScript -Root $Root -V2rayNRoot $V2rayNRoot -OutFile $cnList
     }
     if (Test-Path -LiteralPath $cnList) {
-        $cnPrefixes = @(Get-Content -LiteralPath $cnList -ErrorAction SilentlyContinue |
-            ForEach-Object { $_.Trim() } |
-            Where-Object { $_ -and -not $_.StartsWith('#') -and $_ -match '^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$' })
+        $cnLines = [System.IO.File]::ReadAllLines($cnList)
+        $cnPrefixes = @(Get-ValidatedCnPrefixes -Lines $cnLines -MinCount 1000)
     }
     if ($cnPrefixes.Count -lt 1000) {
         throw ('CN prefix list missing or invalid (<1000 prefixes in ' + $cnList + '). Run 11-geo-cn.ps1 -Force or pass -StrictKillSwitchOnly.')
@@ -377,11 +386,31 @@ if (-not $SkipRollbackTask) {
     $rollback = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '09-rollback.ps1')) { Join-Path (Join-Path $Root 'scripts') '09-rollback.ps1' } else { Join-Path $Root '09-rollback.ps1' }
     if (-not (Test-Path -LiteralPath $rollback)) { throw ('missing rollback script: ' + $rollback) }
 
+    # Security boundary (#01): lock install directory ACL BEFORE registering a SYSTEM task pointing into it.
+    $aclIssues = @(Get-GuardInstallAclIssues -Path $Root)
+    if ($aclIssues.Count -gt 0) {
+        $hardenScript = ''
+        foreach ($hc in @((Join-Path $PSScriptRoot '13-harden-acl.ps1'), (Join-Path (Join-Path $Root 'scripts') '13-harden-acl.ps1'), (Join-Path $Root '13-harden-acl.ps1'))) {
+            if ($hc -and (Test-Path -LiteralPath $hc)) { $hardenScript = $hc; break }
+        }
+        if ($hardenScript) {
+            Write-Step ('locking install directory ACL before SYSTEM rollback task registration (' + $aclIssues.Count + ' issue(s))')
+            & $hardenScript -Root $Root -SkipVerification -SkipRegression | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw ('13-harden-acl.ps1 exited ' + $LASTEXITCODE + ' before registering SYSTEM rollback task')
+            }
+            $aclIssues = @(Get-GuardInstallAclIssues -Path $Root)
+        }
+        if ($aclIssues.Count -gt 0) {
+            throw ('Refusing to register SYSTEM rollback task on untrusted install ACL: ' + ($aclIssues -join '; '))
+        }
+    }
+
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' + $rollback + '" -Auto -Root "' + $Root + '"')
     $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes($RollbackMinutes)
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    Register-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    Register-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
     Write-Host ('    task "AI-Guard-Test-Rollback" -> ' + (Get-Date).AddMinutes($RollbackMinutes).ToString('HH:mm:ss'))
     Write-Host '    After verification run 08-commit.ps1 to cancel it, otherwise it reverts everything.'
 }
