@@ -726,6 +726,82 @@ Assert-True '14-apply-policy uses PolicyCommitted transaction; 07-mode resolves 
      ($boot06Raw -match '\$bootGuardExit') -and ($boot06Raw -match 'exit \$bootGuardExit')) `
     'transaction/V2rayNRoot/boot-guard exit propagation checks failed'
 
+# ---------------------------------------------------------------- 21. PS 5.1 quarantine JSON self-healing & scripts\ default Root
+$tmpQDir = Join-Path $env:TEMP ('ainguard-quarantine-test-' + $PID)
+New-Item -ItemType Directory -Path $tmpQDir -Force | Out-Null
+try {
+    $qTmpFile = Join-Path $tmpQDir 'auto-disabled-outbound-allow.json'
+    $corruptNestedJson = @'
+[
+  {
+    "value": [
+      {
+        "value": [
+          { "value": " ", "Count": 2 },
+          { "Name": "RuleA", "DisplayName": "Microsoft Store", "QuarantinedAt": "2026-11-18T19:01:49" }
+        ],
+        "Count": 2
+      },
+      { "Name": "RuleB", "DisplayName": "WebExperience", "QuarantinedAt": "2026-11-20T10:00:00" }
+    ],
+    "Count": 2
+  },
+  { "Name": "RuleA", "DisplayName": "Microsoft Store", "QuarantinedAt": "2026-11-24T17:17:49" }
+]
+'@
+    [System.IO.File]::WriteAllText($qTmpFile, $corruptNestedJson, (New-Object System.Text.UTF8Encoding($false)))
+    $qHealed = Read-GuardQuarantineList -Path $qTmpFile
+    $healedNames = @($qHealed.Items | ForEach-Object { $_.Name })
+    Assert-True 'Read-GuardQuarantineList unwraps PS 5.1 nested value arrays, drops garbage, and deduplicates by Name' `
+        ($qHealed.NeedsRewrite -and ($healedNames.Count -eq 2) -and ($healedNames[0] -eq 'RuleA') -and ($healedNames[1] -eq 'RuleB')) `
+        ('NeedsRewrite=' + $qHealed.NeedsRewrite + ' names=' + ($healedNames -join ','))
+
+    $roundTripOk = $true
+    $roundTripMsg = ''
+    foreach ($cnt in @(0, 1, 2, 3)) {
+        $batch = New-Object System.Collections.Generic.List[object]
+        for ($i = 1; $i -le $cnt; $i++) {
+            $batch.Add([pscustomobject]@{
+                Name          = ('Rule' + $i)
+                DisplayName   = ('Display ' + $i)
+                QuarantinedAt = '2026-11-24T19:30:00Z'
+            })
+        }
+        Write-GuardQuarantineList -Path $qTmpFile -Items ([object[]]$batch.ToArray())
+        $writtenRaw = [System.IO.File]::ReadAllText($qTmpFile, [System.Text.Encoding]::UTF8)
+        $reRead = Read-GuardQuarantineList -Path $qTmpFile
+        $isArrayText = $writtenRaw.TrimStart().StartsWith('[')
+        $hasWrapper = ($writtenRaw -match '"value"\s*:') -or ($writtenRaw -match '"Count"\s*:')
+        if ((-not $isArrayText) -or $hasWrapper -or $reRead.NeedsRewrite -or (@($reRead.Items).Count -ne $cnt)) {
+            $roundTripOk = $false
+            $roundTripMsg = ('cnt=' + $cnt + ' array=' + $isArrayText + ' wrapper=' + $hasWrapper + ' needsRewrite=' + $reRead.NeedsRewrite + ' got=' + @($reRead.Items).Count)
+            break
+        }
+    }
+    Assert-True 'Write-GuardQuarantineList writes flat JSON arrays for 0/1/2/3 items without PS 5.1 value wrapper' `
+        $roundTripOk $roundTripMsg
+}
+finally {
+    Remove-Item -LiteralPath $tmpQDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$reg12Raw = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\12-regression.ps1'), [System.Text.Encoding]::UTF8)
+$acl13Raw = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\13-harden-acl.ps1'), [System.Text.Encoding]::UTF8)
+$quarantineWiredOk = ($mode07Raw -match 'Read-GuardQuarantineList') -and ($mode07Raw -match 'Write-GuardQuarantineList') -and `
+    ($mode07Raw -notmatch '@\(Get-Content -LiteralPath \$quarantineFile') -and ($mode07Raw -notmatch '\$qList \| ConvertTo-Json') -and `
+    ($rollback -match 'Read-GuardQuarantineList') -and `
+    ($applyPol -match 'Read-GuardQuarantineList') -and ($applyPol -notmatch '@\(Get-Content -LiteralPath \$qFile')
+Assert-True '07-mode, 09-rollback, and 14-apply-policy all read/write quarantine list via Read/Write-GuardQuarantineList' `
+    $quarantineWiredOk 'quarantine helper wiring incomplete'
+
+$scriptsRootResolveOk = ($mode07Raw -match "\(Split-Path -Leaf \`$PSScriptRoot\) -ieq 'scripts'") -and `
+    ($reg12Raw -match "\(Split-Path -Leaf \`$PSScriptRoot\) -ieq 'scripts'") -and `
+    ($acl13Raw -match "\(Split-Path -Leaf \`$PSScriptRoot\) -ieq 'scripts'") -and `
+    ($applyPol -match "\(Split-Path -Leaf \`$PSScriptRoot\) -ieq 'scripts'") -and `
+    ($reg12Raw -match 'if \(-not \$cnFileExists\)') -and ($reg12Raw -match 'if \(\$before -lt 1000\)')
+Assert-True 'scripts\ entrypoints resolve parent install Root and 12-regression Check 7 guards missing cn-ipv4.txt' `
+    $scriptsRootResolveOk 'default Root resolution or Check 7 guard missing'
+
 Write-Host ' '
 if ($script:fail -gt 0) {
     Write-Host ('=== ' + $script:fail + ' assertion(s) FAILED ===') -ForegroundColor Red

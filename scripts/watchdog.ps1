@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.2 - opt-in event-driven resident health monitor (zero polling CPU).
+    AI-Net-Guard v5.9.3 - opt-in event-driven resident health monitor (zero polling CPU).
 
 .DESCRIPTION
     The guard itself is static: opening/closing the proxy needs no firewall or

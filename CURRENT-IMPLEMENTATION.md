@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.9.2 · 冻结维护封版：`PolicyCommitted` 事务、保留 `V2rayNRoot`、`06-boot-guard` 退出码传播）
+# AI-Net-Guard 实现方案与持续审查文档（v5.9.3 · 维护修复版：隔离列表 PS 5.1 嵌套自愈与 `scripts\` 默认根目录修复）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.9.2 冻结维护封版**（在 v5.9.1 基础上收敛最后三项可靠性细节：`Invoke-GuardPolicyTransaction` 显式 `PolicyCommitted=$false` 与未捕获异常回滚、`07-mode.ps1` 锁定重读保留自动发现 `V2rayNRoot`、`06-boot-guard.ps1` 真实传播回滚退出码，门禁扩至 54 条含 4 个真实异常路径实测；本版起正式冻结功能开发，进入 Bug Fix 与兼容性维护模式，详见 16.18）
+> 版本状态：**v5.9.3 维护修复版**（维持功能冻结与轻量三公共库架构；修复 Windows PowerShell 5.1 下 `auto-disabled-outbound-allow.json` 的 `{ "value": [...], "Count": ... }` 嵌套数组序列化缺陷并实现读/写自愈与回滚全还原，修正从 `scripts\` 子目录直接运行脚本时的默认 `$Root` 解析与 `12-regression.ps1` Check 7 缺失文件防静默通过守卫；门禁扩至 58 条，详见 16.19）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -567,7 +567,7 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 
 #### 16.9.3 P1：回归门禁进构建，且测试脚本不进发行物
 
-新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12），v5.8.7 起为 33 条（见 16.13），v5.8.8 为 39 条（见 16.14），v5.8.9 扩至 45 条（见 16.15），v5.9.0 扩至 49 条（见 16.16），v5.9.1 扩至 52 条（见 16.17），v5.9.2 扩至 54 条（见 16.18）。）
+新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12），v5.8.7 起为 33 条（见 16.13），v5.8.8 为 39 条（见 16.14），v5.8.9 扩至 45 条（见 16.15），v5.9.0 扩至 49 条（见 16.16），v5.9.1 扩至 52 条（见 16.17），v5.9.2 扩至 54 条（见 16.18），v5.9.3 扩至 58 条（见 16.19）。）
 
 #### 16.9.4 第二轮 review 修掉的 6 处
 
@@ -847,3 +847,17 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 2. **保留自动发现 `V2rayNRoot`（`07-mode.ps1`）**：抽离 `Resolve-EffectiveV2rayNRoot`，消除获取写锁后二次 `Apply-GuardPolicyToScriptVars` 时因 `guard-policy.json` 中 `V2rayNRoot` 为空字符串而被重置的问题。
 3. **`06-boot-guard.ps1` 退出码传播**：`-RunIfArmed` 执行 `09-rollback.ps1 -Auto` 后捕获非零 `$LASTEXITCODE` 及异常并用 `exit $bootGuardExit` 真实传播。
 4. **门禁验证**：`tests/test-stun-ports.ps1` **54/54 PASS**（含 `Invoke-GuardPolicyTransaction` 4 项真实异常路径运行时测试），`gui/build.ps1 -RunSmokeTest` 29/29 纯 ASCII / 0 AST / 0 编译警告与错误 / 8/8 UI 冒烟 PASS。
+
+---
+
+### 16.19 v5.9.3：维护修复版（PS 5.1 隔离 JSON 嵌套自愈与 `scripts\` 默认根目录修复，2026-11-24）
+
+在功能冻结模式下修复实机排查发现的真实维护缺陷，不新增功能与架构改动：
+
+1. **PS 5.1 `auto-disabled-outbound-allow.json` 嵌套数组与自愈修复（`lib-guard-common.ps1` / `07-mode.ps1` / `09-rollback.ps1` / `14-apply-policy.ps1`）**：
+   - 根因：Windows PowerShell 5.1 下 `@(Get-Content ... | ConvertFrom-Json)` 会将整个 JSON 数组包进单元素外层数组再经管道 `ConvertTo-Json` 序列化为 `{ "value": [...], "Count": N }` 递归嵌套结构，导致 `$_.Name` 缺失、重复追加同一规则且回滚/关闭隔离开关时无法还原规则；
+   - 修复：在 `lib-guard-common.ps1` 新增 `Read-GuardQuarantineList`（递归展开嵌套数组与 PS 5.1 `{ value, Count }` 包装对象、过滤无效条目、按 `Name` 忽略大小写去重，同时兼容 PowerShell 7 `'[]'` 空数组）与 `Write-GuardQuarantineList`（`ConvertTo-Json -InputObject [object[]]` + UTF-8 无 BOM 原子写，确保 0/1/多元素均输出扁平 JSON 数组）；统一接入 `07-mode.ps1`（发现历史畸形文件时自动原地重写自愈）、`09-rollback.ps1` 与 `14-apply-policy.ps1`。
+2. **`scripts\` 子目录默认 `$Root` 解析与 Check 7 守卫（`07-mode.ps1` / `12-regression.ps1` / `13-harden-acl.ps1` / `14-apply-policy.ps1`）**：
+   - 当未显式传入 `-Root` 且脚本位于 `scripts\` 子目录（如直接运行 `C:\AI-Net-Guard\scripts\12-regression.ps1`）时，自动回溯上级安装根目录，避免在 `scripts\` 下找不到 `cn-ipv4.txt` 或生成多余的 `scripts\backup`、`scripts\logs` 目录；
+   - `12-regression.ps1` Check 7 新增 `Test-Path -LiteralPath $cnFile` 与 `$before -lt 1000` 显式失败检查，杜绝缺失白名单文件时静默以 `before=0, after=0` 误判 `PASS`。
+3. **门禁验证**：`tests/test-stun-ports.ps1` 扩至 **58/58 PASS**（新增 PS 5.1 嵌套/垃圾条目自愈与 `0/1/2/3` 项扁平往返实测），`Read/Write-GuardQuarantineList` 在 PowerShell 7 下同测 `0/1/2/3` 项通过，`gui/build.ps1 -RunSmokeTest` 29/29 纯 ASCII / 0 AST / 0 编译警告与错误 / 8/8 UI 冒烟 PASS。

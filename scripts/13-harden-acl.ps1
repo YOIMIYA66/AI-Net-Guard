@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.2 - lock the install directory ACL (O1) and run the first
+    AI-Net-Guard v5.9.3 - lock the install directory ACL (O1) and run the first
     elevated v5.4 verification (O2).
 
 .DESCRIPTION
@@ -29,7 +29,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Root = $(if ($PSScriptRoot) { $PSScriptRoot } else { 'C:\AI-Net-Guard' }),
+    [string]$Root = $(if ($PSScriptRoot) { if ((Split-Path -Leaf $PSScriptRoot) -ieq 'scripts') { Split-Path -Parent $PSScriptRoot } else { $PSScriptRoot } } else { 'C:\AI-Net-Guard' }),
     [switch]$SyncWorkspace,
     [string]$WorkspaceRoot = $(if ($env:AI_GUARD_WORKSPACE) { $env:AI_GUARD_WORKSPACE } else { '' }),
     [switch]$Undo,
@@ -132,7 +132,7 @@ if ($Undo) {
 
 # ---------------------------------------------------------------- 1. ACL lock
 Write-Host ''
-Write-Host '=== AI-Net-Guard v5.9.2: install directory ACL hardening (O1) ===' -ForegroundColor Cyan
+Write-Host '=== AI-Net-Guard v5.9.3: install directory ACL hardening (O1) ===' -ForegroundColor Cyan
 $before = @(Get-InstallAclIssues -Path $Root)
 Write-Host ('    issues before: ' + $before.Count)
 $before | Select-Object -First 6 | ForEach-Object { Write-Host ('      ' + $_) -ForegroundColor DarkGray }

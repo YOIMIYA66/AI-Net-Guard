@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.9.2 - shared security helpers (write lock, recursive ACL audit, Fail-Closed policy loader, strict CN CIDR validation).
+# AI-Net-Guard v5.9.3 - shared security helpers (write lock, recursive ACL audit, Fail-Closed policy loader, strict CN CIDR validation).
 # Pure ASCII script. Dot-sourced by 02-killswitch.ps1, 07-mode.ps1, 09-rollback.ps1, 10-sync-node-rule.ps1, 12-regression.ps1, 13-harden-acl.ps1, 14-apply-policy.ps1.
 
 function Enter-GuardWriteLock {
@@ -511,4 +511,158 @@ function Get-ValidatedCnPrefixes {
 
     if ($out.Count -lt $MinCount) { return @() }
     return $out.ToArray()
+}
+
+function Expand-GuardQuarantineNode {
+    param(
+        $Node,
+        [int]$Depth,
+        [hashtable]$State,
+        $Seen,
+        $List
+    )
+
+    if ($null -eq $Node) {
+        $State.Malformed = $true
+        return
+    }
+    if ($Node -is [string] -or $Node.GetType().IsPrimitive) {
+        $State.Malformed = $true
+        return
+    }
+    if (($Node -is [System.Collections.IEnumerable]) -and -not ($Node -is [System.Collections.IDictionary])) {
+        if ($Depth -gt 0) { $State.Malformed = $true }
+        foreach ($child in $Node) {
+            Expand-GuardQuarantineNode -Node $child -Depth ($Depth + 1) -State $State -Seen $Seen -List $List
+        }
+        return
+    }
+
+    $nameProp = $Node.PSObject.Properties['Name']
+    if ($nameProp -and $null -ne $nameProp.Value) {
+        $nameStr = ([string]$nameProp.Value).Trim()
+        if ($nameStr) {
+            if ($Seen.Add($nameStr)) {
+                $dispProp = $Node.PSObject.Properties['DisplayName']
+                $qatProp = $Node.PSObject.Properties['QuarantinedAt']
+                $dispVal = if ($dispProp -and $null -ne $dispProp.Value) { [string]$dispProp.Value } else { '' }
+                $qatVal = if ($qatProp -and $null -ne $qatProp.Value) { [string]$qatProp.Value } else { '' }
+                $List.Add([pscustomobject]@{
+                    Name          = $nameStr
+                    DisplayName   = $dispVal
+                    QuarantinedAt = $qatVal
+                })
+            }
+            else {
+                $State.Malformed = $true
+            }
+            return
+        }
+    }
+
+    $valProp = $Node.PSObject.Properties['value']
+    if ($valProp) {
+        $State.Malformed = $true
+        Expand-GuardQuarantineNode -Node $valProp.Value -Depth ($Depth + 1) -State $State -Seen $Seen -List $List
+        return
+    }
+
+    $State.Malformed = $true
+}
+
+function Read-GuardQuarantineList {
+    param(
+        [string]$Path
+    )
+
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
+        return [pscustomobject]@{
+            Items        = [object[]]@()
+            NeedsRewrite = $false
+        }
+    }
+
+    $state = @{ Malformed = $false }
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $list = New-Object System.Collections.Generic.List[object]
+
+    try {
+        $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return [pscustomobject]@{
+                Items        = [object[]]@()
+                NeedsRewrite = $true
+            }
+        }
+        $trimmed = $raw.Trim()
+        if ($trimmed -match '^\[\s*\]$') {
+            return [pscustomobject]@{
+                Items        = [object[]]@()
+                NeedsRewrite = $false
+            }
+        }
+        if (-not $trimmed.StartsWith('[')) {
+            $state.Malformed = $true
+        }
+        $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
+        Expand-GuardQuarantineNode -Node $parsed -Depth 0 -State $state -Seen $seen -List $list
+    }
+    catch {
+        $state.Malformed = $true
+    }
+
+    return [pscustomobject]@{
+        Items        = [object[]]$list.ToArray()
+        NeedsRewrite = [bool]$state.Malformed
+    }
+}
+
+function Write-GuardQuarantineList {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [AllowNull()][object[]]$Items = @()
+    )
+
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $clean = New-Object System.Collections.Generic.List[object]
+
+    if ($null -ne $Items) {
+        foreach ($item in $Items) {
+            if ($null -eq $item) { continue }
+            $nameProp = $item.PSObject.Properties['Name']
+            if (-not $nameProp -or $null -eq $nameProp.Value) { continue }
+            $nameStr = ([string]$nameProp.Value).Trim()
+            if (-not $nameStr) { continue }
+            if (-not $seen.Add($nameStr)) { continue }
+            $dispProp = $item.PSObject.Properties['DisplayName']
+            $qatProp = $item.PSObject.Properties['QuarantinedAt']
+            $dispVal = if ($dispProp -and $null -ne $dispProp.Value) { [string]$dispProp.Value } else { '' }
+            $qatVal = if ($qatProp -and $null -ne $qatProp.Value) { [string]$qatProp.Value } else { '' }
+            $clean.Add([pscustomobject]@{
+                Name          = $nameStr
+                DisplayName   = $dispVal
+                QuarantinedAt = $qatVal
+            })
+        }
+    }
+
+    if ($clean.Count -eq 0) {
+        $json = '[]'
+    }
+    else {
+        [object[]]$arr = $clean.ToArray()
+        $json = ConvertTo-Json -InputObject $arr -Depth 4
+        if (-not $json.TrimStart().StartsWith('[')) {
+            $json = '[' + $json + ']'
+        }
+    }
+
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $tmpPath = $Path + '.tmp.' + $PID
+    [System.IO.File]::WriteAllText($tmpPath, $json + [Environment]::NewLine, $utf8NoBom)
+    Move-Item -LiteralPath $tmpPath -Destination $Path -Force
 }

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.2 - step 0: read-only audit (run as Administrator).
+    AI-Net-Guard v5.9.3 - step 0: read-only audit (run as Administrator).
 
 .DESCRIPTION
     Collects every fact the kill-switch / DNS-leak plan depends on:

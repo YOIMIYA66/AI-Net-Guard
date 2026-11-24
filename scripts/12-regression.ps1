@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.2 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
+    AI-Net-Guard v5.9.3 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
 
 .DESCRIPTION
     Verifies the v5.4 static guard end-to-end. Read-only, except for a temporary
@@ -25,7 +25,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$Root = $(if ($PSScriptRoot) { $PSScriptRoot } else { 'C:\AI-Net-Guard' }),
+    [string]$Root = $(if ($PSScriptRoot) { if ((Split-Path -Leaf $PSScriptRoot) -ieq 'scripts') { Split-Path -Parent $PSScriptRoot } else { $PSScriptRoot } } else { 'C:\AI-Net-Guard' }),
     [string]$V2rayNRoot = '',
     [string]$TunName = 'xray_tun',
     [string]$DnsServer = '223.5.5.5',
@@ -273,7 +273,7 @@ function Get-ConfiguredNodeInfo {
     }
 }
 
-W ('=== AI-Net-Guard v5.9.2 regression ' + (Get-Date -Format 'o') + ' ===')
+W ('=== AI-Net-Guard v5.9.3 regression ' + (Get-Date -Format 'o') + ' ===')
 function Get-ActiveIpPhysicalNics {
     @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
         $_.OperationalStatus -eq 'Up' -and
@@ -965,7 +965,8 @@ else {
 W ''
 W '--- 7. geoip failure drill ---'
 $cnFile = Join-Path $Root 'cn-ipv4.txt'
-$before = @(Get-Content -LiteralPath $cnFile | Where-Object { $_ -and -not $_.StartsWith('#') }).Count
+$cnFileExists = Test-Path -LiteralPath $cnFile
+$before = if ($cnFileExists) { @(Get-Content -LiteralPath $cnFile | Where-Object { $_ -and -not $_.StartsWith('#') }).Count } else { 0 }
 $badGeo = Join-Path $Root 'backup\corrupt-test.dat'
 $tmpOut = Join-Path $Root 'backup\corrupt-test-cn.txt'
 New-Item -ItemType Directory -Path (Split-Path $badGeo) -Force | Out-Null
@@ -977,8 +978,10 @@ try {
     $code = $LASTEXITCODE
 }
 catch { $code = 99 }
-$after = @(Get-Content -LiteralPath $cnFile | Where-Object { $_ -and -not $_.StartsWith('#') }).Count
+$after = if (Test-Path -LiteralPath $cnFile) { @(Get-Content -LiteralPath $cnFile | Where-Object { $_ -and -not $_.StartsWith('#') }).Count } else { 0 }
 Check 'corrupt geoip rejected without altering CN allowlist' {
+    if (-not $cnFileExists) { throw ('cn-ipv4.txt missing at ' + $cnFile) }
+    if ($before -lt 1000) { throw ('baseline cn-ipv4.txt too small: ' + $before) }
     if ($code -eq 0) { throw 'parser accepted corrupt data' }
     if ($before -ne $after) { throw ('list size changed: ' + $before + ' -> ' + $after) }
     if (Test-Path -LiteralPath $tmpOut) { throw 'temp output was written' }

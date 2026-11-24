@@ -89,5 +89,6 @@ git tag v5.8.x ─> .github/workflows/release-exe.yml ─> GitHub Release（自�
 | [`docs/releases/v5.9.0.md`](releases/v5.9.0.md) | v5.9.0 发布说明（轻量安全收口：全入口 ACL/Global 锁前置、策略/回滚 Fail-Closed、GUI 哈希增量同步、Protected 持久化、真实双进程互斥门禁） |
 | [`docs/releases/v5.9.1.md`](releases/v5.9.1.md) | v5.9.1 稳定维护版发布说明（Protected 不跳过自修复、策略事务回滚、参数作用域修复、自动回滚防自杀与顺序保护，进入维护模式） |
 | [`docs/releases/v5.9.2.md`](releases/v5.9.2.md) | v5.9.2 冻结封版发布说明（显式 `PolicyCommitted` 事务、锁定重读保留 `V2rayNRoot`、`06-boot-guard` 退出码传播、54 项门禁含真实异常路径实测，正式冻结） |
+| [`docs/releases/v5.9.3.md`](releases/v5.9.3.md) | v5.9.3 维护修复发布说明（PS 5.1 `auto-disabled-outbound-allow.json` 嵌套数组自愈、`scripts\` 默认 `$Root` 与 Check 7 守卫、58 项门禁） |
 
 `dist/release-notes-v*.md` 是同样内容的工作副本，发版前需核对两者哈希一致；**以 `docs/releases/` 为权威来源**。

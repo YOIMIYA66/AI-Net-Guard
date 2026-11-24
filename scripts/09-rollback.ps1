@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.9.2 - rollback & baseline restore (100% thorough uninstaller)
+# AI-Net-Guard v5.9.3 - rollback & baseline restore (100% thorough uninstaller)
 [CmdletBinding()]
 param(
     [string]$Root = 'C:\AI-Net-Guard',
@@ -24,7 +24,7 @@ function Log ($msg) {
 }
 
 $DohServer = '223.5.5.5'
-Log ('AI-Net-Guard v5.9.2 thorough rollback started' + $(if ($Auto) { ' (auto-rollback trigger)' } else { '' }))
+Log ('AI-Net-Guard v5.9.3 thorough rollback started' + $(if ($Auto) { ' (auto-rollback trigger)' } else { '' }))
 Log ('user: ' + [System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
 
 # ------------------------------------------------------------------ admin check
@@ -195,8 +195,13 @@ if ($baseline.AllowRules -and (Test-Path -LiteralPath $baseline.AllowRules)) {
 $autoQuarantine = Join-Path $BackupDir 'auto-disabled-outbound-allow.json'
 if (Test-Path -LiteralPath $autoQuarantine) {
     try {
-        $rawQ = [System.IO.File]::ReadAllText($autoQuarantine, [System.Text.Encoding]::UTF8)
-        $qItems = @($rawQ | ConvertFrom-Json)
+        if (Get-Command Read-GuardQuarantineList -ErrorAction SilentlyContinue) {
+            $qItems = @((Read-GuardQuarantineList -Path $autoQuarantine).Items)
+        }
+        else {
+            $rawQ = [System.IO.File]::ReadAllText($autoQuarantine, [System.Text.Encoding]::UTF8)
+            $qItems = @($rawQ | ConvertFrom-Json)
+        }
         $qn = 0
         foreach ($qi in $qItems) {
             try {

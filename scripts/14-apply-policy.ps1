@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.2 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.9.3 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 16
@@ -37,7 +37,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not $Root) {
-    $Root = if ($PSScriptRoot) { $PSScriptRoot } else { 'C:\AI-Net-Guard' }
+    $Root = if ($PSScriptRoot) { if ((Split-Path -Leaf $PSScriptRoot) -ieq 'scripts') { Split-Path -Parent $PSScriptRoot } else { $PSScriptRoot } } else { 'C:\AI-Net-Guard' }
 }
 
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -464,7 +464,7 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.9.2 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.9.3 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
 
 if (-not $isFreshInstall) {
@@ -745,7 +745,7 @@ else {
         $restoredCnt = 0
         if (Test-Path -LiteralPath $qFile) {
             try {
-                foreach ($qr in @(Get-Content -LiteralPath $qFile -Raw -Encoding UTF8 | ConvertFrom-Json)) {
+                foreach ($qr in @((Read-GuardQuarantineList -Path $qFile).Items)) {
                     if ($qr.Name) {
                         Enable-NetFirewallRule -Name $qr.Name -ErrorAction SilentlyContinue
                         $restoredCnt++
@@ -1347,18 +1347,18 @@ public static class AiGuardWinInet {
     Write-Host ''
     if ($applyErrors.Count -gt 0) {
         $applyExitCode = 5
-        Write-Host ('[FAILED] AI-Net-Guard v5.9.2 policy application finished with ' + $applyErrors.Count + ' error(s):') -ForegroundColor Red
+        Write-Host ('[FAILED] AI-Net-Guard v5.9.3 policy application finished with ' + $applyErrors.Count + ' error(s):') -ForegroundColor Red
         foreach ($ae in $applyErrors) { Write-Host ('  - ' + $ae) -ForegroundColor Red }
     }
     else {
         # Commit policy (persist last-good and mark PolicyCommitted=$true) ONLY after zero errors
         try {
             & $txCommitPolicy
-            Write-Host '[SUCCESS] AI-Net-Guard v5.9.2 configuration applied successfully.' -ForegroundColor Green
+            Write-Host '[SUCCESS] AI-Net-Guard v5.9.3 configuration applied successfully.' -ForegroundColor Green
         }
         catch {
             $applyExitCode = 5
-            Write-Host ('[FAILED] AI-Net-Guard v5.9.2 failed while committing last-good policy: ' + $_.Exception.Message) -ForegroundColor Red
+            Write-Host ('[FAILED] AI-Net-Guard v5.9.3 failed while committing last-good policy: ' + $_.Exception.Message) -ForegroundColor Red
         }
     }
 }
