@@ -54,6 +54,7 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 
 . (Join-Path $repo 'scripts\lib-stun-guard.ps1')
+. (Join-Path $repo 'scripts\lib-guard-common.ps1')
 
 $script:fail = 0
 function Assert-True([string]$Name, [bool]$Ok, [string]$Why = '') {
@@ -351,11 +352,13 @@ Assert-True '07-mode Get-ActiveTunNamesFast & Get-ActivePhysicalNicsFast avoid n
      ($mode -match 'b1Meta, \$line' -and $mode -match "Detail -replace '\[\\\|\\r\\n\]'")) `
     'flat returns, fast-path /32 route recovery, and pre-cache Detail normalization required'
 
-Assert-True 'IPv6 physical block respects DisablePhysicalIpv6 across lib-foreign-block, 07-mode, 02-killswitch, 14-apply-policy' `
+Assert-True 'IPv6 physical block respects DisablePhysicalIpv6 across lib-foreign-block, 07-mode, 02-killswitch, 10-sync-node-rule, 14-apply-policy' `
     (($libForeign -match '\[bool\]\$BlockPhysicalIpv6 = \$true') -and `
      ($mode -match '\$wantV6Block = \[bool\]\$guardPolicy\.DisablePhysicalIpv6') -and `
+     ($syncNode -match 'DisablePhysicalIpv6') -and `
+     ($syncNode -match '-BlockPhysicalIpv6') -and `
      ($applyPol -match '-SkipIpv6Block')) `
-    'BlockPhysicalIpv6 gating required'
+    'BlockPhysicalIpv6 gating required across all 5 consumers'
 
 Assert-True '09-rollback clears foreign-block.meta and 12-regression enforces SKIP casing and new static checks' `
     (($rollback -match "'foreign-block\.meta'") -and `
@@ -424,6 +427,80 @@ Assert-True 'verify-leak-test and 12-regression use strict STUN, WFP 5157 attrib
      ($reg -match 'Find-WfpBlockOrigin') -and ($reg -match 'Id = 5157') -and `
      ($reg -match '-PolicyStore ActiveStore')) `
     'strict STUN helpers, Event 5157 origin lookup, and ActiveStore readback required'
+
+# ---------------------------------------------------------------- 22. v5.8.9 security hardening (ACL, Rollback, ExitCode, Fail-Closed Policy, Lock, CIDR, Tasks)
+$tmpSecDir = Join-Path ([System.IO.Path]::GetTempPath()) ('ai-guard-test-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmpSecDir -Force | Out-Null
+try {
+    $defs = [ordered]@{ AllowCnDirect = $true; AllowLan = $true; StrictNrptDoh = $false; HardenInstallAcl = $true; Preset = 'Recommended' }
+    $pFile = Join-Path $tmpSecDir 'guard-policy.json'
+    $lgFile = Join-Path $tmpSecDir 'guard-policy.last-good.json'
+
+    # Valid policy saves last-known-good
+    [System.IO.File]::WriteAllText($pFile, '{"AllowCnDirect":false,"AllowLan":true,"Preset":"StrictLock"}', (New-Object System.Text.UTF8Encoding($false)))
+    $pOk = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile
+    $okPass = ($pOk.PolicyHealth -eq 'ok') -and (-not $pOk.AllowCnDirect) -and (Test-Path -LiteralPath $lgFile)
+
+    # String "false" must NOT coerce to $true - should recover last-good
+    [System.IO.File]::WriteAllText($pFile, '{"AllowCnDirect":"false"}', (New-Object System.Text.UTF8Encoding($false)))
+    $pRec = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile
+    $recPass = ($pRec.PolicyHealth -eq 'recovered-last-good') -and (-not $pRec.AllowCnDirect)
+
+    # Corrupt primary + corrupt last-good -> Fail-Closed (AllowCnDirect = $false)
+    [System.IO.File]::WriteAllText($pFile, '{broken-json', (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($lgFile, '{also-broken', (New-Object System.Text.UTF8Encoding($false)))
+    $pFc = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile
+    $fcPass = ($pFc.PolicyHealth -eq 'corrupt-fail-closed') -and (-not $pFc.AllowCnDirect) -and (-not $pFc.AllowLan) -and $pFc.HardenInstallAcl
+
+    Assert-True 'Read-GuardPolicyStrict rejects string booleans, recovers last-good, and fails closed when corrupt' `
+        ($okPass -and $recPass -and $fcPass) `
+        ('ok=' + $okPass + ' rec=' + $recPass + ' fc=' + $fcPass)
+}
+finally {
+    Remove-Item -LiteralPath $tmpSecDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$cnSample = @('# comment', '0.0.0.0/0', '1.0.0.0/1', '999.1.1.1/24', '192.168.1.0/24', '127.0.0.0/8', '172.16.0.0/12', '224.0.0.0/4', '1.0.1.5/24', '1.0.1.0/24')
+$cnValidated = @(Get-ValidatedCnPrefixes -Lines $cnSample -MinCount 1)
+Assert-True 'Get-ValidatedCnPrefixes rejects /0../7, invalid IPs, private/multicast, and normalizes/dedups CIDRs' `
+    (($cnValidated.Count -eq 1) -and ($cnValidated[0] -eq '1.0.1.0/24')) `
+    ('got count=' + $cnValidated.Count + ' items=' + ($cnValidated -join ','))
+
+$lock1 = Enter-GuardWriteLock -TimeoutMs 5000 -LockName 'Local\AI-Net-Guard-UnitTest-Lock'
+$lockNested = Enter-GuardWriteLock -TimeoutMs 5000 -LockName 'Local\AI-Net-Guard-UnitTest-Lock'
+$tokSet = [bool]$env:AI_GUARD_LOCK_TOKEN
+$nestedInherits = [bool]($lock1.Owned -and $lockNested.Inherited -and (-not $lockNested.Owned))
+Exit-GuardWriteLock $lockNested
+$tokStillSet = [bool]$env:AI_GUARD_LOCK_TOKEN
+Exit-GuardWriteLock $lock1
+$tokCleared = -not [bool]$env:AI_GUARD_LOCK_TOKEN
+Assert-True 'Enter-GuardWriteLock supports cross-process Mutex with safe parent-child reentrancy' `
+    ($tokSet -and $nestedInherits -and $tokStillSet -and $tokCleared) `
+    ('tokSet=' + $tokSet + ' nested=' + $nestedInherits + ' cleared=' + $tokCleared)
+
+$libCommonRaw = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') 'lib-guard-common.ps1') -Raw
+$aclScriptRaw = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') '13-harden-acl.ps1') -Raw
+$task17Raw = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') '17-autorepair-task.ps1') -Raw
+$wdRaw = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') 'watchdog.ps1') -Raw
+
+$aclIdx = $applyPol.IndexOf("Get-PolicyScriptPath '13-harden-acl.ps1'")
+$taskIdx = $applyPol.IndexOf("'-InstallTasks'")
+Assert-True '14-apply-policy locks ACL before SYSTEM tasks, checks exit codes, and defers rollback cancel' `
+    (($aclIdx -gt 0) -and ($taskIdx -gt $aclIdx) -and ($applyPol -match 'Invoke-GuardChild') -and `
+     ($applyPol -match '\$pendingRollbackCancel') -and ($applyPol -match '\$applyExitCode = 5') -and `
+     ($libCommonRaw -match 'Get-ChildItem -LiteralPath \$scriptsDir -Recurse') -and `
+     ($libCommonRaw -match 'ReparsePoint') -and ($aclScriptRaw -match 'Get-GuardInstallAclIssues')) `
+    ('aclIdx=' + $aclIdx + ' taskIdx=' + $taskIdx)
+
+Assert-True '09-rollback preserves imported baseline profile actions, checks netsh exit code, and guards baseline archive' `
+    (($rollback -match '\[switch\]\$ForceAllowOutbound') -and ($rollback -match '\$impRc = \$LASTEXITCODE') -and `
+     ($rollback -match '\(-not \$fwImported\) -or \$ForceAllowOutbound') -and `
+     ($rollback -match '\$rollbackErrors\.Count -eq 0')) `
+    'rollback baseline preservation and error gating required'
+
+Assert-True '17-autorepair-task and watchdog inspect task health/exit codes strictly' `
+    (($task17Raw -match '\$healthy -eq 2') -and ($task17Raw -match '267009') -and ($wdRaw -match 'if \(\$code -eq 0\)')) `
+    'task health and watchdog non-zero exit handling required'
 
 Write-Host ' '
 if ($script:fail -gt 0) {

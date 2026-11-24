@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.8 - network auto-repair scheduled tasks (status / install / remove / self-test).
+    AI-Net-Guard v5.8.9 - network auto-repair scheduled tasks (status / install / remove / self-test).
 
 .DESCRIPTION
     Windows can invalidate part of the static guard without any user action: a NIC
@@ -168,6 +168,7 @@ function Show-Tasks {
     Write-Host ' '
 
     $found = 0
+    $healthy = 0
     foreach ($name in @($EventTask, $FallbackTask)) {
         $snap = Get-TaskSnapshot $name
         if (-not $snap) {
@@ -176,7 +177,10 @@ function Show-Tasks {
             continue
         }
         $found++
-        $color = if ($snap.State -eq 'Ready' -or $snap.State -eq 'Running') { 'Green' } else { 'Yellow' }
+        $stateOk = ($snap.State -in @('Ready', 'Running'))
+        $resultOk = ($null -eq $snap.Result) -or ($snap.Result -in @(0, 267009, 267011))
+        if ($stateOk -and $resultOk) { $healthy++ }
+        $color = if ($stateOk -and $resultOk) { 'Green' } else { 'Yellow' }
         Write-Host ('  ' + $name.PadRight(24) + ' ' + $snap.State.ToUpper()) -ForegroundColor $color
         Write-Host ('      triggers : ' + $snap.Triggers)
         $lastTxt = if ($snap.LastRun) { $snap.LastRun.ToString('yyyy-MM-dd HH:mm:ss') } else { 'never' }
@@ -186,8 +190,11 @@ function Show-Tasks {
     }
 
     Write-Host ' '
-    if ($found -eq 2) {
+    if ($found -eq 2 -and $healthy -eq 2) {
         Write-Host 'verdict: OK - network / wake / periodic auto-repair is armed' -ForegroundColor Green
+    }
+    elseif ($found -eq 2) {
+        Write-Host ('verdict: DEGRADED - 2 tasks registered, but only ' + $healthy + ' healthy (disabled or last run failed)') -ForegroundColor Yellow
     }
     elseif ($found -eq 1) {
         Write-Host 'verdict: DEGRADED - 1 of 2 tasks registered' -ForegroundColor Yellow

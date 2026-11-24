@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.8 - step 16: purge leftover browser residue (DCBrowser / Firefox).
+    AI-Net-Guard v5.8.9 - step 16: purge leftover browser residue (DCBrowser / Firefox).
 
 .DESCRIPTION
     02-killswitch.ps1 / 07-mode.ps1 / 15-webrtc-browser-shield.ps1 only harden the

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.8 - opt-in event-driven resident health monitor (zero polling CPU).
+    AI-Net-Guard v5.8.9 - opt-in event-driven resident health monitor (zero polling CPU).
 
 .DESCRIPTION
     The guard itself is static: opening/closing the proxy needs no firewall or
@@ -76,9 +76,10 @@ function Invoke-QuietVerify([string]$Reason) {
     try {
         & (if (Test-Path (Join-Path (Join-Path $Root 'scripts') '07-mode.ps1')) { Join-Path (Join-Path $Root 'scripts') '07-mode.ps1' } else { Join-Path $Root '07-mode.ps1' }) -Mode Auto -Quiet -Root $Root -TunName $TunName | Out-Null
         $code = $LASTEXITCODE
-        if ($code -eq 2) { Log ($Reason + ': CN list invalid -> Protected (fail closed)') }
+        if ($code -eq 0) { Log ($Reason + ': ok (static guard intact)') }
+        elseif ($code -eq 2) { Log ($Reason + ': CN list invalid -> Protected (fail closed)') }
         elseif ($code -eq 3) { Log ($Reason + ': WARNING - one or more companion firewall rules missing (check mode-state.json)') }
-        else { Log ($Reason + ': ok (static guard intact)') }
+        else { Log ($Reason + ': WARNING - 07-mode.ps1 exited with code ' + $code) }
     }
     catch {
         Log ($Reason + ' failed: ' + $_.Exception.Message)

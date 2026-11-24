@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.8 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
+    AI-Net-Guard v5.8.9 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
 
 .DESCRIPTION
     The guard itself is 100% STATIC in Windows kernel WFP (BFE / tcpip.sys):
@@ -57,6 +57,18 @@ param(
 $ErrorActionPreference = 'Continue'
 $policyFile = Join-Path $Root 'backup\guard-policy.json'
 
+$libCommon = ''
+$commonCandidates = @((Join-Path $Root 'scripts\lib-guard-common.ps1'), (Join-Path $Root 'lib-guard-common.ps1'))
+if ($PSScriptRoot) { $commonCandidates = @((Join-Path $PSScriptRoot 'lib-guard-common.ps1')) + $commonCandidates }
+foreach ($cand in $commonCandidates) {
+    if ($cand -and (Test-Path -LiteralPath $cand)) { $libCommon = $cand; break }
+}
+if (-not $libCommon) {
+    Write-Host '[!] lib-guard-common.ps1 missing - cannot enforce policy/ACL/write-lock invariants' -ForegroundColor Red
+    exit 1
+}
+. $libCommon
+
 function Get-GuardPolicy {
     $pol = [ordered]@{
         Version              = '5.5'
@@ -80,27 +92,8 @@ function Get-GuardPolicy {
         HardenInstallAcl     = $true
         BlockWebRtcLeak      = $true
     }
-    if (Test-Path -LiteralPath $policyFile) {
-        try {
-            $raw = Get-Content -LiteralPath $policyFile -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($raw) {
-                foreach ($k in @('AllowCnDirect', 'AllowLan', 'AllowNcsi', 'QuarantineRogueAllow', 'LockPhysicalDns',
-                        'DisableSmhnr', 'DisableLlmnrNetbios', 'StrictNrptDoh', 'DisablePhysicalIpv6', 'PreferIpv4Prefix',
-                        'ZeroResidentMonitor', 'AutoNodeSync', 'AutoHealStaleProxy', 'DomesticNtp', 'HardenInstallAcl', 'BlockWebRtcLeak')) {
-                    if ($raw.PSObject.Properties.Name -contains $k -and $null -ne $raw.$k) {
-                        $pol[$k] = [bool]$raw.$k
-                    }
-                }
-                foreach ($sk in @('Version', 'Preset', 'DnsServer', 'V2rayNRoot')) {
-                    if ($raw.PSObject.Properties.Name -contains $sk -and $raw.$sk) {
-                        $pol[$sk] = [string]$raw.$sk
-                    }
-                }
-            }
-        }
-        catch { }
-    }
-    return [pscustomobject]$pol
+    $lastGoodFile = Join-Path $Root 'backup\guard-policy.last-good.json'
+    return (Read-GuardPolicyStrict -PolicyPath $policyFile -Defaults $pol -LastGoodPath $lastGoodFile -NoSaveLastGood:([bool]$Status))
 }
 
 $guardPolicy = Get-GuardPolicy
@@ -559,39 +552,7 @@ function Test-AiGuardNrptActiveFast {
 }
 
 function Get-InstallAclIssues([string]$Path) {
-    # O1: SYSTEM tasks execute scripts / read allowlists from $Root, so no non-admin SID
-    # may own or hold write / delete / ACL rights on it (fix: .\13-harden-acl.ps1).
-    $trusted = @('S-1-5-32-544', 'S-1-5-18', 'S-1-3-0', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-    $writeMask = [int64]0x500D0156
-    $issues = New-Object System.Collections.Generic.List[string]
-    $targets = @(Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue)
-    $targets += @(Get-ChildItem -LiteralPath $Path -Force -File -ErrorAction SilentlyContinue)
-    foreach ($sub in @('backup', 'logs')) {
-        $sp = Join-Path $Path $sub
-        if (Test-Path -LiteralPath $sp) { $targets += @(Get-Item -LiteralPath $sp -Force) }
-    }
-    foreach ($t in $targets) {
-        if (-not $t) { continue }
-        try {
-            # .NET ACL API (Get-Acl needs Microsoft.PowerShell.Security, which may not autoload)
-            $sections = [System.Security.AccessControl.AccessControlSections]'Owner, Access'
-            $acl = if ($t.PSIsContainer) { New-Object System.Security.AccessControl.DirectorySecurity($t.FullName, $sections) }
-                   else { New-Object System.Security.AccessControl.FileSecurity($t.FullName, $sections) }
-            $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-            if ($trusted -notcontains $owner) { $issues.Add($t.Name + ': owner=' + $owner) }
-            foreach ($ace in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
-                if ($ace.AccessControlType -ne 'Allow') { continue }
-                $sid = $ace.IdentityReference.Value
-                if ($trusted -contains $sid) { continue }
-                if (([int64]$ace.FileSystemRights -band $writeMask) -ne 0) {
-                    $issues.Add($t.Name + ': ' + $sid + ' has ' + $ace.FileSystemRights)
-                }
-            }
-        }
-        catch { $issues.Add($t.Name + ': ACL unreadable') }
-    }
-    # plain return (no leading comma) so callers can safely wrap with @()
-    return $issues.ToArray()
+    return (Get-GuardInstallAclIssues -Path $Path)
 }
 
 function Get-FirewallRuleAnalysis {
@@ -1380,16 +1341,10 @@ function Set-BrowserDohPolicy {
 }
 
 function Get-CnPrefixes {
-    if (-not (Test-Path -LiteralPath $cnList)) { return @() }
+    if (-not (Test-Path -LiteralPath $cnList)) { return ,@() }
     $rawLines = [System.IO.File]::ReadAllLines($cnList)
-    $ok = New-Object System.Collections.Generic.List[string] ($rawLines.Length)
-    foreach ($ln in $rawLines) {
-        $t = $ln.Trim()
-        if (-not $t -or $t.StartsWith('#')) { continue }
-        if ($t -match '^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$') { $ok.Add($t) }
-    }
-    if ($ok.Count -lt 1000) { return @() }
-    return ,$ok.ToArray()
+    $validated = @(Get-ValidatedCnPrefixes -Lines $rawLines -MinCount 1000)
+    return ,$validated
 }
 
 function Get-ListSignature {
@@ -1482,7 +1437,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>AI-Net-Guard v5.8.8 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
+    <Description>AI-Net-Guard v5.8.9 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
@@ -1714,10 +1669,15 @@ function Show-Status {
     else { 'stopped' }
 
     Write-Host ''
-    Write-Host '=== AI-Net-Guard v5.8.8 Status (read-only) ===' -ForegroundColor Cyan
+    Write-Host '=== AI-Net-Guard v5.8.9 Status (read-only) ===' -ForegroundColor Cyan
     Write-Host ('TUN : ' + $tunLabel + '   core : ' + $coreLabel)
     if (Test-Path -LiteralPath $policyFile) {
-        Write-Host ('  policy preset     : ' + $guardPolicy.Preset + ' (guard-policy.json active)') -ForegroundColor Cyan
+        $polCol = if ($guardPolicy.PolicyHealth -in @('ok', 'default')) { 'Cyan' } else { 'Yellow' }
+        Write-Host ('  policy preset     : ' + $guardPolicy.Preset + ' (guard-policy.json active)') -ForegroundColor $polCol
+    }
+    if ($guardPolicy.PolicyWarning) {
+        $pwCol = if ($guardPolicy.PolicyHealth -eq 'corrupt-fail-closed') { 'Red' } else { 'Yellow' }
+        Write-Host ('  POLICY WARNING    : ' + $guardPolicy.PolicyWarning) -ForegroundColor $pwCol
     }
 
     foreach ($pr in (Get-NetFirewallProfile -ErrorAction SilentlyContinue)) {
@@ -1909,7 +1869,7 @@ function Show-Status {
 }
 
 function Invoke-UpgradeV54 {
-    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.8.8 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
+    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.8.9 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
 
     # 1. Backfill new rollback fields into existing DNS baseline JSON without altering original values
     $bf = Join-Path $Root 'backup\baseline.json'
@@ -3003,136 +2963,148 @@ function Ensure-Guard {
 }
 
 # ---------------------------------------------------------------- mode dispatch
-$prevState = Read-PrevState
-$prevTun = if ($prevState -and $null -ne $prevState.TunUp) { [bool]$prevState.TunUp } else { $null }
-$tunUp = Test-TunUp
-
-if ($Mode -eq 'Protected') {
-    Say '[+] PROTECTED: default deny, CN allow disabled (fail closed)'
-    Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Block -Enabled True
-    Disable-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
-    Write-State -Label 'Protected' -CnEnabled $false -Sig '' -TunState $tunUp
-    Write-MonitorLog 'mode -> Protected (CN allow disabled, fail closed)'
-    exit 0
-}
-else {
-    if ($OnNetworkEvent) {
-        if ($null -eq $prevTun -or $tunUp -ne $prevTun) {
-            if ($tunUp) {
-                if ($prevTun -eq $false) {
-                    ipconfig.exe /flushdns | Out-Null
-                    Write-MonitorLog 'proxy path UP (TUN present) - flushed stale/poisoned DNS cache'
-                }
-                else {
-                    Write-MonitorLog 'proxy path UP (TUN present)'
-                }
-            }
-            else {
-                Write-MonitorLog 'proxy path OFF (TUN gone) - domestic direct allowed, foreign blocked'
-            }
-        }
+$scriptExitCode = 0
+$modeWriteLock = Enter-GuardWriteLock -TimeoutMs 30000
+try {
+    if ($guardPolicy.PolicyWarning) {
+        Write-MonitorLog ('WARNING: ' + $guardPolicy.PolicyWarning)
     }
 
-    $sig = Ensure-Guard
-    if (-not $sig) {
-        Say '[+] PROTECTED: CN prefix list missing/invalid (fail closed)'
+    $prevState = Read-PrevState
+    $prevTun = if ($prevState -and $null -ne $prevState.TunUp) { [bool]$prevState.TunUp } else { $null }
+    $tunUp = Test-TunUp
+
+    if ($Mode -eq 'Protected') {
+        Say '[+] PROTECTED: default deny, CN allow disabled (fail closed)'
         Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Block -Enabled True
         Disable-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
-        Write-State -Label 'Protected' -CnEnabled $false -Sig '' -TunState $tunUp -B1 $script:B1State
-        Write-MonitorLog 'verify: CN list invalid -> Protected (fail closed)'
-        exit 2
-    }
-
-    if ($OnNetworkEvent) {
-        # Race-free +800 ms late settle:
-        #   1) catches late Wintun bring-up when Event 10001/10000 arrived mid-transition
-        #   2) unconditionally checks if config.json changed late during fast node-switch (<0.3 ms)
-        #   3) unconditionally checks if v2rayN finished exiting ~500 ms after TUN teardown (<0.5 ms)
-        Start-Sleep -Milliseconds 800
-        $tunLate = Test-TunUp
-        $tunFlipped = ($tunLate -ne $tunUp)
-        if ($tunFlipped) {
-            $tunUp = $tunLate
-            if ($tunUp) {
-                ipconfig.exe /flushdns | Out-Null
-                Write-MonitorLog 'proxy path UP (late settle) - flushed stale/poisoned DNS cache'
-            }
-            else {
-                Write-MonitorLog 'proxy path OFF (late settle) - domestic direct allowed, foreign blocked'
-            }
-        }
-
-        if (-not $DisableAutoNodeSync) {
-            $cfgLatePath = Join-Path $V2rayNRoot 'binConfigs\config.json'
-            $cfgLateItem = Get-Item -LiteralPath $cfgLatePath -ErrorAction SilentlyContinue
-            if ($cfgLateItem) {
-                $lateStamp = ($cfgLateItem.Length.ToString() + ':' + $cfgLateItem.LastWriteTimeUtc.Ticks.ToString() + '|')
-                if ($tunFlipped -or -not (Test-NodeMetaFastHit -StampPrefix $lateStamp)) {
-                    $lateAnalysis = Get-FirewallRuleAnalysis
-                    Sync-NodeRuleFast -Analysis $lateAnalysis
-                }
-            }
-        }
-
-        if ($tunFlipped) {
-            $tunLocalAddrsLate = Get-TunAllowedLocalAddressesFast
-            $mainTunRuleLate = Get-GuardRule 'AI-Guard-Allow-TUN'
-            $altRuleLate = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
-            foreach ($activeTun in @(Get-ActiveTunNamesFast)) {
-                if (Test-FirewallRuleHasTun $mainTunRuleLate $activeTun) { continue }
-                if (Test-FirewallRuleHasTun $altRuleLate $activeTun) { continue }
-                try {
-                    if ($altRuleLate) {
-                        $curAliasesLate = @(Get-GuardRuleFilter ([string]$altRuleLate.Name) 'Interface' | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
-                        $mergedAliasesLate = @($curAliasesLate + @($activeTun) | Select-Object -Unique)
-                        Set-NetFirewallRule -InputObject $altRuleLate -InterfaceAlias $mergedAliasesLate -LocalAddress $tunLocalAddrsLate -Enabled True -ErrorAction Stop
-                        Reset-RuleCache
-                        $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
-                    }
-                    else {
-                        New-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -DisplayName 'AI-Guard-Allow-TUN-Alt' `
-                            -Direction Outbound -Action Allow -InterfaceAlias $activeTun -LocalAddress $tunLocalAddrsLate -Profile Any -Enabled True `
-                            -Description ('Allow outbound traffic routed into alternate TUN (' + $activeTun + ').') | Out-Null
-                        Reset-RuleCache
-                        $altRuleLate = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
-                        $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
-                    }
-                }
-                catch { }
-            }
-        }
-
-        Heal-StaleLoopbackProxyFast
-    }
-
-    if ($script:repairedItems.Count -gt 0) {
-        Write-MonitorLog ('auto-repaired: ' + ($script:repairedItems -join ', '))
-    }
-    elseif (-not $OnNetworkEvent -and $Quiet) {
-        Write-MonitorLog 'periodic fast verify ok (0 CIM loaded)'
-    }
-
-    $label = if ($tunUp) { 'Guard (proxy on)' } else { 'Guard (proxy off)' }
-    if ($sig -eq 'POLICY-NO-CN') {
-        Say ('[+] ' + $label + ': static guard intact, strict global lock (CN direct disabled by policy)')
-        Write-State -Label $label -CnEnabled $false -Sig $sig -TunState $tunUp -Missing $script:missingRules -B1 $script:B1State
+        Write-State -Label 'Protected' -CnEnabled $false -Sig '' -TunState $tunUp
+        Write-MonitorLog 'mode -> Protected (CN allow disabled, fail closed)'
+        $scriptExitCode = 0
     }
     else {
-        Say ('[+] ' + $label + ': static guard intact, CN direct allowed, foreign blocked')
-        Write-State -Label $label -CnEnabled $true -Sig $sig -TunState $tunUp -Missing $script:missingRules -B1 $script:B1State
-    }
+        if ($OnNetworkEvent) {
+            if ($null -eq $prevTun -or $tunUp -ne $prevTun) {
+                if ($tunUp) {
+                    if ($prevTun -eq $false) {
+                        ipconfig.exe /flushdns | Out-Null
+                        Write-MonitorLog 'proxy path UP (TUN present) - flushed stale/poisoned DNS cache'
+                    }
+                    else {
+                        Write-MonitorLog 'proxy path UP (TUN present)'
+                    }
+                }
+                else {
+                    Write-MonitorLog 'proxy path OFF (TUN gone) - domestic direct allowed, foreign blocked'
+                }
+            }
+        }
 
-    if ($Upgrade) {
-        Install-WatchdogTasks
-    }
+        $sig = Ensure-Guard
+        if (-not $sig) {
+            Say '[+] PROTECTED: CN prefix list missing/invalid (fail closed)'
+            Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Block -Enabled True
+            Disable-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
+            Write-State -Label 'Protected' -CnEnabled $false -Sig '' -TunState $tunUp -B1 $script:B1State
+            Write-MonitorLog 'verify: CN list invalid -> Protected (fail closed)'
+            $scriptExitCode = 2
+        }
+        else {
+            if ($OnNetworkEvent) {
+                # Race-free +800 ms late settle:
+                #   1) catches late Wintun bring-up when Event 10001/10000 arrived mid-transition
+                #   2) unconditionally checks if config.json changed late during fast node-switch (<0.3 ms)
+                #   3) unconditionally checks if v2rayN finished exiting ~500 ms after TUN teardown (<0.5 ms)
+                Start-Sleep -Milliseconds 800
+                $tunLate = Test-TunUp
+                $tunFlipped = ($tunLate -ne $tunUp)
+                if ($tunFlipped) {
+                    $tunUp = $tunLate
+                    if ($tunUp) {
+                        ipconfig.exe /flushdns | Out-Null
+                        Write-MonitorLog 'proxy path UP (late settle) - flushed stale/poisoned DNS cache'
+                    }
+                    else {
+                        Write-MonitorLog 'proxy path OFF (late settle) - domestic direct allowed, foreign blocked'
+                    }
+                }
 
-    if (-not $Quiet) {
-        Show-Status
-    }
+                if (-not $DisableAutoNodeSync) {
+                    $cfgLatePath = Join-Path $V2rayNRoot 'binConfigs\config.json'
+                    $cfgLateItem = Get-Item -LiteralPath $cfgLatePath -ErrorAction SilentlyContinue
+                    if ($cfgLateItem) {
+                        $lateStamp = ($cfgLateItem.Length.ToString() + ':' + $cfgLateItem.LastWriteTimeUtc.Ticks.ToString() + '|')
+                        if ($tunFlipped -or -not (Test-NodeMetaFastHit -StampPrefix $lateStamp)) {
+                            $lateAnalysis = Get-FirewallRuleAnalysis
+                            Sync-NodeRuleFast -Analysis $lateAnalysis
+                        }
+                    }
+                }
 
-    if ($script:missingRules.Count -gt 0) {
-        Write-MonitorLog ('WARNING: missing companion rules: ' + ($script:missingRules -join ','))
-        exit 3
+                if ($tunFlipped) {
+                    $tunLocalAddrsLate = Get-TunAllowedLocalAddressesFast
+                    $mainTunRuleLate = Get-GuardRule 'AI-Guard-Allow-TUN'
+                    $altRuleLate = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
+                    foreach ($activeTun in @(Get-ActiveTunNamesFast)) {
+                        if (Test-FirewallRuleHasTun $mainTunRuleLate $activeTun) { continue }
+                        if (Test-FirewallRuleHasTun $altRuleLate $activeTun) { continue }
+                        try {
+                            if ($altRuleLate) {
+                                $curAliasesLate = @(Get-GuardRuleFilter ([string]$altRuleLate.Name) 'Interface' | Where-Object { $_ -and $_ -ne 'Any' -and $_ -ne '0' })
+                                $mergedAliasesLate = @($curAliasesLate + @($activeTun) | Select-Object -Unique)
+                                Set-NetFirewallRule -InputObject $altRuleLate -InterfaceAlias $mergedAliasesLate -LocalAddress $tunLocalAddrsLate -Enabled True -ErrorAction Stop
+                                Reset-RuleCache
+                                $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
+                            }
+                            else {
+                                New-NetFirewallRule -Name 'AI-Guard-Allow-TUN-Alt' -DisplayName 'AI-Guard-Allow-TUN-Alt' `
+                                    -Direction Outbound -Action Allow -InterfaceAlias $activeTun -LocalAddress $tunLocalAddrsLate -Profile Any -Enabled True `
+                                    -Description ('Allow outbound traffic routed into alternate TUN (' + $activeTun + ').') | Out-Null
+                                Reset-RuleCache
+                                $altRuleLate = Get-GuardRule 'AI-Guard-Allow-TUN-Alt'
+                                $script:repairedItems += ('TUN-Alt(' + $activeTun + ')')
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                Heal-StaleLoopbackProxyFast
+            }
+
+            if ($script:repairedItems.Count -gt 0) {
+                Write-MonitorLog ('auto-repaired: ' + ($script:repairedItems -join ', '))
+            }
+            elseif (-not $OnNetworkEvent -and $Quiet) {
+                Write-MonitorLog 'periodic fast verify ok (0 CIM loaded)'
+            }
+
+            $label = if ($tunUp) { 'Guard (proxy on)' } else { 'Guard (proxy off)' }
+            if ($sig -eq 'POLICY-NO-CN') {
+                Say ('[+] ' + $label + ': static guard intact, strict global lock (CN direct disabled by policy)')
+                Write-State -Label $label -CnEnabled $false -Sig $sig -TunState $tunUp -Missing $script:missingRules -B1 $script:B1State
+            }
+            else {
+                Say ('[+] ' + $label + ': static guard intact, CN direct allowed, foreign blocked')
+                Write-State -Label $label -CnEnabled $true -Sig $sig -TunState $tunUp -Missing $script:missingRules -B1 $script:B1State
+            }
+
+            if ($Upgrade) {
+                Install-WatchdogTasks
+            }
+
+            if (-not $Quiet) {
+                Show-Status
+            }
+
+            if ($script:missingRules.Count -gt 0) {
+                Write-MonitorLog ('WARNING: missing companion rules: ' + ($script:missingRules -join ','))
+                $scriptExitCode = 3
+            }
+        }
     }
-    exit 0
 }
+finally {
+    Exit-GuardWriteLock $modeWriteLock
+}
+exit $scriptExitCode

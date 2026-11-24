@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.8 - lock the install directory ACL (O1) and run the first
+    AI-Net-Guard v5.8.9 - lock the install directory ACL (O1) and run the first
     elevated v5.4 verification (O2).
 
 .DESCRIPTION
@@ -58,39 +58,17 @@ if (-not (Test-Path -LiteralPath (Join-Path $Root '07-mode.ps1')) -and -not (Tes
     exit 1
 }
 
+$libCommonAcl = ''
+foreach ($cand in @((Join-Path $PSScriptRoot 'lib-guard-common.ps1'), (Join-Path (Join-Path $Root 'scripts') 'lib-guard-common.ps1'), (Join-Path $Root 'lib-guard-common.ps1'))) {
+    if ($cand -and (Test-Path -LiteralPath $cand)) { $libCommonAcl = $cand; break }
+}
+if ($libCommonAcl) { . $libCommonAcl }
+
 function Get-InstallAclIssues([string]$Path) {
-    # Trusted writers: Administrators, SYSTEM, CREATOR OWNER (inherit-only), TrustedInstaller
-    $trusted = @('S-1-5-32-544', 'S-1-5-18', 'S-1-3-0', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-    # WriteData|AppendData|WriteEA|DeleteChild|WriteAttributes|Delete|WRITE_DAC|WRITE_OWNER|GENERIC_WRITE|GENERIC_ALL
-    $writeMask = [int64]0x500D0156
-    $issues = New-Object System.Collections.Generic.List[string]
-    $targets = @(Get-Item -LiteralPath $Path -Force)
-    $targets += @(Get-ChildItem -LiteralPath $Path -Force -File -ErrorAction SilentlyContinue)
-    foreach ($sub in @('backup', 'logs', 'scripts')) {
-        $sp = Join-Path $Path $sub
-        if (Test-Path -LiteralPath $sp) { $targets += @(Get-Item -LiteralPath $sp -Force) }
+    if (Get-Command Get-GuardInstallAclIssues -ErrorAction SilentlyContinue) {
+        return (Get-GuardInstallAclIssues -Path $Path)
     }
-    foreach ($t in $targets) {
-        try {
-            # .NET ACL API (Get-Acl needs Microsoft.PowerShell.Security, which may not autoload)
-            $sections = [System.Security.AccessControl.AccessControlSections]'Owner, Access'
-            $acl = if ($t.PSIsContainer) { New-Object System.Security.AccessControl.DirectorySecurity($t.FullName, $sections) }
-                   else { New-Object System.Security.AccessControl.FileSecurity($t.FullName, $sections) }
-            $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-            if ($trusted -notcontains $owner) { $issues.Add($t.Name + ': owner=' + $owner) }
-            foreach ($ace in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
-                if ($ace.AccessControlType -ne 'Allow') { continue }
-                $sid = $ace.IdentityReference.Value
-                if ($trusted -contains $sid) { continue }
-                if (([int64]$ace.FileSystemRights -band $writeMask) -ne 0) {
-                    $issues.Add($t.Name + ': ' + $sid + ' has ' + $ace.FileSystemRights)
-                }
-            }
-        }
-        catch { $issues.Add($t.Name + ': ACL unreadable (' + $_.Exception.Message + ')') }
-    }
-    # plain return (no leading comma) so callers can safely wrap with @()
-    return $issues.ToArray()
+    throw 'lib-guard-common.ps1 missing - cannot perform recursive ACL verification'
 }
 
 function Invoke-Icacls([string[]]$IcaclsArgs) {
@@ -154,7 +132,7 @@ if ($Undo) {
 
 # ---------------------------------------------------------------- 1. ACL lock
 Write-Host ''
-Write-Host '=== AI-Net-Guard v5.8.8: install directory ACL hardening (O1) ===' -ForegroundColor Cyan
+Write-Host '=== AI-Net-Guard v5.8.9: install directory ACL hardening (O1) ===' -ForegroundColor Cyan
 $before = @(Get-InstallAclIssues -Path $Root)
 Write-Host ('    issues before: ' + $before.Count)
 $before | Select-Object -First 6 | ForEach-Object { Write-Host ('      ' + $_) -ForegroundColor DarkGray }

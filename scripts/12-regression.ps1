@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.8 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
+    AI-Net-Guard v5.8.9 - automated regression suite (policy-aware, TUN-on/off & multi-core aware, zero capture bloat).
 
 .DESCRIPTION
     Verifies the v5.4 static guard end-to-end. Read-only, except for a temporary
@@ -36,8 +36,14 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+$libCommonReg = ''
+foreach ($cand in @((Join-Path $PSScriptRoot 'lib-guard-common.ps1'), (Join-Path (Join-Path $Root 'scripts') 'lib-guard-common.ps1'), (Join-Path $Root 'lib-guard-common.ps1'))) {
+    if ($cand -and (Test-Path -LiteralPath $cand)) { $libCommonReg = $cand; break }
+}
+if ($libCommonReg) { . $libCommonReg }
+
 $policyFile = Join-Path $Root 'backup\guard-policy.json'
-$guardPolicy = [ordered]@{
+$guardPolicyDefaults = [ordered]@{
     Version              = '5.5'
     Preset               = 'Recommended'
     DnsServer            = $DnsServer
@@ -59,27 +65,12 @@ $guardPolicy = [ordered]@{
     DomesticNtp          = $true
     HardenInstallAcl     = $true
 }
-if (Test-Path -LiteralPath $policyFile) {
-    try {
-        $rawPol = Get-Content -LiteralPath $policyFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($rawPol) {
-            foreach ($k in @('AllowCnDirect', 'AllowLan', 'AllowNcsi', 'QuarantineRogueAllow', 'LockPhysicalDns',
-                    'DisableSmhnr', 'DisableLlmnrNetbios', 'StrictNrptDoh', 'BlockWebRtcLeak', 'DisablePhysicalIpv6', 'PreferIpv4Prefix',
-                    'ZeroResidentMonitor', 'AutoNodeSync', 'AutoHealStaleProxy', 'DomesticNtp', 'HardenInstallAcl')) {
-                if ($rawPol.PSObject.Properties.Name -contains $k -and $null -ne $rawPol.$k) {
-                    $guardPolicy[$k] = [bool]$rawPol.$k
-                }
-            }
-            foreach ($sk in @('Version', 'Preset', 'DnsServer', 'V2rayNRoot')) {
-                if ($rawPol.PSObject.Properties.Name -contains $sk -and $rawPol.$sk) {
-                    $guardPolicy[$sk] = [string]$rawPol.$sk
-                }
-            }
-        }
-    }
-    catch { }
+if (Get-Command Read-GuardPolicyStrict -ErrorAction SilentlyContinue) {
+    $guardPolicy = Read-GuardPolicyStrict -PolicyPath $policyFile -Defaults $guardPolicyDefaults -LastGoodPath (Join-Path $Root 'backup\guard-policy.last-good.json') -NoSaveLastGood
 }
-$guardPolicy = [pscustomobject]$guardPolicy
+else {
+    $guardPolicy = [pscustomobject]$guardPolicyDefaults
+}
 if (-not $PSBoundParameters.ContainsKey('V2rayNRoot') -and $guardPolicy.V2rayNRoot -and (Test-Path -LiteralPath $guardPolicy.V2rayNRoot)) {
     $V2rayNRoot = $guardPolicy.V2rayNRoot
 }
@@ -282,7 +273,7 @@ function Get-ConfiguredNodeInfo {
     }
 }
 
-W ('=== AI-Net-Guard v5.8.8 regression ' + (Get-Date -Format 'o') + ' ===')
+W ('=== AI-Net-Guard v5.8.9 regression ' + (Get-Date -Format 'o') + ' ===')
 function Get-ActiveIpPhysicalNics {
     @([System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() | Where-Object {
         $_.OperationalStatus -eq 'Up' -and
@@ -609,27 +600,12 @@ Check 'install directory ACL policy' {
         'ACL lock disabled by user policy'
     }
     else {
-        $trusted = @('S-1-5-32-544', 'S-1-5-18', 'S-1-3-0', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-        $writeMask = [int64]0x500D0156
-        $issues = @()
-        $targets = @(Get-Item -LiteralPath $Root -Force) + @(Get-ChildItem -LiteralPath $Root -Force -File -ErrorAction SilentlyContinue)
-        foreach ($sub in @('backup', 'logs')) {
-            $sp = Join-Path $Root $sub
-            if (Test-Path -LiteralPath $sp) { $targets += @(Get-Item -LiteralPath $sp -Force) }
+        if (-not (Get-Command Get-GuardInstallAclIssues -ErrorAction SilentlyContinue)) {
+            throw 'lib-guard-common.ps1 missing - cannot run recursive ACL check'
         }
-        foreach ($t in $targets) {
-            $sections = [System.Security.AccessControl.AccessControlSections]'Owner, Access'
-            $acl = if ($t.PSIsContainer) { New-Object System.Security.AccessControl.DirectorySecurity($t.FullName, $sections) }
-                   else { New-Object System.Security.AccessControl.FileSecurity($t.FullName, $sections) }
-            $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-            if ($trusted -notcontains $owner) { $issues += ($t.Name + ': owner=' + $owner) }
-            foreach ($ace in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
-                if ($ace.AccessControlType -ne 'Allow' -or ($trusted -contains $ace.IdentityReference.Value)) { continue }
-                if (([int64]$ace.FileSystemRights -band $writeMask) -ne 0) { $issues += ($t.Name + ': ' + $ace.IdentityReference.Value + ' has ' + $ace.FileSystemRights) }
-            }
-        }
+        $issues = @(Get-GuardInstallAclIssues -Path $Root)
         if ($issues.Count -gt 0) { throw ([string]$issues.Count + ' issue(s), e.g. ' + $issues[0] + ' (run .\13-harden-acl.ps1)') }
-        ('owner=Administrators, Users=RX, ' + $targets.Count + ' objects checked')
+        'recursive ACL + ReparsePoint clean (owner=Administrators, Users=RX)'
     }
 }
 

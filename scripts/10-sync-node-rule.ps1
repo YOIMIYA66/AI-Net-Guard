@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.8 - maintenance: re-sync node allow rule after switching proxy node or core.
+    AI-Net-Guard v5.8.9 - maintenance: re-sync node allow rule after switching proxy node or core.
 
 .DESCRIPTION
     Note: In v5.4, 07-mode.ps1 automatically syncs AI-Guard-Allow-Node-TCP/UDP
@@ -43,6 +43,12 @@ if (-not $V2rayNRoot) {
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 $p = New-Object Security.Principal.WindowsPrincipal($id)
 $isAdmin = $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+$libCommonSync = ''
+foreach ($cand in @((Join-Path $PSScriptRoot 'lib-guard-common.ps1'), (Join-Path (Join-Path $Root 'scripts') 'lib-guard-common.ps1'), (Join-Path $Root 'lib-guard-common.ps1'))) {
+    if ($cand -and (Test-Path -LiteralPath $cand)) { $libCommonSync = $cand; break }
+}
+if ($libCommonSync) { . $libCommonSync }
 
 function Resolve-NodeDomainSafe([string]$Domain) {
     $res = @()
@@ -228,6 +234,12 @@ Write-Host ('transport uses UDP: ' + $udp + $(if ($udp) { ' (' + ($baseUdpPorts 
 
 if ($WhatIfOnly) { Write-Host 'WhatIfOnly: no firewall change made.'; return }
 if (-not $isAdmin) { throw 'run elevated to modify firewall rules' }
+
+$syncWriteLock = $null
+if (Get-Command Enter-GuardWriteLock -ErrorAction SilentlyContinue) {
+    $syncWriteLock = Enter-GuardWriteLock -TimeoutMs 30000
+}
+try {
 
 # TCP
 if ($tcpRule) {
@@ -415,15 +427,16 @@ try {
     }
     if (Test-Path -LiteralPath $libForeign) {
         . $libForeign
-        $allowCn = $true; $allowLan = $true; $allowNcsi = $true
+        $allowCn = $true; $allowLan = $true; $allowNcsi = $true; $blockPhysIpv6 = $true
         $polPath = Join-Path $Root 'backup\guard-policy.json'
         if (Test-Path -LiteralPath $polPath) {
             try {
                 $rawP = Get-Content -LiteralPath $polPath -Raw -Encoding UTF8 | ConvertFrom-Json
                 if ($rawP) {
-                    if ($rawP.PSObject.Properties.Name -contains 'AllowCnDirect' -and $null -ne $rawP.AllowCnDirect) { $allowCn = [bool]$rawP.AllowCnDirect }
-                    if ($rawP.PSObject.Properties.Name -contains 'AllowLan' -and $null -ne $rawP.AllowLan) { $allowLan = [bool]$rawP.AllowLan }
-                    if ($rawP.PSObject.Properties.Name -contains 'AllowNcsi' -and $null -ne $rawP.AllowNcsi) { $allowNcsi = [bool]$rawP.AllowNcsi }
+                    if ($rawP.PSObject.Properties.Name -contains 'AllowCnDirect' -and ($rawP.AllowCnDirect -is [bool])) { $allowCn = [bool]$rawP.AllowCnDirect }
+                    if ($rawP.PSObject.Properties.Name -contains 'AllowLan' -and ($rawP.AllowLan -is [bool])) { $allowLan = [bool]$rawP.AllowLan }
+                    if ($rawP.PSObject.Properties.Name -contains 'AllowNcsi' -and ($rawP.AllowNcsi -is [bool])) { $allowNcsi = [bool]$rawP.AllowNcsi }
+                    if ($rawP.PSObject.Properties.Name -contains 'DisablePhysicalIpv6' -and ($rawP.DisablePhysicalIpv6 -is [bool])) { $blockPhysIpv6 = [bool]$rawP.DisablePhysicalIpv6 }
                 }
             } catch { }
         }
@@ -434,7 +447,7 @@ try {
         } | Select-Object -ExpandProperty Name)
         if ($physAliases.Count -gt 0) {
             if (Sync-ForeignPhysicalBlockRule -Root $Root -PhysicalAliases $physAliases -NodeIps $ips `
-                -AllowCnDirect $allowCn -AllowLan $allowLan -AllowNcsi $allowNcsi) {
+                -AllowCnDirect $allowCn -AllowLan $allowLan -AllowNcsi $allowNcsi -BlockPhysicalIpv6 $blockPhysIpv6) {
                 Write-Host '[+] AI-Guard-Block-Foreign-Physical updated for new node/policy' -ForegroundColor Green
             }
         }
@@ -445,3 +458,9 @@ catch { }
 Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-Node-*' |
     Select-Object DisplayName, Enabled, @{n = 'Program'; e = { Split-Path -Leaf (($_ | Get-NetFirewallApplicationFilter).Program) } }, @{n = 'RemoteAddress'; e = { ($_ | Get-NetFirewallAddressFilter).RemoteAddress -join ',' } }, @{n = 'RemotePort'; e = { ($_ | Get-NetFirewallPortFilter).RemotePort -join ',' } } |
     Format-Table -AutoSize
+}
+finally {
+    if (Get-Command Exit-GuardWriteLock -ErrorAction SilentlyContinue) {
+        Exit-GuardWriteLock $syncWriteLock
+    }
+}

@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.8.8 · ActiveStore `/32` 路由自愈 + 嵌套数组防错 + 严格 STUN/WFP 核验）
+# AI-Net-Guard 实现方案与持续审查文档（v5.8.9 · P0 ACL/回滚/退出码加固 + Fail-Closed 策略 + 跨进程写锁）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.8.8 正式版**（修复 `07-mode` 重启/切网 `ActiveStore` `/32` 不重建与 5 处 `return ,` 嵌套数组静默失效、`DisablePhysicalIpv6 = false` 与 IPv6 拦截规则冲突、`sing-box` `hijack-dns`/`logical` B1 误报，并吸收 RFC 5389 严格 STUN 解析、WFP Event ID `5157` 阻断归因与 `ActiveStore` 规则段数回读核验，详见 16.14）
+> 版本状态：**v5.8.9 正式版**（修复 `10-sync-node-rule.ps1` 漏传 `-BlockPhysicalIpv6`，抽离 `scripts/lib-guard-common.ps1` 补齐递归 ACL+ReparsePoint 校验与先锁 ACL 再装 SYSTEM 任务、`09-rollback.ps1` 基线保留与错误拒绝、`14-apply-policy.ps1` 子进程退出码严格校验与延后取消回滚、`Read-GuardPolicyStrict` Fail-Closed+`last-good` 兜底、跨进程 Mutex 写锁、严格 CN CIDR 校验及任务健康严格判定，门禁扩至 45 条，详见 16.15）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -567,7 +567,7 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 
 #### 16.9.3 P1：回归门禁进构建，且测试脚本不进发行物
 
-新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12）。）
+新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12），v5.8.7 起为 33 条（见 16.13），v5.8.8 为 39 条（见 16.14），v5.8.9 扩至 45 条（见 16.15）。）
 
 #### 16.9.4 第二轮 review 修掉的 6 处
 
@@ -777,3 +777,22 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
    - `lib-stun-guard.ps1` 新增严格 RFC 5389 `New-StunBindingRequest` 与 `ConvertFrom-StunResponse`（校验 `0x0101`、Magic Cookie、96 位 `TransactionId` 与 IPv4/IPv6 XOR 解码），接入 `verify-leak-test.ps1` 与 `12-regression.ps1`；
    - `12-regression.ps1` 新增 `Find-WfpBlockOrigin`（最佳努力检索 Security Event ID `5157` `FilterOrigin` 阻断归因）；
    - `12-regression.ps1` 新增 `ActiveStore` 活跃防火墙规则与地址段数回读校验，确认规则真正在当前活跃策略生效且未被截断。
+
+---
+
+### 16.15 v5.8.9：安全正确性加固（ACL 信任链、回滚保护、退出码、Fail-Closed 策略、跨进程写锁与 A1 IPv6 联动，2026-11-24）
+
+结合第二轮本地深度复核（核实 A1 属实、确认 A2 为误报：`07-mode.ps1` 在缓存命中分支前已赋值 `$res.Ports = $ports.Count` 且现网 `mode-state.json` 实测 `Ports: 12`）与独立静态安全审计核实后确立的 P0/P1/P2 修复方案：
+
+1. **A1 修复与 IPv6 边界披露（A3）**：`10-sync-node-rule.ps1` 同步读取 `guard-policy.json` 的 `DisablePhysicalIpv6` 布尔值并传 `-BlockPhysicalIpv6`，并在文档明确说明关闭 `DisablePhysicalIpv6` 会同时移除物理网卡 IPv6 侧的显式 WFP `2000::/3` 阻断兜底。
+2. **新增 `scripts/lib-guard-common.ps1` 共享安全基座与三大 P0 修复**：
+   - **P0 #01（完整 ACL 信任链）**：`Get-GuardInstallAclIssues` 递归检查 `scripts\` 所有子目录/文件、关键 `backup\` 策略文件及 NTFS `ReparsePoint`（符号链接/联接）；`14-apply-policy.ps1` 强制**先完成 ACL 加固再注册 SYSTEM 任务**，开启 `ZeroResidentMonitor` 时禁止跳过 ACL 加固，ACL 加固失败拒绝注册 SYSTEM 任务；
+   - **P0 #02（回滚基线保护）**：`09-rollback.ps1` 校验 `netsh advfirewall import` `$LASTEXITCODE`，导入成功保留原配置文件出站策略不被无条件覆盖为 `Allow`（新增 `-ForceAllowOutbound` 仅作应急强制覆盖），有失败错误时保留 `baseline.json` 不归档并以非零码退出；
+   - **P0 #03（子进程退出码传播）**：`14-apply-policy.ps1` 统一通过 `Invoke-GuardChild` 校验 `10`/`07`/`13` 退出码，任一步失败记入 `$applyErrors` 并以 `exit 5` 退出，不再吞错报告 `[SUCCESS]`。
+3. **五项 P1/P2 安全可靠性加固**：
+   - **P1 #04（Fail-Closed 策略解析）**：`Read-GuardPolicyStrict` 拒绝 `"false"` 等非布尔类型，写入 `backup\guard-policy.last-good.json` 原子备份；主文件损坏优先恢复 `last-good`，两者均坏直接进入 Fail-Closed，`14` 拒绝应用损坏策略；
+   - **P1 #05（跨进程写锁）**：`Enter-GuardWriteLock`/`Exit-GuardWriteLock`（`Global\AI-Net-Guard-PolicyEngine` Mutex + `AI_GUARD_LOCK_TOKEN` 父子重入令牌）统一保护 `07`/`09`/`10`/`14` 写操作；
+   - **P1 #08（延后提交自动回滚）**：`14-apply-policy.ps1` 延后至所有收尾步骤（含任务与 ACL）全部零错误完成后再注销 `AI-Guard-Test-Rollback`；
+   - **P1 #11（严格 CN CIDR 校验）**：`Get-ValidatedCnPrefixes` 使用 `IPAddress.TryParse`、前缀 `/8../32`、排除 `0/10/127/169.254/172.16-31/192.168/224+` 并去重归一化；
+   - **P2 #12（任务健康严格判定）**：`17-autorepair-task.ps1` 仅在 `Ready`/`Running` 且上次结果码正常（`0`/`267009`/`267011`）时判为健康，`watchdog.ps1` 仅在 `$code -eq 0` 时记 `ok`。
+4. **文档与门禁同步**：更新 `docs/REPO-LAYOUT.md` 版本索引、`README_EN.md`（区分 `PASSED` 与 `PASSED WITH CAVEAT`）、`lib-foreign-block.ps1` 注释；`tests/test-stun-ports.ps1` 扩至 45 条断言。

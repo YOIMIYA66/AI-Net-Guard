@@ -1,8 +1,9 @@
-# AI-Net-Guard v5.8.8 - rollback & baseline restore (100% thorough uninstaller)
+# AI-Net-Guard v5.8.9 - rollback & baseline restore (100% thorough uninstaller)
 [CmdletBinding()]
 param(
     [string]$Root = 'C:\AI-Net-Guard',
-    [switch]$KeepAclLocked
+    [switch]$KeepAclLocked,
+    [switch]$ForceAllowOutbound
 )
 
 $ErrorActionPreference = 'Continue'
@@ -22,7 +23,7 @@ function Log ($msg) {
 }
 
 $DohServer = '223.5.5.5'
-Log 'AI-Net-Guard v5.8.8 thorough rollback started'
+Log 'AI-Net-Guard v5.8.9 thorough rollback started'
 Log ('user: ' + [System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
 
 # ------------------------------------------------------------------ admin check
@@ -31,6 +32,19 @@ if (-not $isAdmin) {
     Log 'ERROR: rollback requires an elevated Administrator session'
     exit 2
 }
+
+$libCommonRb = ''
+foreach ($cand in @((Join-Path $PSScriptRoot 'lib-guard-common.ps1'), (Join-Path (Join-Path $Root 'scripts') 'lib-guard-common.ps1'), (Join-Path $Root 'lib-guard-common.ps1'))) {
+    if ($cand -and (Test-Path -LiteralPath $cand)) { $libCommonRb = $cand; break }
+}
+if ($libCommonRb) { . $libCommonRb }
+
+$rollbackErrors = New-Object System.Collections.Generic.List[string]
+$rbWriteLock = $null
+if (Get-Command Enter-GuardWriteLock -ErrorAction SilentlyContinue) {
+    $rbWriteLock = Enter-GuardWriteLock -TimeoutMs 30000
+}
+try {
 
 # ------------------------------------------------------------------ 0. stop all AI-Guard tasks & processes
 $allTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -like 'AI-Guard*' } | Select-Object -ExpandProperty TaskName)
@@ -88,18 +102,42 @@ function Get-Baseline {
 $baseline = Get-Baseline
 
 # ------------------------------------------------------------------ 1. firewall restoration
+$fwImported = $false
 if ($baseline.Firewall -and (Test-Path -LiteralPath $baseline.Firewall)) {
     Log ('importing firewall backup: ' + $baseline.Firewall)
     $out = netsh advfirewall import "$($baseline.Firewall)" 2>&1
+    $impRc = $LASTEXITCODE
     Log ($out -join ' ')
+    if ($impRc -eq 0) {
+        $fwImported = $true
+        Log 'firewall baseline imported cleanly (preserving pre-install profile actions)'
+    }
+    else {
+        $errMsg = 'firewall backup import failed (exit=' + $impRc + ')'
+        $rollbackErrors.Add($errMsg)
+        Log ('ERROR: ' + $errMsg)
+    }
 }
 
-# Ensure all 3 firewall profiles allow outbound traffic by default
-try {
-    Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultInboundAction NotConfigured -DefaultOutboundAction Allow
-    Log 'ensured DefaultOutboundAction is Allow across Domain, Private, Public profiles'
+# Only override default profile actions if no baseline could be imported OR -ForceAllowOutbound
+# (emergency rescue) was explicitly requested. Otherwise importing a pre-existing Block baseline
+# would be silently wiped out to Allow.
+if ((-not $fwImported) -or $ForceAllowOutbound) {
+    try {
+        if ($ForceAllowOutbound) {
+            Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultInboundAction NotConfigured -DefaultOutboundAction Allow
+            Log 'emergency override (-ForceAllowOutbound): set DefaultInboundAction=NotConfigured, DefaultOutboundAction=Allow'
+        }
+        else {
+            Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Allow
+            Log 'no firewall baseline imported; restored DefaultOutboundAction=Allow across Domain, Private, Public'
+        }
+    }
+    catch {
+        $rollbackErrors.Add('Set-NetFirewallProfile failed: ' + $_.Exception.Message)
+        Log ('warning setting firewall profile: ' + $_.Exception.Message)
+    }
 }
-catch { Log ('warning setting firewall profile: ' + $_.Exception.Message) }
 
 # Re-enable original outbound allow rules
 if ($baseline.AllowRules -and (Test-Path -LiteralPath $baseline.AllowRules)) {
@@ -392,9 +430,14 @@ try {
 # ------------------------------------------------------------------ 9. Archive baseline & state files
 $bf = Join-Path $BackupDir 'baseline.json'
 if (Test-Path -LiteralPath $bf) {
-    $archived = Join-Path $BackupDir ('baseline-rolledback-' + $stamp + '.json')
-    Move-Item -LiteralPath $bf -Destination $archived -Force -ErrorAction SilentlyContinue
-    Log ('archived baseline.json -> ' + (Split-Path -Leaf $archived))
+    if ($rollbackErrors.Count -eq 0) {
+        $archived = Join-Path $BackupDir ('baseline-rolledback-' + $stamp + '.json')
+        Move-Item -LiteralPath $bf -Destination $archived -Force -ErrorAction SilentlyContinue
+        Log ('archived baseline.json -> ' + (Split-Path -Leaf $archived))
+    }
+    else {
+        Log 'WARNING: preserving baseline.json because rollback encountered errors (re-run rollback once fixed)'
+    }
 }
 
 $pf = Join-Path $BackupDir 'guard-policy.json'
@@ -405,7 +448,7 @@ if (Test-Path -LiteralPath $pf) {
 }
 
 # Remove dynamic metadata files
-foreach ($metaFile in @('mode-state.json', 'node-sync.meta', 'node-routes.meta', 'foreign-block.meta', 'cn-rule.sig', 'cn-file.meta', 'auto-disabled-outbound-allow.json', 'hotplug-ipv6.json', 'b1-guard.meta')) {
+foreach ($metaFile in @('mode-state.json', 'node-sync.meta', 'node-routes.meta', 'foreign-block.meta', 'cn-rule.sig', 'cn-file.meta', 'auto-disabled-outbound-allow.json', 'hotplug-ipv6.json', 'b1-guard.meta', 'guard-policy.last-good.json')) {
     $mf = Join-Path $BackupDir $metaFile
     if (Test-Path -LiteralPath $mf) {
         Remove-Item -LiteralPath $mf -Force -ErrorAction SilentlyContinue
@@ -442,11 +485,22 @@ if ($hasRoutingBk) {
     Write-Host $fix -ForegroundColor Yellow
 }
 
-if ($hasRoutingBk) {
+$rbExit = 0
+if ($rollbackErrors.Count -gt 0) {
+    $rbExit = 1
+    Log ('rollback finished WITH ERRORS (' + $rollbackErrors.Count + '): ' + ($rollbackErrors -join '; '))
+}
+elseif ($hasRoutingBk) {
     Log 'rollback finished: Windows guard state restored; manual v2rayN routing step listed above'
 }
 else {
     Log 'rollback finished: 100% SUCCESS'
 }
-Write-Host ('rollback log: ' + $Log) -ForegroundColor Green
-exit 0
+Write-Host ('rollback log: ' + $Log) -ForegroundColor $(if ($rbExit -eq 0) { 'Green' } else { 'Red' })
+}
+finally {
+    if (Get-Command Exit-GuardWriteLock -ErrorAction SilentlyContinue) {
+        Exit-GuardWriteLock $rbWriteLock
+    }
+}
+exit $rbExit

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.8.8 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.8.9 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 16
@@ -64,10 +64,35 @@ if (-not (Test-Path -LiteralPath $libStun)) {
 }
 . $libStun
 
+$libCommon = Get-PolicyScriptPath 'lib-guard-common.ps1'
+if (-not (Test-Path -LiteralPath $libCommon)) {
+    Write-Host ('[!] lib-guard-common.ps1 not found: ' + $libCommon) -ForegroundColor Red
+    exit 1
+}
+. $libCommon
+
 function Write-Step([string]$msg) { Write-Host ('[+] ' + $msg) -ForegroundColor Cyan }
 function Write-Ok([string]$msg)   { Write-Host ('    [OK] ' + $msg) -ForegroundColor Green }
 function Write-Note([string]$msg) { Write-Host ('    [i]  ' + $msg) -ForegroundColor DarkGray }
 function Write-Warn([string]$msg) { Write-Host ('    [!]  ' + $msg) -ForegroundColor Yellow }
+
+function Invoke-GuardChild {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [string[]]$ChildArgs = @(),
+        [string]$Label = '',
+        [int[]]$AllowedExitCodes = @(0)
+    )
+    if (-not (Test-Path -LiteralPath $ScriptPath)) {
+        throw ('required script missing: ' + $ScriptPath)
+    }
+    $desc = if ($Label) { $Label } else { Split-Path -Leaf $ScriptPath }
+    & $psExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ScriptPath @ChildArgs
+    $rc = $LASTEXITCODE
+    if ($AllowedExitCodes -notcontains $rc) {
+        throw ($desc + ' failed (exit=' + $rc + ')')
+    }
+}
 
 # ------------------------------------------------------------------ SetSystemProxy action
 if ($SetSystemProxy) {
@@ -203,7 +228,7 @@ if (-not $PolicyPath) {
     $PolicyPath = Join-Path $BackupDir 'guard-policy.json'
 }
 
-$policy = [ordered]@{
+$policyDefaults = [ordered]@{
     Version              = '5.5'
     Preset               = 'Recommended'
     DnsServer            = '223.5.5.5'
@@ -227,23 +252,15 @@ $policy = [ordered]@{
     UpdatedAt            = (Get-Date).ToString('o')
 }
 
-if (Test-Path -LiteralPath $PolicyPath) {
-    $raw = Get-Content -LiteralPath $PolicyPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($raw) {
-        foreach ($k in @('AllowCnDirect', 'AllowLan', 'AllowNcsi', 'QuarantineRogueAllow', 'LockPhysicalDns',
-                'DisableSmhnr', 'DisableLlmnrNetbios', 'StrictNrptDoh', 'BlockWebRtcLeak', 'DisablePhysicalIpv6', 'PreferIpv4Prefix',
-                'ZeroResidentMonitor', 'AutoNodeSync', 'AutoHealStaleProxy', 'DomesticNtp', 'HardenInstallAcl')) {
-            if ($raw.PSObject.Properties.Name -contains $k -and $null -ne $raw.$k) {
-                $policy[$k] = [bool]$raw.$k
-            }
-        }
-        foreach ($sk in @('Version', 'Preset', 'DnsServer', 'V2rayNRoot')) {
-            if ($raw.PSObject.Properties.Name -contains $sk -and $null -ne $raw.$sk -and ([string]$raw.$sk).Length -gt 0) {
-                $policy[$sk] = [string]$raw.$sk
-            }
-        }
-    }
+$policyLoaded = Read-GuardPolicyStrict -PolicyPath $PolicyPath -Defaults $policyDefaults -LastGoodPath (Join-Path $BackupDir 'guard-policy.last-good.json')
+if ($policyLoaded.PolicyHealth -eq 'corrupt-fail-closed') {
+    Write-Host ('ERROR: refusing to apply corrupted policy file: ' + $policyLoaded.PolicyWarning) -ForegroundColor Red
+    exit 2
 }
+if ($policyLoaded.PolicyWarning) {
+    Write-Warn $policyLoaded.PolicyWarning
+}
+$policy = $policyLoaded
 
 # Rule coordination: StrictNrptDoh requires physical DNS locked to 1.1.1.1
 if ($policy.StrictNrptDoh) {
@@ -417,6 +434,12 @@ function Invoke-QuickConnectivityCheck([bool]$AllowCn) {
 }
 
 # ------------------------------------------------------------------ Determine Fresh Install vs Incremental Reconfigure
+$applyExitCode = 0
+$applyErrors = New-Object System.Collections.Generic.List[string]
+$pendingRollbackCancel = $false
+$applyWriteLock = Enter-GuardWriteLock -TimeoutMs 30000
+try {
+
 $baselineFile = Join-Path $BackupDir 'baseline.json'
 $baselineObj = $null
 if (Test-Path -LiteralPath $baselineFile) {
@@ -427,7 +450,7 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.8.8 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.8.9 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
 
 if ($isFreshInstall) {
@@ -436,118 +459,119 @@ if ($isFreshInstall) {
     $physUp = @(Get-PhysicalAdaptersAll | Where-Object { $_.Status -eq 'Up' })
     if ($physUp.Count -eq 0) {
         Write-Host 'ERROR: No active physical network adapter (Wi-Fi / Ethernet) is connected.' -ForegroundColor Red
-        exit 2
+        $applyExitCode = 2
     }
     $cfgCheck = Join-Path $V2rayNRoot 'binConfigs\config.json'
-    if (-not (Test-Path -LiteralPath $cfgCheck)) {
+    if ($applyExitCode -eq 0 -and -not (Test-Path -LiteralPath $cfgCheck)) {
         Write-Host ('ERROR: v2rayN config not found at "' + $cfgCheck + '". Select your v2rayN directory and start v2rayN once first.') -ForegroundColor Red
-        exit 2
+        $applyExitCode = 2
     }
-    $tunAdapter = Get-NetAdapter -ErrorAction SilentlyContinue |
-        Where-Object { ($knownTuns -contains $_.Name) -or $_.InterfaceDescription -match '(?i)Wintun|sing-tun|Mihomo' } |
-        Select-Object -First 1
-    if (-not $tunAdapter) {
+    $tunAdapter = if ($applyExitCode -eq 0) {
+        Get-NetAdapter -ErrorAction SilentlyContinue |
+            Where-Object { ($knownTuns -contains $_.Name) -or $_.InterfaceDescription -match '(?i)Wintun|sing-tun|Mihomo' } |
+            Select-Object -First 1
+    } else { $null }
+    if ($applyExitCode -eq 0 -and -not $tunAdapter) {
         Write-Host 'ERROR: Virtual TUN adapter (xray_tun / singbox_tun) has not been created yet.' -ForegroundColor Red
         Write-Host '       Please enable "Enable Tun" inside v2rayN once first so Windows creates the TUN interface.' -ForegroundColor Yellow
-        exit 2
+        $applyExitCode = 2
     }
-    $TunName = $tunAdapter.Name
-    if ($policy.StrictNrptDoh -and $tunAdapter.Status -ne 'Up') {
-        Write-Host 'ERROR: Strict NRPT DoH (1.1.1.1) requires v2rayN TUN to be actively UP during deployment.' -ForegroundColor Red
-        exit 2
+    if ($applyExitCode -eq 0) {
+        $TunName = $tunAdapter.Name
+        if ($policy.StrictNrptDoh -and $tunAdapter.Status -ne 'Up') {
+            Write-Host 'ERROR: Strict NRPT DoH (1.1.1.1) requires v2rayN TUN to be actively UP during deployment.' -ForegroundColor Red
+            $applyExitCode = 2
+        }
     }
-    Write-Ok ('preflight passed (NIC=' + (($physUp | ForEach-Object { $_.Name }) -join ',') + ', TUN=' + $TunName + ':' + $tunAdapter.Status + ')')
+    if ($applyExitCode -eq 0) {
+        Write-Ok ('preflight passed (NIC=' + (($physUp | ForEach-Object { $_.Name }) -join ',') + ', TUN=' + $TunName + ':' + $tunAdapter.Status + ')')
 
-    # Step 1: Capture pristine DNS baseline & apply selected DNS/IPv6/NTP switches
-    if (-not $hasDnsBaseline) {
-        Write-Step 'step 1/4: capturing DNS/IPv6/NTP baseline and applying DNS policy'
-        $dnsArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Get-PolicyScriptPath '01-dns-hardening.ps1'),
-            '-Root', $Root, '-TunName', $TunName, '-DnsServer', $targetDns, '-Force')
-        if (-not $policy.DisablePhysicalIpv6) { $dnsArgs += '-SkipIpv6Disable' }
-        if (-not $policy.PreferIpv4Prefix)    { $dnsArgs += '-SkipIpv4Prefer' }
-        if (-not $policy.DisableLlmnrNetbios) { $dnsArgs += '-SkipLlmnrNetbios' }
-        if (-not $policy.DisableSmhnr)        { $dnsArgs += '-SkipSmhnr' }
-        if (-not $policy.DomesticNtp)         { $dnsArgs += '-SkipNtp' }
-        if (-not $policy.BlockWebRtcLeak)     { $dnsArgs += '-SkipWebRtcPolicy' }
-        if ($policy.StrictNrptDoh)            { $dnsArgs += '-UseNrpt' }
-        & $psExe @dnsArgs
-        if ($LASTEXITCODE -ne 0) { throw ('01-dns-hardening.ps1 exited with code ' + $LASTEXITCODE) }
+        # Step 1: Capture pristine DNS baseline & apply selected DNS/IPv6/NTP switches
+        if (-not $hasDnsBaseline) {
+            Write-Step 'step 1/4: capturing DNS/IPv6/NTP baseline and applying DNS policy'
+            $dnsArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Get-PolicyScriptPath '01-dns-hardening.ps1'),
+                '-Root', $Root, '-TunName', $TunName, '-DnsServer', $targetDns, '-Force')
+            if (-not $policy.DisablePhysicalIpv6) { $dnsArgs += '-SkipIpv6Disable' }
+            if (-not $policy.PreferIpv4Prefix)    { $dnsArgs += '-SkipIpv4Prefer' }
+            if (-not $policy.DisableLlmnrNetbios) { $dnsArgs += '-SkipLlmnrNetbios' }
+            if (-not $policy.DisableSmhnr)        { $dnsArgs += '-SkipSmhnr' }
+            if (-not $policy.DomesticNtp)         { $dnsArgs += '-SkipNtp' }
+            if (-not $policy.BlockWebRtcLeak)     { $dnsArgs += '-SkipWebRtcPolicy' }
+            if ($policy.StrictNrptDoh)            { $dnsArgs += '-UseNrpt' }
+            & $psExe @dnsArgs
+            if ($LASTEXITCODE -ne 0) { throw ('01-dns-hardening.ps1 exited with code ' + $LASTEXITCODE) }
 
-        # If user explicitly unchecked LockPhysicalDns (and StrictNrptDoh is off), restore original NIC DNS while keeping baseline intact
-        if (-not $policy.LockPhysicalDns -and -not $policy.StrictNrptDoh) {
-            $db = Get-BaselineDnsObject
-            if ($db -and $db.Dns) {
-                foreach ($d in @($db.Dns)) {
-                    try {
-                        if ($d.WasStatic -and @($d.Ipv4Servers).Count -gt 0) {
-                            Set-DnsClientServerAddress -InterfaceAlias $d.Name -ServerAddresses @($d.Ipv4Servers) -ErrorAction SilentlyContinue
+            # If user explicitly unchecked LockPhysicalDns (and StrictNrptDoh is off), restore original NIC DNS while keeping baseline intact
+            if (-not $policy.LockPhysicalDns -and -not $policy.StrictNrptDoh) {
+                $db = Get-BaselineDnsObject
+                if ($db -and $db.Dns) {
+                    foreach ($d in @($db.Dns)) {
+                        try {
+                            if ($d.WasStatic -and @($d.Ipv4Servers).Count -gt 0) {
+                                Set-DnsClientServerAddress -InterfaceAlias $d.Name -ServerAddresses @($d.Ipv4Servers) -ErrorAction SilentlyContinue
+                            }
+                            else {
+                                Set-DnsClientServerAddress -InterfaceAlias $d.Name -ResetServerAddresses -ErrorAction SilentlyContinue
+                            }
                         }
-                        else {
-                            Set-DnsClientServerAddress -InterfaceAlias $d.Name -ResetServerAddresses -ErrorAction SilentlyContinue
+                        catch { }
+                    }
+                    Write-Note 'restored original adapter DNS (LockPhysicalDns=false)'
+                }
+                try {
+                    $cKeyInit = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
+                    $eKeyInit = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
+                    if (Test-Path -LiteralPath $cKeyInit) {
+                        if ($db -and ($db.PSObject.Properties.Name -contains 'ChromeDohMode') -and $null -ne $db.ChromeDohMode) {
+                            New-ItemProperty -Path $cKeyInit -Name 'DnsOverHttpsMode' -Value ([string]$db.ChromeDohMode) -PropertyType String -Force | Out-Null
+                        } else {
+                            Remove-ItemProperty -Path $cKeyInit -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
                         }
                     }
-                    catch { }
-                }
-                Write-Note 'restored original adapter DNS (LockPhysicalDns=false)'
+                    if (Test-Path -LiteralPath $eKeyInit) {
+                        if ($db -and ($db.PSObject.Properties.Name -contains 'EdgeDohMode') -and $null -ne $db.EdgeDohMode) {
+                            New-ItemProperty -Path $eKeyInit -Name 'DnsOverHttpsMode' -Value ([string]$db.EdgeDohMode) -PropertyType String -Force | Out-Null
+                        } else {
+                            Remove-ItemProperty -Path $eKeyInit -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
+                        }
+                    }
+                } catch { }
             }
-            try {
-                $cKeyInit = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
-                $eKeyInit = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
-                if (Test-Path -LiteralPath $cKeyInit) {
-                    if ($db -and ($db.PSObject.Properties.Name -contains 'ChromeDohMode') -and $null -ne $db.ChromeDohMode) {
-                        New-ItemProperty -Path $cKeyInit -Name 'DnsOverHttpsMode' -Value ([string]$db.ChromeDohMode) -PropertyType String -Force | Out-Null
-                    } else {
-                        Remove-ItemProperty -Path $cKeyInit -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
-                    }
-                }
-                if (Test-Path -LiteralPath $eKeyInit) {
-                    if ($db -and ($db.PSObject.Properties.Name -contains 'EdgeDohMode') -and $null -ne $db.EdgeDohMode) {
-                        New-ItemProperty -Path $eKeyInit -Name 'DnsOverHttpsMode' -Value ([string]$db.EdgeDohMode) -PropertyType String -Force | Out-Null
-                    } else {
-                        Remove-ItemProperty -Path $eKeyInit -Name 'DnsOverHttpsMode' -ErrorAction SilentlyContinue
-                    }
-                }
-            } catch { }
         }
-    }
 
-    # Step 2: Capture pristine Firewall baseline & install AI-Guard rules (with 30-min rollback safety net)
-    if (-not $hasFwBaseline) {
-        Write-Step 'step 2/4: capturing Firewall baseline and installing kernel WFP guard rules'
-        $ksArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Get-PolicyScriptPath '02-killswitch.ps1'),
-            '-Root', $Root, '-V2rayNRoot', $V2rayNRoot, '-TunName', $TunName, '-DnsServer', $targetDns,
-            '-RollbackMinutes', '30', '-SkipDnsCheck', '-AllowRemainingRules', '-Force')
-        if (-not $policy.AllowCnDirect)        { $ksArgs += '-StrictKillSwitchOnly' }
-        if (-not $policy.AllowLan)             { $ksArgs += '-SkipLanRule' }
-        if (-not $policy.AllowNcsi)            { $ksArgs += '-SkipNcsiRule' }
-        if (-not $policy.BlockWebRtcLeak)      { $ksArgs += '-SkipWebRtcBlock' }
-        if (-not $policy.DisablePhysicalIpv6)  { $ksArgs += '-SkipIpv6Block' }
-        if (-not $policy.QuarantineRogueAllow) { $ksArgs += '-KeepExistingAllowRules' }
-        & $psExe @ksArgs
-        if ($LASTEXITCODE -ne 0) { throw ('02-killswitch.ps1 exited with code ' + $LASTEXITCODE) }
-    }
+        # Step 2: Capture pristine Firewall baseline & install AI-Guard rules (with 30-min rollback safety net)
+        if (-not $hasFwBaseline) {
+            Write-Step 'step 2/4: capturing Firewall baseline and installing kernel WFP guard rules'
+            $ksArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Get-PolicyScriptPath '02-killswitch.ps1'),
+                '-Root', $Root, '-V2rayNRoot', $V2rayNRoot, '-TunName', $TunName, '-DnsServer', $targetDns,
+                '-RollbackMinutes', '30', '-SkipDnsCheck', '-AllowRemainingRules', '-Force')
+            if (-not $policy.AllowCnDirect)        { $ksArgs += '-StrictKillSwitchOnly' }
+            if (-not $policy.AllowLan)             { $ksArgs += '-SkipLanRule' }
+            if (-not $policy.AllowNcsi)            { $ksArgs += '-SkipNcsiRule' }
+            if (-not $policy.BlockWebRtcLeak)      { $ksArgs += '-SkipWebRtcBlock' }
+            if (-not $policy.DisablePhysicalIpv6)  { $ksArgs += '-SkipIpv6Block' }
+            if (-not $policy.QuarantineRogueAllow) { $ksArgs += '-KeepExistingAllowRules' }
+            & $psExe @ksArgs
+            if ($LASTEXITCODE -ne 0) { throw ('02-killswitch.ps1 exited with code ' + $LASTEXITCODE) }
+        }
 
-    # Step 3: Connectivity verification & Auto-Commit
-    Write-Step 'step 3/4: verifying live connectivity before cancelling 30-min auto-rollback timer'
-    try {
-        $probeResult = Invoke-QuickConnectivityCheck -AllowCn ([bool]$policy.AllowCnDirect)
-        Write-Ok ('connectivity check passed (' + $probeResult + ')')
-        $rbTask = Get-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -ErrorAction SilentlyContinue
-        if ($rbTask) {
-            Unregister-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -Confirm:$false
-            Write-Ok 'auto-rollback safety timer cancelled (deployment committed)'
+        # Step 3: Connectivity verification (defer cancelling AI-Guard-Test-Rollback until all finalization steps pass)
+        Write-Step 'step 3/4: verifying live connectivity (rollback timer stays armed until all finalization steps succeed)'
+        try {
+            $probeResult = Invoke-QuickConnectivityCheck -AllowCn ([bool]$policy.AllowCnDirect)
+            Write-Ok ('connectivity check passed (' + $probeResult + ')')
+            $pendingRollbackCancel = $true
         }
-    }
-    catch {
-        if ($ForceCommit) {
-            Write-Warn ('connectivity probe failed (' + $_.Exception.Message + '), but -ForceCommit specified')
-            $rbTask = Get-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -ErrorAction SilentlyContinue
-            if ($rbTask) { Unregister-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -Confirm:$false }
-        }
-        else {
-            Write-Warn ('connectivity probe failed: ' + $_.Exception.Message)
-            Write-Warn 'Keeping 30-minute AI-Guard-Test-Rollback safety timer armed! Fix TUN/network or click Rollback.'
-            exit 4
+        catch {
+            if ($ForceCommit) {
+                Write-Warn ('connectivity probe failed (' + $_.Exception.Message + '), but -ForceCommit specified')
+                $pendingRollbackCancel = $true
+            }
+            else {
+                Write-Warn ('connectivity probe failed: ' + $_.Exception.Message)
+                Write-Warn 'Keeping 30-minute AI-Guard-Test-Rollback safety timer armed! Fix TUN/network or click Rollback.'
+                $applyExitCode = 4
+            }
         }
     }
 }
@@ -1091,63 +1115,130 @@ else {
     }
 }
 
-# ------------------------------------------------------------------ Common Finalization (Mode Pass, Tasks, ACL, DNS Flush)
-Write-Step 'synchronizing proxy node & multi-core companion firewall rules'
-$syncNodeScript = Get-PolicyScriptPath '10-sync-node-rule.ps1'
-if (Test-Path -LiteralPath $syncNodeScript) {
+# ------------------------------------------------------------------ Common Finalization (Mode Pass, ACL before Tasks, Tasks, Deferred Commit)
+if ($applyExitCode -eq 0) {
+    Write-Step 'synchronizing proxy node & multi-core companion firewall rules'
+    $syncNodeScript = Get-PolicyScriptPath '10-sync-node-rule.ps1'
+    $v2ConfigFile = Join-Path $V2rayNRoot 'binConfigs\config.json'
+    if (Test-Path -LiteralPath $syncNodeScript) {
+        if (Test-Path -LiteralPath $v2ConfigFile) {
+            try {
+                Invoke-GuardChild -ScriptPath $syncNodeScript -ChildArgs @('-Root', $Root, '-V2rayNRoot', $V2rayNRoot) -Label '10-sync-node-rule.ps1'
+                Write-Ok 'multi-core node rules synchronized (xray, sing-box, v2rayN across active config.json ports)'
+            }
+            catch {
+                $applyErrors.Add($_.Exception.Message)
+                Write-Warn ('node rule synchronization failed: ' + $_.Exception.Message)
+            }
+        }
+        else {
+            Write-Note ('node rule synchronization skipped (config.json not found at ' + $v2ConfigFile + ')')
+        }
+    }
+
+    Write-Step 'synchronizing active guard state'
     try {
-        & $psExe -NoProfile -ExecutionPolicy Bypass -File $syncNodeScript -Root $Root -V2rayNRoot $V2rayNRoot
-        Write-Ok 'multi-core node rules synchronized (xray, sing-box, v2rayN across active config.json ports)'
+        Invoke-GuardChild -ScriptPath (Get-PolicyScriptPath '07-mode.ps1') -ChildArgs @('-Root', $Root, '-V2rayNRoot', $V2rayNRoot, '-DnsServer', $targetDns, '-Quiet') -Label '07-mode.ps1 sync' -AllowedExitCodes @(0, 3)
+        if ($LASTEXITCODE -eq 3) {
+            $applyErrors.Add('07-mode.ps1 reported missing companion firewall rules (exit=3)')
+        }
     }
     catch {
-        Write-Warn ('node rule synchronization skipped: ' + $_.Exception.Message)
+        $applyErrors.Add($_.Exception.Message)
+        Write-Warn ('07-mode.ps1 synchronization failed: ' + $_.Exception.Message)
     }
-}
 
-Write-Step 'synchronizing background monitor tasks & active guard state'
-& $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns -Quiet
-
-if ($policy.ZeroResidentMonitor) {
-    $taskArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Get-PolicyScriptPath '07-mode.ps1'),
-        '-InstallTasks', '-Root', $Root, '-V2rayNRoot', $V2rayNRoot, '-DnsServer', $targetDns, '-Quiet')
-    if (-not $policy.AutoNodeSync)         { $taskArgs += '-DisableAutoNodeSync' }
-    if (-not $policy.QuarantineRogueAllow) { $taskArgs += '-SkipQuarantineAllowRules' }
-    if (-not $policy.AutoHealStaleProxy)   { $taskArgs += '-SkipStaleProxyHeal' }
-    & $psExe @taskArgs
-    $taskRc = $LASTEXITCODE
-    $evTask = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Event' -ErrorAction SilentlyContinue
-    $fbTask = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Fallback' -ErrorAction SilentlyContinue
-    if ($taskRc -ne 0 -or -not $evTask -or -not $fbTask) {
-        Write-Warn ('task registration failed (07-mode exit ' + $taskRc + ', event=' + [bool]$evTask + ', fallback=' + [bool]$fbTask + ') - run scripts\17-autorepair-task.ps1 -Install elevated')
+    # ACL trust boundary (#01): ALWAYS harden install directory ACL BEFORE registering SYSTEM tasks
+    $aclHardenedOk = $false
+    $enforceAclLock = [bool]$policy.HardenInstallAcl
+    if ($policy.ZeroResidentMonitor -and (-not $enforceAclLock)) {
+        Write-Warn 'ZeroResidentMonitor=ON requires a locked ACL on the SYSTEM script root; enforcing HardenInstallAcl.'
+        $enforceAclLock = $true
+    }
+    $aclScript = Get-PolicyScriptPath '13-harden-acl.ps1'
+    if (Test-Path -LiteralPath $aclScript) {
+        if ($enforceAclLock) {
+            try {
+                Invoke-GuardChild -ScriptPath $aclScript -ChildArgs @('-Root', $Root, '-SkipVerification', '-SkipRegression') -Label '13-harden-acl.ps1' | Out-Null
+                $aclHardenedOk = $true
+                Write-Ok ('HardenInstallAcl = ON (' + $Root + ' locked to Administrators/SYSTEM write-only)')
+            }
+            catch {
+                $applyErrors.Add($_.Exception.Message)
+                Write-Warn ('ACL hardening failed: ' + $_.Exception.Message)
+            }
+        }
+        else {
+            try {
+                Invoke-GuardChild -ScriptPath $aclScript -ChildArgs @('-Root', $Root, '-Undo') -Label '13-harden-acl.ps1 -Undo' | Out-Null
+                $aclHardenedOk = $true
+                Write-Ok ('HardenInstallAcl = OFF (restored inherited folder permissions on ' + $Root + ')')
+            }
+            catch {
+                $applyErrors.Add($_.Exception.Message)
+                Write-Warn ('ACL unlock failed: ' + $_.Exception.Message)
+            }
+        }
     }
     else {
-        Write-Ok 'ZeroResidentMonitor = ON (AI-Guard-Mode-Event + Fallback tasks registered, 0 MB idle RAM)'
+        $applyErrors.Add('required script missing: ' + $aclScript)
     }
-}
-else {
-    & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -RemoveTasks -Root $Root -Quiet
-    Write-Ok 'ZeroResidentMonitor = OFF (background tasks unregistered)'
-}
 
-# ------------------------------------------------------------------ Enforce Official TUN Recommended System Proxy Mode (ProxyEnable = 0)
-Write-Step 'enforcing official recommended system proxy mode (ProxyEnable = 0, pure TUN mode)'
-try {
-    $hkcuKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
-    if (Test-Path -LiteralPath $hkcuKey) {
-        $cur = Get-ItemProperty -LiteralPath $hkcuKey -ErrorAction SilentlyContinue
-        if ($cur -and $cur.ProxyEnable -ne 0) {
-            Set-ItemProperty -LiteralPath $hkcuKey -Name 'ProxyEnable' -Value 0 -Type DWord
+    if ($policy.ZeroResidentMonitor) {
+        if (-not $aclHardenedOk) {
+            $applyErrors.Add('refused to register SYSTEM tasks because install ACL hardening did not succeed')
+            Write-Warn 'Refused to register SYSTEM auto-repair tasks while install directory ACL lock failed!'
+        }
+        else {
+            $taskArgs = @('-Root', $Root, '-V2rayNRoot', $V2rayNRoot, '-DnsServer', $targetDns, '-InstallTasks', '-Quiet')
+            if (-not $policy.AutoNodeSync)         { $taskArgs += '-DisableAutoNodeSync' }
+            if (-not $policy.QuarantineRogueAllow) { $taskArgs += '-SkipQuarantineAllowRules' }
+            if (-not $policy.AutoHealStaleProxy)   { $taskArgs += '-SkipStaleProxyHeal' }
+            try {
+                Invoke-GuardChild -ScriptPath (Get-PolicyScriptPath '07-mode.ps1') -ChildArgs $taskArgs -Label '07-mode.ps1 -InstallTasks'
+                $evTask = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Event' -ErrorAction SilentlyContinue
+                $fbTask = Get-ScheduledTask -TaskName 'AI-Guard-Mode-Fallback' -ErrorAction SilentlyContinue
+                if (-not $evTask -or -not $fbTask) {
+                    throw ('task verification failed (event=' + [bool]$evTask + ', fallback=' + [bool]$fbTask + ')')
+                }
+                Write-Ok 'ZeroResidentMonitor = ON (AI-Guard-Mode-Event + Fallback tasks registered, 0 MB idle RAM)'
+            }
+            catch {
+                $applyErrors.Add($_.Exception.Message)
+                Write-Warn ('task registration failed (' + $_.Exception.Message + ') - run scripts\17-autorepair-task.ps1 -Install elevated')
+            }
         }
     }
-    foreach ($hive in @(Get-ChildItem -LiteralPath 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue)) {
-        if ($hive.PSChildName -notmatch '^S-1-5-21-\d+-\d+-\d+-\d+$') { continue }
-        $ik = 'Registry::HKEY_USERS\' + $hive.PSChildName + '\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
-        $ie = Get-ItemProperty -LiteralPath $ik -ErrorAction SilentlyContinue
-        if ($ie -and $ie.ProxyEnable -ne 0) {
-            Set-ItemProperty -LiteralPath $ik -Name 'ProxyEnable' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+    else {
+        try {
+            Invoke-GuardChild -ScriptPath (Get-PolicyScriptPath '07-mode.ps1') -ChildArgs @('-RemoveTasks', '-Root', $Root, '-Quiet') -Label '07-mode.ps1 -RemoveTasks'
+            Write-Ok 'ZeroResidentMonitor = OFF (background tasks unregistered)'
+        }
+        catch {
+            $applyErrors.Add($_.Exception.Message)
+            Write-Warn ('failed to unregister background tasks: ' + $_.Exception.Message)
         }
     }
-    $winInetDef = @'
+
+    # ------------------------------------------------------------------ Enforce Official TUN Recommended System Proxy Mode (ProxyEnable = 0)
+    Write-Step 'enforcing official recommended system proxy mode (ProxyEnable = 0, pure TUN mode)'
+    try {
+        $hkcuKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+        if (Test-Path -LiteralPath $hkcuKey) {
+            $cur = Get-ItemProperty -LiteralPath $hkcuKey -ErrorAction SilentlyContinue
+            if ($cur -and $cur.ProxyEnable -ne 0) {
+                Set-ItemProperty -LiteralPath $hkcuKey -Name 'ProxyEnable' -Value 0 -Type DWord
+            }
+        }
+        foreach ($hive in @(Get-ChildItem -LiteralPath 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue)) {
+            if ($hive.PSChildName -notmatch '^S-1-5-21-\d+-\d+-\d+-\d+$') { continue }
+            $ik = 'Registry::HKEY_USERS\' + $hive.PSChildName + '\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+            $ie = Get-ItemProperty -LiteralPath $ik -ErrorAction SilentlyContinue
+            if ($ie -and $ie.ProxyEnable -ne 0) {
+                Set-ItemProperty -LiteralPath $ik -Name 'ProxyEnable' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+            }
+        }
+        $winInetDef = @'
 using System;
 using System.Runtime.InteropServices;
 public static class AiGuardWinInet {
@@ -1159,44 +1250,57 @@ public static class AiGuardWinInet {
     }
 }
 '@
-    if (-not ('AiGuardWinInet' -as [type])) {
-        Add-Type -TypeDefinition $winInetDef -ErrorAction SilentlyContinue | Out-Null
+        if (-not ('AiGuardWinInet' -as [type])) {
+            Add-Type -TypeDefinition $winInetDef -ErrorAction SilentlyContinue | Out-Null
+        }
+        if ('AiGuardWinInet' -as [type]) {
+            [AiGuardWinInet]::NotifyProxyChanged()
+        }
+        if ($V2rayNRoot -and (Test-Path -LiteralPath (Join-Path $V2rayNRoot 'guiConfigs\guiNConfig.json'))) {
+            try {
+                $guiCfgFile = Join-Path $V2rayNRoot 'guiConfigs\guiNConfig.json'
+                $guiCfg = Get-Content -LiteralPath $guiCfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($guiCfg.SystemProxyItem -and $guiCfg.SystemProxyItem.SysProxyType -ne 0) {
+                    $guiCfg.SystemProxyItem.SysProxyType = 0
+                    $guiCfg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $guiCfgFile -Encoding UTF8
+                }
+            } catch { }
+        }
+        Write-Ok 'system proxy verified: ProxyEnable = 0 (official TUN recommended mode: pure virtual NIC routing, 0 WinINET conflict)'
     }
-    if ('AiGuardWinInet' -as [type]) {
-        [AiGuardWinInet]::NotifyProxyChanged()
+    catch {
+        Write-Warn ('system proxy verification notice: ' + $_.Exception.Message)
     }
-    if ($V2rayNRoot -and (Test-Path -LiteralPath (Join-Path $V2rayNRoot 'guiConfigs\guiNConfig.json'))) {
-        try {
-            $guiCfgFile = Join-Path $V2rayNRoot 'guiConfigs\guiNConfig.json'
-            $guiCfg = Get-Content -LiteralPath $guiCfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($guiCfg.SystemProxyItem -and $guiCfg.SystemProxyItem.SysProxyType -ne 0) {
-                $guiCfg.SystemProxyItem.SysProxyType = 0
-                $guiCfg | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $guiCfgFile -Encoding UTF8
+
+    try { Clear-DnsClientCache -ErrorAction SilentlyContinue } catch { }
+    ipconfig.exe /flushdns | Out-Null
+
+    if ($pendingRollbackCancel) {
+        if ($applyErrors.Count -eq 0) {
+            $rbTask = Get-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -ErrorAction SilentlyContinue
+            if ($rbTask) {
+                Unregister-ScheduledTask -TaskName 'AI-Guard-Test-Rollback' -Confirm:$false -ErrorAction SilentlyContinue
+                Write-Ok 'auto-rollback safety timer cancelled (deployment verified & committed)'
             }
-        } catch { }
+        }
+        else {
+            Write-Warn 'Keeping 30-minute AI-Guard-Test-Rollback safety timer armed because finalization had errors!'
+        }
     }
-    Write-Ok 'system proxy verified: ProxyEnable = 0 (official TUN recommended mode: pure virtual NIC routing, 0 WinINET conflict)'
-}
-catch {
-    Write-Warn ('system proxy verification notice: ' + $_.Exception.Message)
-}
 
-try { Clear-DnsClientCache -ErrorAction SilentlyContinue } catch { }
-ipconfig.exe /flushdns | Out-Null
-
-$aclScript = Get-PolicyScriptPath '13-harden-acl.ps1'
-if (Test-Path -LiteralPath $aclScript) {
-    if ($policy.HardenInstallAcl) {
-        & $psExe -NoProfile -ExecutionPolicy Bypass -File $aclScript -Root $Root -SkipVerification -SkipRegression | Out-Null
-        Write-Ok ('HardenInstallAcl = ON (' + $Root + ' locked to Administrators/SYSTEM write-only)')
+    & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Status -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns
+    Write-Host ''
+    if ($applyErrors.Count -gt 0) {
+        $applyExitCode = 5
+        Write-Host ('[FAILED] AI-Net-Guard v5.8.9 policy application finished with ' + $applyErrors.Count + ' error(s):') -ForegroundColor Red
+        foreach ($ae in $applyErrors) { Write-Host ('  - ' + $ae) -ForegroundColor Red }
     }
     else {
-        & $psExe -NoProfile -ExecutionPolicy Bypass -File $aclScript -Root $Root -Undo | Out-Null
-        Write-Ok ('HardenInstallAcl = OFF (restored inherited folder permissions on ' + $Root + ')')
+        Write-Host '[SUCCESS] AI-Net-Guard v5.8.9 configuration applied successfully.' -ForegroundColor Green
     }
 }
-
-& $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Status -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns
-Write-Host ''
-Write-Host '[SUCCESS] AI-Net-Guard v5.8.8 configuration applied successfully.' -ForegroundColor Green
-exit 0
+}
+finally {
+    Exit-GuardWriteLock $applyWriteLock
+}
+exit $applyExitCode

@@ -83,5 +83,8 @@ git tag v5.8.x ─> .github/workflows/release-exe.yml ─> GitHub Release（自�
 | [`docs/releases/v5.8.4.md`](releases/v5.8.4.md) | v5.8.4 发布说明（第三方 review 复核与修复、B1 纳入全量体检、UTF-8 无 BOM 缓存、卸载闭环、门禁 19 项） |
 | [`docs/releases/v5.8.5.md`](releases/v5.8.5.md) | v5.8.5 发布说明（SKIP 归因修正、`protocol` 判定补全、路径兜底对齐、门禁 21 项、发布收尾） |
 | [`docs/releases/v5.8.6.md`](releases/v5.8.6.md) | v5.8.6 发布说明（GUI 跳过项三态归因、`ip` fall-through 与 `attrs` 判定、去除绝对化健康结论、门禁 24 项） |
+| [`docs/releases/v5.8.7.md`](releases/v5.8.7.md) | v5.8.7 发布说明（ActiveStore `/32` 防污染、`sing-box` B1 适配、物理网卡 IPv6 显式阻断、门禁 33 项） |
+| [`docs/releases/v5.8.8.md`](releases/v5.8.8.md) | v5.8.8 发布说明（`/32` 路由与嵌套数组自愈修复、RFC 5389 STUN、WFP 5157 与 ActiveStore 回读、门禁 39 项） |
+| [`docs/releases/v5.8.9.md`](releases/v5.8.9.md) | v5.8.9 发布说明（ACL/回滚/退出码 P0 安全加固、Fail-Closed 策略与写锁、10 IPv6 联动、门禁 45 项） |
 
 `dist/release-notes-v*.md` 是同样内容的工作副本，发版前需核对两者哈希一致；**以 `docs/releases/` 为权威来源**。
