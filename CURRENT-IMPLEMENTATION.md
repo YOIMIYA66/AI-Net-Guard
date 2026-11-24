@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.9.3 · 维护修复版：隔离列表 PS 5.1 嵌套自愈与 `scripts\` 默认根目录修复）
+# AI-Net-Guard 实现方案与持续审查文档（v5.9.4 · PowerShell 7 `MutexAcl` 双引擎热修与隔离 JSON 自愈）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.9.3 维护修复版**（维持功能冻结与轻量三公共库架构；修复 Windows PowerShell 5.1 下 `auto-disabled-outbound-allow.json` 的 `{ "value": [...], "Count": ... }` 嵌套数组序列化缺陷并实现读/写自愈与回滚全还原，修正从 `scripts\` 子目录直接运行脚本时的默认 `$Root` 解析与 `12-regression.ps1` Check 7 缺失文件防静默通过守卫；门禁扩至 58 条，详见 16.19）
+> 版本状态：**v5.9.4 维护修复版**（维持功能冻结与轻量三公共库架构；修复 PowerShell 7 / .NET Core 下 `Enter-GuardWriteLock` 因 4 参数 `System.Threading.Mutex` 构造函数移除导致写锁失败的问题，改为按引擎自适应调用 `[System.Threading.MutexAcl]::Create` 与传统构造并保留 ACL 安全描述符；双引擎门禁 `59/59 PASS`，详见 16.20）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -567,7 +567,7 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 
 #### 16.9.3 P1：回归门禁进构建，且测试脚本不进发行物
 
-新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12），v5.8.7 起为 33 条（见 16.13），v5.8.8 为 39 条（见 16.14），v5.8.9 扩至 45 条（见 16.15），v5.9.0 扩至 49 条（见 16.16），v5.9.1 扩至 52 条（见 16.17），v5.9.2 扩至 54 条（见 16.18），v5.9.3 扩至 58 条（见 16.19）。）
+新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12），v5.8.7 起为 33 条（见 16.13），v5.8.8 为 39 条（见 16.14），v5.8.9 扩至 45 条（见 16.15），v5.9.0 扩至 49 条（见 16.16），v5.9.1 扩至 52 条（见 16.17），v5.9.2 扩至 54 条（见 16.18），v5.9.3 扩至 58 条（见 16.19），v5.9.4 扩至 59 条（见 16.20）。）
 
 #### 16.9.4 第二轮 review 修掉的 6 处
 
@@ -861,3 +861,14 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
    - 当未显式传入 `-Root` 且脚本位于 `scripts\` 子目录（如直接运行 `C:\AI-Net-Guard\scripts\12-regression.ps1`）时，自动回溯上级安装根目录，避免在 `scripts\` 下找不到 `cn-ipv4.txt` 或生成多余的 `scripts\backup`、`scripts\logs` 目录；
    - `12-regression.ps1` Check 7 新增 `Test-Path -LiteralPath $cnFile` 与 `$before -lt 1000` 显式失败检查，杜绝缺失白名单文件时静默以 `before=0, after=0` 误判 `PASS`。
 3. **门禁验证**：`tests/test-stun-ports.ps1` 扩至 **58/58 PASS**（新增 PS 5.1 嵌套/垃圾条目自愈与 `0/1/2/3` 项扁平往返实测），`Read/Write-GuardQuarantineList` 在 PowerShell 7 下同测 `0/1/2/3` 项通过，`gui/build.ps1 -RunSmokeTest` 29/29 纯 ASCII / 0 AST / 0 编译警告与错误 / 8/8 UI 冒烟 PASS。
+
+---
+
+### 16.20 v5.9.4：PowerShell 7.x `MutexAcl` 双引擎热修版（2026-11-24）
+
+修复 `v5.9.3` 同步后在 PowerShell 7.7 管理员会话直接执行 `07-mode.ps1` / `12-regression.ps1` 时暴露的跨引擎写锁兼容问题：
+
+1. **`Enter-GuardWriteLock` 自适应 `MutexAcl::Create`（`lib-guard-common.ps1`）**：
+   - 根因：Windows PowerShell 5.1（.NET Framework）支持 `New-Object System.Threading.Mutex($false, $LockName, [ref]$createdNew, $mtxSec)` 四参数构造，而 PowerShell 7.x（.NET Core / .NET 5+）已将带 `MutexSecurity` 的命名互斥锁创建迁移至 `[System.Threading.MutexAcl]::Create($false, $LockName, [ref]$createdNew, $mtxSec)`；导致 `pwsh` 下创建 `Global\AI-Net-Guard-PolicyEngine` 时抛出“找不到 Mutex 的参数计数为 4 的重载”与空引用异常。
+   - 修复：探测 `[type]::GetType('System.Threading.MutexAcl, System.Threading.AccessControl', $false)`，在 PowerShell 7.x 走 `MutexAcl::Create`，在 Windows PowerShell 5.1 保留原构造，并在异常捕捉后显式检查 `if (-not $mtx)` Fail-Closed 抛出错误，继续保持 `Global\` 命名空间与 `Administrators`/`SYSTEM` 安全描述符不变。
+2. **双引擎完整门禁验证**：`tests/test-stun-ports.ps1` 扩至 **59 条断言**，同时在 **Windows PowerShell 5.1（59/59 PASS）** 与 **PowerShell 7.7（59/59 PASS，含真实跨进程 `pwsh` <-> `powershell.exe` `Global\` 写锁争用实测）** 下全部通过；`gui/build.ps1 -RunSmokeTest` 29/29 纯 ASCII / 0 AST / 0 编译警告与错误 / 8/8 UI 冒烟 PASS。

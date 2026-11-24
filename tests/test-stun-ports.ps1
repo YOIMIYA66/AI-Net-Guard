@@ -802,6 +802,11 @@ $scriptsRootResolveOk = ($mode07Raw -match "\(Split-Path -Leaf \`$PSScriptRoot\)
 Assert-True 'scripts\ entrypoints resolve parent install Root and 12-regression Check 7 guards missing cn-ipv4.txt' `
     $scriptsRootResolveOk 'default Root resolution or Check 7 guard missing'
 
+$libCommonAclRaw = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\lib-guard-common.ps1'), [System.Text.Encoding]::UTF8)
+Assert-True 'Enter-GuardWriteLock supports PowerShell 7 MutexAcl::Create alongside PS 5.1 Mutex ctor' `
+    (($libCommonAclRaw -match 'System\.Threading\.MutexAcl') -and ($libCommonAclRaw -match 'New-Object System\.Threading\.Mutex\(') -and ($libCommonAclRaw -match 'if \(-not \$mtx\)')) `
+    'MutexAcl / null guard missing in lib-guard-common.ps1'
+
 Write-Host ' '
 if ($script:fail -gt 0) {
     Write-Host ('=== ' + $script:fail + ' assertion(s) FAILED ===') -ForegroundColor Red

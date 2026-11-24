@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.9.3 - shared security helpers (write lock, recursive ACL audit, Fail-Closed policy loader, strict CN CIDR validation).
+# AI-Net-Guard v5.9.4 - shared security helpers (write lock, recursive ACL audit, Fail-Closed policy loader, strict CN CIDR validation).
 # Pure ASCII script. Dot-sourced by 02-killswitch.ps1, 07-mode.ps1, 09-rollback.ps1, 10-sync-node-rule.ps1, 12-regression.ps1, 13-harden-acl.ps1, 14-apply-policy.ps1.
 
 function Enter-GuardWriteLock {
@@ -49,11 +49,20 @@ function Enter-GuardWriteLock {
 
     $mtx = $null
     $createdNew = $false
+    $mtxAclType = [type]::GetType('System.Threading.MutexAcl, System.Threading.AccessControl', $false)
     try {
-        $mtx = New-Object System.Threading.Mutex($false, $LockName, [ref]$createdNew, $mtxSec)
+        if ($mtxAclType) {
+            $mtx = [System.Threading.MutexAcl]::Create($false, $LockName, [ref]$createdNew, $mtxSec)
+        }
+        else {
+            $mtx = New-Object System.Threading.Mutex($false, $LockName, [ref]$createdNew, $mtxSec)
+        }
     }
     catch [System.UnauthorizedAccessException] {
         throw ('Access denied opening Global write lock (' + $LockName + '). Run elevated (Administrators/SYSTEM required).')
+    }
+    if (-not $mtx) {
+        throw ('Failed to create or open Global write lock (' + $LockName + ').')
     }
 
     $acquired = $false
