@@ -428,16 +428,21 @@ Assert-True 'verify-leak-test and 12-regression use strict STUN, WFP 5157 attrib
      ($reg -match '-PolicyStore ActiveStore')) `
     'strict STUN helpers, Event 5157 origin lookup, and ActiveStore readback required'
 
-# ---------------------------------------------------------------- 22. v5.9.0 security hardening (ACL, Rollback, ExitCode, Fail-Closed Policy, Lock, CIDR, Tasks, GUI)
+# ---------------------------------------------------------------- 22. v5.9.1 security hardening (ACL, Rollback, ExitCode, Fail-Closed Policy, Lock, CIDR, Tasks, GUI)
 $tmpSecDir = Join-Path ([System.IO.Path]::GetTempPath()) ('ai-guard-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tmpSecDir -Force | Out-Null
 try {
-    $defs = [ordered]@{ AllowCnDirect = $true; AllowLan = $true; StrictNrptDoh = $false; HardenInstallAcl = $true; Preset = 'Recommended' }
+    $defs = [ordered]@{
+        AllowCnDirect = $true; AllowLan = $true; AllowNcsi = $true; LockPhysicalDns = $true;
+        DisablePhysicalIpv6 = $true; BlockWebRtcLeak = $true; ZeroResidentMonitor = $true;
+        HardenInstallAcl = $true; StrictNrptDoh = $false; Preset = 'Recommended'
+    }
     $pFile = Join-Path $tmpSecDir 'guard-policy.json'
     $lgFile = Join-Path $tmpSecDir 'guard-policy.last-good.json'
+    $fullStrictJson = '{"AllowCnDirect":false,"AllowLan":true,"AllowNcsi":true,"LockPhysicalDns":true,"DisablePhysicalIpv6":true,"BlockWebRtcLeak":true,"ZeroResidentMonitor":true,"HardenInstallAcl":true,"Preset":"StrictLock"}'
 
     # Valid policy reads ok and does NOT prematurely write last-good before apply succeeds
-    [System.IO.File]::WriteAllText($pFile, '{"AllowCnDirect":false,"AllowLan":true,"Preset":"StrictLock"}', (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($pFile, $fullStrictJson, (New-Object System.Text.UTF8Encoding($false)))
     $pOk = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile
     $okPass = ($pOk.PolicyHealth -eq 'ok') -and (-not $pOk.AllowCnDirect) -and (-not (Test-Path -LiteralPath $lgFile))
 
@@ -450,13 +455,21 @@ try {
     $pRec = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile
     $recPass = ($pRec.PolicyHealth -eq 'recovered-last-good') -and (-not $pRec.AllowCnDirect)
 
+    # Incomplete JSON (e.g. only {"Preset":"Recommended"}) on deployed host must NOT revert security bools to defaults (#09)
+    [System.IO.File]::WriteAllText($pFile, '{"Preset":"Recommended"}', (New-Object System.Text.UTF8Encoding($false)))
+    $pIncRec = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile -IsDeployed
+    [System.IO.File]::WriteAllText($lgFile, '{"Preset":"Recommended"}', (New-Object System.Text.UTF8Encoding($false)))
+    $pIncFc = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile -IsDeployed
+    $incompleteDeployedPass = ($pIncRec.PolicyHealth -eq 'recovered-last-good') -and (-not $pIncRec.AllowCnDirect) -and ($pIncFc.PolicyHealth -eq 'corrupt-fail-closed') -and (-not $pIncFc.AllowCnDirect)
+
     # Empty {} and explicit null boolean must be rejected (recover last-good / fail closed when last-good corrupt)
+    [System.IO.File]::WriteAllText($lgFile, $fullStrictJson, (New-Object System.Text.UTF8Encoding($false)))
     [System.IO.File]::WriteAllText($pFile, '{}', (New-Object System.Text.UTF8Encoding($false)))
-    $pEmptyRec = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile
+    $pEmptyRec = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile -IsDeployed
     [System.IO.File]::WriteAllText($lgFile, '{also-broken', (New-Object System.Text.UTF8Encoding($false)))
-    $pEmptyFc = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile
+    $pEmptyFc = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile -IsDeployed
     [System.IO.File]::WriteAllText($pFile, '{"AllowCnDirect":null}', (New-Object System.Text.UTF8Encoding($false)))
-    $pNullFc = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile
+    $pNullFc = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile -IsDeployed
     $strictFieldPass = ($pEmptyRec.PolicyHealth -eq 'recovered-last-good') -and ($pEmptyFc.PolicyHealth -eq 'corrupt-fail-closed') -and ($pNullFc.PolicyHealth -eq 'corrupt-fail-closed') -and (-not $pNullFc.AllowCnDirect)
 
     # Missing primary on deployed host without last-good -> Fail-Closed; missing with valid last-good -> recovered
@@ -464,13 +477,13 @@ try {
     Remove-Item -LiteralPath $lgFile -Force -ErrorAction SilentlyContinue
     $pMissingDeployed = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile -IsDeployed
     $pMissingFresh = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile
-    [System.IO.File]::WriteAllText($lgFile, '{"AllowCnDirect":false,"AllowLan":true,"Preset":"StrictLock"}', (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($lgFile, $fullStrictJson, (New-Object System.Text.UTF8Encoding($false)))
     $pMissingLg = Read-GuardPolicyStrict -PolicyPath $pFile -Defaults $defs -LastGoodPath $lgFile -IsDeployed
     $missingPolicyPass = ($pMissingDeployed.PolicyHealth -eq 'corrupt-fail-closed') -and (-not $pMissingDeployed.AllowCnDirect) -and (-not $pMissingDeployed.AllowLan) -and ($pMissingFresh.PolicyHealth -eq 'default') -and ($pMissingLg.PolicyHealth -eq 'recovered-last-good') -and (-not $pMissingLg.AllowCnDirect)
 
-    Assert-True 'Read-GuardPolicyStrict rejects string/null/empty fields, decouples last-good save, and fails closed when missing on deployed host' `
-        ($okPass -and $lgSaved -and $recPass -and $strictFieldPass -and $missingPolicyPass) `
-        ('ok=' + $okPass + ' lgSaved=' + $lgSaved + ' rec=' + $recPass + ' strict=' + $strictFieldPass + ' missing=' + $missingPolicyPass)
+    Assert-True 'Read-GuardPolicyStrict rejects string/null/empty and incomplete deployed JSON, decouples last-good save, and fails closed when missing on deployed host' `
+        ($okPass -and $lgSaved -and $recPass -and $incompleteDeployedPass -and $strictFieldPass -and $missingPolicyPass) `
+        ('ok=' + $okPass + ' lgSaved=' + $lgSaved + ' rec=' + $recPass + ' inc=' + $incompleteDeployedPass + ' strict=' + $strictFieldPass + ' missing=' + $missingPolicyPass)
 
     # ACL audit rejects user-writable non-drive-root parent folder
     $subInstall = Join-Path $tmpSecDir 'install-sub'
@@ -614,6 +627,26 @@ Assert-True 'GUI payload extraction & GuardPolicy save use Global Mutex, SHA-256
 Assert-True '17-autorepair-task and watchdog inspect task health/exit codes strictly' `
     (($task17Raw -match '\$healthy -eq 2') -and ($task17Raw -match '267009') -and ($wdRaw -match 'if \(\$code -eq 0\)')) `
     'task health and watchdog non-zero exit handling required'
+
+$mainWinRaw = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'gui') 'MainWindow.xaml.cs') -Raw
+$boot06Raw = Get-Content -LiteralPath (Join-Path (Join-Path $repo 'scripts') '06-boot-guard.ps1') -Raw
+
+Assert-True '07-mode keeps Ensure-Guard active under Protected lock, preserves CliBoundParams, and removes last-good bootstrap' `
+    (($mode07Raw -match '\$script:CliBoundParams') -and ($mode07Raw -match '\$script:guardPolicy\.AllowCnDirect = \$false') -and `
+     ($mode07Raw -notmatch 'lastGoodBootstrapPath') -and ($mode07Raw -match '\[switch\]\$false')) `
+    '07-mode Protected override / CliBoundParams / last-good removal checks failed'
+
+Assert-True 'GUI writes guard-policy.pending.json and 14-apply-policy rolls back failed policy & removes tasks before ACL unlock' `
+    (($mainWinRaw -match 'guard-policy\.pending\.json') -and ($mainWinRaw -match '"-PolicyPath"') -and `
+     ($applyPol -match 'Write-CanonicalPolicyAtomic') -and ($applyPol -match '\$pendingAclUnlock') -and `
+     ($applyPol -match 'refused to unlock install ACL while SYSTEM tasks remain registered')) `
+    'GUI pending policy & 14-apply-policy transactional rollback/task-before-ACL checks failed'
+
+Assert-True '09-rollback defers self-tasks, aborts destructive steps on baseline failure, and protects ACL; 06/02 lock & ACL hardened' `
+    (($rollback -match '\$deferredSelfTasks') -and ($rollback -match '\$abortDestructiveRollback') -and `
+     ($rollback -match '\$remainingAiTasks\.Count -gt 0') -and `
+     ($boot06Raw -match 'Get-GuardInstallAclIssues') -and ($ks02Raw -match 'Enter-GuardWriteLock')) `
+    '09-rollback self-task/abort/ACL guard or 06-boot-guard ACL / 02-killswitch lock check failed'
 
 Write-Host ' '
 if ($script:fail -gt 0) {

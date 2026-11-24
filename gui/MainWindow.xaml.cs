@@ -1151,19 +1151,20 @@ private async void ApplyBtn_Click(object sender, RoutedEventArgs e)
 
             ExpandConsole();
             SetBusy(true, "正在释放引擎组件并应用所选策略，请稍候...");
-            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] " + (LocalizationService.IsEnglish ? "Applying AI-Net-Guard v5.9.0 Guard Policy..." : "开始应用 AI-Net-Guard v5.9.0 防护配置...") + " ==========");
+            AppendLog($"========== [{DateTime.Now:HH:mm:ss}] " + (LocalizationService.IsEnglish ? "Applying AI-Net-Guard v5.9.1 Guard Policy..." : "开始应用 AI-Net-Guard v5.9.1 防护配置...") + " ==========");
 
             try
             {
                 _draftPolicy.V2rayNRoot = v2Root;
+                string pendingPolicyPath = Path.Combine(DefaultInstallRoot, @"backup\guard-policy.pending.json");
                 await Task.Run(() =>
                 {
                     PayloadAndRunnerService.ExtractEmbeddedPayload(DefaultInstallRoot, AppendLog);
-                    _draftPolicy.SaveToFile(Path.Combine(DefaultInstallRoot, @"backup\guard-policy.json"));
+                    _draftPolicy.SaveToFile(pendingPolicyPath);
                 });
 
                 string applyScript = GetScriptPath("14-apply-policy.ps1");
-                var args = new List<string> { "-Root", DefaultInstallRoot };
+                var args = new List<string> { "-Root", DefaultInstallRoot, "-PolicyPath", pendingPolicyPath };
                 if (!string.IsNullOrWhiteSpace(v2Root))
                 {
                     args.Add("-V2rayNRoot");

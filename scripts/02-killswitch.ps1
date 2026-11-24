@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.0 - step 2: static default-deny firewall + CN & TUN allowlist.
+    AI-Net-Guard v5.9.1 - step 2: static default-deny firewall + CN & TUN allowlist.
 
 .DESCRIPTION
     Configures Windows Defender Firewall for the v5.1 zero-switch static guard:
@@ -204,6 +204,9 @@ function Get-NodeEndpoint {
 }
 
 Assert-Admin
+
+$ksWriteLock = Enter-GuardWriteLock -TimeoutMs 30000
+try {
 
 $BackupDir = Join-Path $Root 'backup'
 $LogDir = Join-Path $Root 'logs'
@@ -943,3 +946,7 @@ Write-Host '  1. run .\03-verify.ps1 -WfpCheck   -> all checks must pass'
 Write-Host '  2. run .\08-commit.ps1             -> cancels auto-rollback & installs v5.4 zero-resident event tasks'
 Write-Host ''
 Write-Host 'If anything is broken: .\09-rollback.ps1 (or wait for auto-rollback).' -ForegroundColor Yellow
+}
+finally {
+    Exit-GuardWriteLock $ksWriteLock
+}

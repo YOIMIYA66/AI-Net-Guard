@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.9.0 - shared security helpers (write lock, recursive ACL audit, Fail-Closed policy loader, strict CN CIDR validation).
+# AI-Net-Guard v5.9.1 - shared security helpers (write lock, recursive ACL audit, Fail-Closed policy loader, strict CN CIDR validation).
 # Pure ASCII script. Dot-sourced by 02-killswitch.ps1, 07-mode.ps1, 09-rollback.ps1, 10-sync-node-rule.ps1, 12-regression.ps1, 13-harden-acl.ps1, 14-apply-policy.ps1.
 
 function Enter-GuardWriteLock {
@@ -215,7 +215,8 @@ function Get-GuardInstallAclIssues {
 function ConvertFrom-StrictPolicyJson {
     param(
         [string]$FilePath,
-        [System.Collections.IDictionary]$BaseDefaults
+        [System.Collections.IDictionary]$BaseDefaults,
+        [switch]$RequireCriticalBools
     )
 
     $rawText = [System.IO.File]::ReadAllText($FilePath, [System.Text.Encoding]::UTF8)
@@ -241,6 +242,18 @@ function ConvertFrom-StrictPolicyJson {
             }
             $out[$k] = [bool]$raw.$k
             $matchedKeys++
+        }
+    }
+
+    if ($RequireCriticalBools) {
+        $criticalBools = @(
+            'AllowCnDirect', 'AllowLan', 'AllowNcsi', 'LockPhysicalDns',
+            'DisablePhysicalIpv6', 'BlockWebRtcLeak', 'ZeroResidentMonitor', 'HardenInstallAcl'
+        )
+        foreach ($ck in $criticalBools) {
+            if ($raw.PSObject.Properties.Name -notcontains $ck) {
+                throw ('incomplete policy JSON on deployed host: missing required field ' + $ck)
+            }
         }
     }
 
@@ -323,7 +336,7 @@ function Read-GuardPolicyStrict {
         $lgErr = ''
         if ($LastGoodPath -and (Test-Path -LiteralPath $LastGoodPath)) {
             try {
-                $lgParsed = ConvertFrom-StrictPolicyJson -FilePath $LastGoodPath -BaseDefaults $Defaults
+                $lgParsed = ConvertFrom-StrictPolicyJson -FilePath $LastGoodPath -BaseDefaults $Defaults -RequireCriticalBools:([bool]$IsDeployed)
                 $lgParsed['PolicyHealth'] = 'recovered-last-good'
                 $lgParsed['PolicyWarning'] = 'primary policy missing; fell back to last-known-good'
                 return [pscustomobject]$lgParsed
@@ -344,7 +357,7 @@ function Read-GuardPolicyStrict {
 
     $primaryErr = ''
     try {
-        $parsed = ConvertFrom-StrictPolicyJson -FilePath $PolicyPath -BaseDefaults $Defaults
+        $parsed = ConvertFrom-StrictPolicyJson -FilePath $PolicyPath -BaseDefaults $Defaults -RequireCriticalBools:([bool]$IsDeployed)
         $parsed['PolicyHealth'] = 'ok'
         $parsed['PolicyWarning'] = ''
         return [pscustomobject]$parsed
@@ -355,7 +368,7 @@ function Read-GuardPolicyStrict {
 
     if ($LastGoodPath -and (Test-Path -LiteralPath $LastGoodPath)) {
         try {
-            $lgParsed = ConvertFrom-StrictPolicyJson -FilePath $LastGoodPath -BaseDefaults $Defaults
+            $lgParsed = ConvertFrom-StrictPolicyJson -FilePath $LastGoodPath -BaseDefaults $Defaults -RequireCriticalBools:([bool]$IsDeployed)
             $lgParsed['PolicyHealth'] = 'recovered-last-good'
             $lgParsed['PolicyWarning'] = ('primary policy corrupt (' + $primaryErr + '); fell back to last-known-good')
             return [pscustomobject]$lgParsed

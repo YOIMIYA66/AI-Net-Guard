@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.0 - cross-reboot safety net for the restart drill.
+    AI-Net-Guard v5.9.1 - cross-reboot safety net for the restart drill.
 
 .DESCRIPTION
     After 08-commit.ps1 the normal auto-rollback task is gone, which is what
@@ -51,6 +51,16 @@ $Marker = Join-Path $Dir 'boot-guard.json'
 $Self = $MyInvocation.MyCommand.Path
 
 if (-not $Self) { $Self = if (Test-Path (Join-Path (Join-Path $Root 'scripts') '06-boot-guard.ps1')) { Join-Path (Join-Path $Root 'scripts') '06-boot-guard.ps1' } else { Join-Path $Root '06-boot-guard.ps1' } }
+
+$libCommonBg = ''
+foreach ($cand in @((Join-Path $PSScriptRoot 'lib-guard-common.ps1'), (Join-Path (Join-Path $Root 'scripts') 'lib-guard-common.ps1'), (Join-Path $Root 'lib-guard-common.ps1'))) {
+    if ($cand -and (Test-Path -LiteralPath $cand)) { $libCommonBg = $cand; break }
+}
+if (-not $libCommonBg) {
+    Write-Host '[!] lib-guard-common.ps1 missing - cannot verify install ACL before registering boot guard' -ForegroundColor Red
+    exit 1
+}
+. $libCommonBg
 
 function Show-State {
     $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -109,6 +119,11 @@ if ($Remove) {
 }
 
 if ($Arm) {
+    $aclIssues = @(Get-GuardInstallAclIssues -Path $Root)
+    if ($aclIssues.Count -gt 0) {
+        throw ('Refusing to register SYSTEM boot-guard task on untrusted install ACL: ' + ($aclIssues -join '; ') + '. Run 13-harden-acl.ps1 first.')
+    }
+
     New-Item -ItemType Directory -Path $Dir -Force | Out-Null
     [pscustomobject]@{
         ArmedUntil  = ((Get-Date).AddMinutes($WindowMinutes)).ToString('o')
@@ -121,7 +136,7 @@ if ($Arm) {
     $trigger = New-ScheduledTaskTrigger -AtStartup
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
 
     Write-Host '[+] boot guard armed' -ForegroundColor Green
     Write-Host ('    window: ' + $WindowMinutes + ' min, rollback runs ' + $WaitMinutes + ' min after boot')

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.0 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
+    AI-Net-Guard v5.9.1 - idempotent policy orchestrator for GUI & CLI (fresh deploy + incremental toggle apply).
 
 .DESCRIPTION
     Reads <Root>\backup\guard-policy.json (or -PolicyPath) and enforces all 16
@@ -260,6 +260,21 @@ $canonicalPolicyPath = Join-Path $BackupDir 'guard-policy.json'
 $applyWriteLock = Enter-GuardWriteLock -TimeoutMs 30000
 try {
 
+# Transactional staging (#02): remember previous committed policy so failed applies never
+# overwrite guard-policy.json in place for background tasks to consume.
+$hadPrevCanonical = Test-Path -LiteralPath $canonicalPolicyPath
+$prevCanonicalRaw = if ($hadPrevCanonical) { [System.IO.File]::ReadAllText($canonicalPolicyPath, [System.Text.Encoding]::UTF8) } else { '' }
+$canonicalStaged = $false
+
+function Write-CanonicalPolicyAtomic {
+    $policy.UpdatedAt = (Get-Date).ToString('o')
+    $tmpCan = $canonicalPolicyPath + '.tmp.' + $PID
+    $canJson = ([pscustomobject]$policy) | ConvertTo-Json -Depth 4
+    [System.IO.File]::WriteAllText($tmpCan, $canJson, (New-Object System.Text.UTF8Encoding($false)))
+    Move-Item -LiteralPath $tmpCan -Destination $canonicalPolicyPath -Force -ErrorAction Stop
+    $script:canonicalStaged = $true
+}
+
 $isDeployedHost = (Test-Path -LiteralPath (Join-Path $BackupDir 'baseline.json'))
 $policyLoaded = Read-GuardPolicyStrict -PolicyPath $PolicyPath -Defaults $policyDefaults -LastGoodPath $lastGoodPolicyPath -IsDeployed:$isDeployedHost
 if ($policyLoaded.PolicyHealth -eq 'corrupt-fail-closed') {
@@ -299,12 +314,6 @@ if ($applyExitCode -eq 0) {
             if (-not $V2rayNRoot) { $V2rayNRoot = 'C:\v2rayN-windows-64' }
         }
     }
-
-    $policy.UpdatedAt = (Get-Date).ToString('o')
-    $tmpCan = $canonicalPolicyPath + '.tmp.' + $PID
-    $canJson = ([pscustomobject]$policy) | ConvertTo-Json -Depth 4
-    [System.IO.File]::WriteAllText($tmpCan, $canJson, (New-Object System.Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $tmpCan -Destination $canonicalPolicyPath -Force -ErrorAction Stop
 }
 
 $psExe = (Get-Process -Id $PID).Path
@@ -461,8 +470,12 @@ $hasFwBaseline  = [bool]($baselineObj -and $baselineObj.Firewall -and (Test-Path
 $isFreshInstall = (-not $hasDnsBaseline) -or (-not $hasFwBaseline)
 
 Write-Host ''
-Write-Host ('=== AI-Net-Guard v5.9.0 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
+Write-Host ('=== AI-Net-Guard v5.9.1 Policy Engine (' + $(if ($isFreshInstall) { 'Initial Deployment' } else { 'Incremental Update' }) + ') ===') -ForegroundColor Cyan
 Write-Note ('Root=' + $Root + '  V2rayNRoot=' + $V2rayNRoot + '  Preset=' + $policy.Preset)
+
+if (-not $isFreshInstall) {
+    Write-CanonicalPolicyAtomic
+}
 
 if ($isFreshInstall) {
     # -------------------------------------------------------------- Preflight for Fresh Install
@@ -495,6 +508,7 @@ if ($isFreshInstall) {
         }
     }
     if ($applyExitCode -eq 0) {
+        Write-CanonicalPolicyAtomic
         Write-Ok ('preflight passed (NIC=' + (($physUp | ForEach-Object { $_.Name }) -join ',') + ', TUN=' + $TunName + ':' + $tunAdapter.Status + ')')
 
         # Step 1: Capture pristine DNS baseline & apply selected DNS/IPv6/NTP switches
@@ -1168,7 +1182,9 @@ if ($applyExitCode -eq 0) {
         Write-Warn ('07-mode.ps1 synchronization failed: ' + $_.Exception.Message)
     }
 
-    # ACL trust boundary (#01): ALWAYS harden install directory ACL BEFORE registering SYSTEM tasks
+    # ACL & SYSTEM Task lifecycle (#01 / #05):
+    #   - Lock ACL BEFORE registering SYSTEM tasks.
+    #   - Remove & verify ALL SYSTEM tasks BEFORE allowing ACL unlock!
     $aclHardenedOk = $false
     $enforceAclLock = [bool]$policy.HardenInstallAcl
     if ($policy.ZeroResidentMonitor -and (-not $enforceAclLock)) {
@@ -1176,6 +1192,7 @@ if ($applyExitCode -eq 0) {
         $enforceAclLock = $true
     }
     $aclScript = Get-PolicyScriptPath '13-harden-acl.ps1'
+    $pendingAclUnlock = $false
     if (Test-Path -LiteralPath $aclScript) {
         if ($enforceAclLock) {
             try {
@@ -1189,15 +1206,7 @@ if ($applyExitCode -eq 0) {
             }
         }
         else {
-            try {
-                Invoke-GuardChild -ScriptPath $aclScript -ChildArgs @('-Root', $Root, '-Undo') -Label '13-harden-acl.ps1 -Undo' | Out-Null
-                $aclHardenedOk = $true
-                Write-Ok ('HardenInstallAcl = OFF (restored inherited folder permissions on ' + $Root + ')')
-            }
-            catch {
-                $applyErrors.Add($_.Exception.Message)
-                Write-Warn ('ACL unlock failed: ' + $_.Exception.Message)
-            }
+            $pendingAclUnlock = $true
         }
     }
     else {
@@ -1318,11 +1327,33 @@ public static class AiGuardWinInet {
         }
     }
 
+    if ($pendingAclUnlock) {
+        $remainingSysTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -like 'AI-Guard*' })
+        if ($remainingSysTasks.Count -gt 0) {
+            $remNames = ($remainingSysTasks | ForEach-Object { $_.TaskName }) -join ', '
+            $applyErrors.Add('refused to unlock install ACL while SYSTEM tasks remain registered: ' + $remNames)
+            Write-Warn ('Refused HardenInstallAcl=OFF while SYSTEM tasks still exist: ' + $remNames)
+        }
+        elseif ($applyErrors.Count -gt 0) {
+            Write-Warn 'Skipping HardenInstallAcl=OFF because policy application encountered errors'
+        }
+        else {
+            try {
+                Invoke-GuardChild -ScriptPath $aclScript -ChildArgs @('-Root', $Root, '-Undo') -Label '13-harden-acl.ps1 -Undo' | Out-Null
+                Write-Ok ('HardenInstallAcl = OFF (all SYSTEM tasks removed; restored inherited permissions on ' + $Root + ')')
+            }
+            catch {
+                $applyErrors.Add($_.Exception.Message)
+                Write-Warn ('ACL unlock failed: ' + $_.Exception.Message)
+            }
+        }
+    }
+
     & $psExe -NoProfile -ExecutionPolicy Bypass -File (Get-PolicyScriptPath '07-mode.ps1') -Status -Root $Root -V2rayNRoot $V2rayNRoot -DnsServer $targetDns
     Write-Host ''
     if ($applyErrors.Count -gt 0) {
         $applyExitCode = 5
-        Write-Host ('[FAILED] AI-Net-Guard v5.9.0 policy application finished with ' + $applyErrors.Count + ' error(s):') -ForegroundColor Red
+        Write-Host ('[FAILED] AI-Net-Guard v5.9.1 policy application finished with ' + $applyErrors.Count + ' error(s):') -ForegroundColor Red
         foreach ($ae in $applyErrors) { Write-Host ('  - ' + $ae) -ForegroundColor Red }
     }
     else {
@@ -1333,12 +1364,35 @@ public static class AiGuardWinInet {
         catch {
             Write-Warn ('could not update guard-policy.last-good.json: ' + $_.Exception.Message)
         }
-        Write-Host '[SUCCESS] AI-Net-Guard v5.9.0 configuration applied successfully.' -ForegroundColor Green
+        Write-Host '[SUCCESS] AI-Net-Guard v5.9.1 configuration applied successfully.' -ForegroundColor Green
     }
 }
 }
 }
 finally {
+    if ($canonicalStaged) {
+        $applySucceeded = ($applyExitCode -eq 0 -and $applyErrors.Count -eq 0)
+        if (-not $applySucceeded) {
+            try {
+                if ($hadPrevCanonical) {
+                    $tmpRestore = $canonicalPolicyPath + '.restore.' + $PID
+                    [System.IO.File]::WriteAllText($tmpRestore, $prevCanonicalRaw, (New-Object System.Text.UTF8Encoding($false)))
+                    Move-Item -LiteralPath $tmpRestore -Destination $canonicalPolicyPath -Force -ErrorAction Stop
+                    Write-Warn 'restored previous guard-policy.json because policy application did not succeed'
+                }
+                elseif (Test-Path -LiteralPath $canonicalPolicyPath) {
+                    Remove-Item -LiteralPath $canonicalPolicyPath -Force -ErrorAction SilentlyContinue
+                    Write-Warn 'removed uncommitted guard-policy.json because initial deployment did not succeed'
+                }
+            }
+            catch {
+                Write-Warn ('failed to restore previous guard-policy.json: ' + $_.Exception.Message)
+            }
+        }
+    }
+    if ($PolicyPath -and ([System.IO.Path]::GetFileName($PolicyPath) -ieq 'guard-policy.pending.json') -and (Test-Path -LiteralPath $PolicyPath)) {
+        Remove-Item -LiteralPath $PolicyPath -Force -ErrorAction SilentlyContinue
+    }
     Exit-GuardWriteLock $applyWriteLock
 }
 if ($applyExitCode -eq -1) { $applyExitCode = 0 }

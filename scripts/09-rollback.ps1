@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.9.0 - rollback & baseline restore (100% thorough uninstaller)
+# AI-Net-Guard v5.9.1 - rollback & baseline restore (100% thorough uninstaller)
 [CmdletBinding()]
 param(
     [string]$Root = 'C:\AI-Net-Guard',
@@ -24,7 +24,7 @@ function Log ($msg) {
 }
 
 $DohServer = '223.5.5.5'
-Log ('AI-Net-Guard v5.9.0 thorough rollback started' + $(if ($Auto) { ' (auto-rollback trigger)' } else { '' }))
+Log ('AI-Net-Guard v5.9.1 thorough rollback started' + $(if ($Auto) { ' (auto-rollback trigger)' } else { '' }))
 Log ('user: ' + [System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
 
 # ------------------------------------------------------------------ admin check
@@ -48,8 +48,16 @@ if (Get-Command Enter-GuardWriteLock -ErrorAction SilentlyContinue) {
 try {
 
 # ------------------------------------------------------------------ 0. stop all AI-Guard tasks & processes
+$deferredSelfTasks = New-Object System.Collections.Generic.List[string]
 $allTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -like 'AI-Guard*' } | Select-Object -ExpandProperty TaskName)
 foreach ($tn in $allTasks) {
+    # Self-termination guard (#04): when triggered by AI-Guard-Test-Rollback or AI-Guard-Boot-Guard
+    # (-Auto), calling Stop-ScheduledTask on the hosting task can terminate this process mid-rollback.
+    if ($Auto -and ($tn -in @('AI-Guard-Test-Rollback', 'AI-Guard-Boot-Guard'))) {
+        $deferredSelfTasks.Add($tn)
+        Log ('deferring unregister of self-trigger task until rollback finishes: ' + $tn)
+        continue
+    }
     try {
         Stop-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction Stop
@@ -150,6 +158,13 @@ if ($ForceAllowOutbound) {
 elseif (-not $fwImported) {
     Log 'WARNING: leaving firewall profile DefaultOutboundAction untouched (pass -ForceAllowOutbound or run Emergency-Rescue.bat to force-open outbound)'
 }
+
+# Abort destructive steps (#06) if firewall baseline could not be restored without -ForceAllowOutbound.
+$abortDestructiveRollback = ((-not $fwImported) -and (-not $ForceAllowOutbound))
+if ($abortDestructiveRollback) {
+    Log 'ERROR: aborting remaining destructive rollback steps because firewall baseline could not be restored; preserving existing firewall rules, DNS, IPv6, baseline, metadata, and locked ACL.'
+}
+else {
 
 # Re-enable original outbound allow rules
 if ($baseline.AllowRules -and (Test-Path -LiteralPath $baseline.AllowRules)) {
@@ -571,8 +586,32 @@ else {
     Log 'WARNING: preserving recovery metadata files because rollback encountered errors'
 }
 
+} # end destructive rollback steps (-not $abortDestructiveRollback)
+
+# Unregister deferred self-trigger tasks after restoration completes (#04)
+foreach ($dt in $deferredSelfTasks) {
+    try {
+        Unregister-ScheduledTask -TaskName $dt -Confirm:$false -ErrorAction Stop
+        $stillDt = Get-ScheduledTask -TaskName $dt -ErrorAction SilentlyContinue
+        if ($stillDt) {
+            throw ('scheduled task still present after deferred Unregister-ScheduledTask: ' + $dt)
+        }
+        Log ('removed deferred self-trigger task: ' + $dt)
+    }
+    catch {
+        $msg = 'failed removing deferred task ' + $dt + ': ' + $_.Exception.Message
+        $rollbackErrors.Add($msg)
+        Log ('ERROR: ' + $msg)
+    }
+}
+
 # ------------------------------------------------------------------ 10. Restore directory ACL
-if (-not $KeepAclLocked -and $Root.Length -gt 3 -and $Root -notmatch '(?i)^[A-Z]:\\(Windows|Program Files|Program Files \(x86\)|Users|ProgramData)(\\|$)') {
+# Security invariant (#05): NEVER unlock ACL while rollback had errors or any AI-Guard* task still exists.
+$remainingAiTasks = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $_.TaskName -like 'AI-Guard*' })
+if ($KeepAclLocked -or $abortDestructiveRollback -or ($rollbackErrors.Count -gt 0) -or ($remainingAiTasks.Count -gt 0)) {
+    Log ('preserving locked install ACL (KeepAclLocked=' + [bool]$KeepAclLocked + ', aborted=' + [bool]$abortDestructiveRollback + ', errors=' + $rollbackErrors.Count + ', remainingTasks=' + $remainingAiTasks.Count + ')')
+}
+elseif ($Root.Length -gt 3 -and $Root -notmatch '(?i)^[A-Z]:\\(Windows|Program Files|Program Files \(x86\)|Users|ProgramData)(\\|$)') {
     try {
         & icacls.exe $Root /reset /T /C /Q 2>$null | Out-Null
         Log ('restored default inherited ACL on ' + $Root)

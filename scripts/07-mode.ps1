@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    AI-Net-Guard v5.9.0 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
+    AI-Net-Guard v5.9.1 - zero-resident static guard, persistent GUI/CLI policy engine, multi-core auto node sync, drift quarantine, SMHNR hardening, and event-task manager.
 
 .DESCRIPTION
     The guard itself is 100% STATIC in Windows kernel WFP (BFE / tcpip.sys):
@@ -56,6 +56,10 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+$script:CliBoundParams = @{}
+foreach ($bpKey in $PSBoundParameters.Keys) { $script:CliBoundParams[$bpKey] = $PSBoundParameters[$bpKey] }
+$script:CliDefaultDnsServer = $DnsServer
+$script:CliDefaultV2rayNRoot = $V2rayNRoot
 $policyFile = Join-Path $Root 'backup\guard-policy.json'
 $protectedLockFile = Join-Path $Root 'backup\protected-lock.flag'
 
@@ -100,21 +104,27 @@ function Get-GuardPolicy {
 }
 
 function Apply-GuardPolicyToScriptVars {
-    if (-not $PSBoundParameters.ContainsKey('V2rayNRoot') -and $script:guardPolicy.V2rayNRoot -and (Test-Path -LiteralPath $script:guardPolicy.V2rayNRoot)) {
-        $script:V2rayNRoot = $script:guardPolicy.V2rayNRoot
+    if (-not $script:CliBoundParams.ContainsKey('V2rayNRoot')) {
+        if ($script:guardPolicy.V2rayNRoot -and (Test-Path -LiteralPath $script:guardPolicy.V2rayNRoot)) {
+            $script:V2rayNRoot = $script:guardPolicy.V2rayNRoot
+        }
+        else {
+            $script:V2rayNRoot = $script:CliDefaultV2rayNRoot
+        }
     }
-    if (-not $PSBoundParameters.ContainsKey('DnsServer')) {
+    if (-not $script:CliBoundParams.ContainsKey('DnsServer')) {
         if ($script:guardPolicy.StrictNrptDoh) { $script:DnsServer = '1.1.1.1' }
         elseif ($script:guardPolicy.DnsServer) { $script:DnsServer = $script:guardPolicy.DnsServer }
+        else { $script:DnsServer = $script:CliDefaultDnsServer }
     }
-    if (-not $PSBoundParameters.ContainsKey('DisableAutoNodeSync') -and (-not $script:guardPolicy.AutoNodeSync)) {
-        $script:DisableAutoNodeSync = [switch]::Present
+    if (-not $script:CliBoundParams.ContainsKey('DisableAutoNodeSync')) {
+        $script:DisableAutoNodeSync = if (-not [bool]$script:guardPolicy.AutoNodeSync) { [switch]::Present } else { [switch]$false }
     }
-    if (-not $PSBoundParameters.ContainsKey('SkipQuarantineAllowRules') -and (-not $script:guardPolicy.QuarantineRogueAllow)) {
-        $script:SkipQuarantineAllowRules = [switch]::Present
+    if (-not $script:CliBoundParams.ContainsKey('SkipQuarantineAllowRules')) {
+        $script:SkipQuarantineAllowRules = if (-not [bool]$script:guardPolicy.QuarantineRogueAllow) { [switch]::Present } else { [switch]$false }
     }
-    if (-not $PSBoundParameters.ContainsKey('SkipStaleProxyHeal') -and (-not $script:guardPolicy.AutoHealStaleProxy)) {
-        $script:SkipStaleProxyHeal = [switch]::Present
+    if (-not $script:CliBoundParams.ContainsKey('SkipStaleProxyHeal')) {
+        $script:SkipStaleProxyHeal = if (-not [bool]$script:guardPolicy.AutoHealStaleProxy) { [switch]::Present } else { [switch]$false }
     }
 }
 
@@ -1444,7 +1454,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>AI-Net-Guard v5.9.0 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
+    <Description>AI-Net-Guard v5.9.1 zero-resident network &amp; sleep-resume event handler (wakes on TUN/NIC connect/disconnect, boot, and standby resume; 0 MB idle RAM).</Description>
   </RegistrationInfo>
   <Triggers>
     <BootTrigger>
@@ -1682,7 +1692,7 @@ function Show-Status {
     else { 'stopped' }
 
     Write-Host ''
-    Write-Host '=== AI-Net-Guard v5.9.0 Status (read-only) ===' -ForegroundColor Cyan
+    Write-Host '=== AI-Net-Guard v5.9.1 Status (read-only) ===' -ForegroundColor Cyan
     Write-Host ('TUN : ' + $tunLabel + '   core : ' + $coreLabel)
     if (Test-Path -LiteralPath $protectedLockFile) {
         Write-Host '  Protected lock    : ACTIVE (backup\protected-lock.flag - Auto tasks keep CN direct disabled)' -ForegroundColor Yellow
@@ -1885,7 +1895,7 @@ function Show-Status {
 }
 
 function Invoke-UpgradeV54 {
-    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.9.0 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
+    Say '[+] upgrading live installation in-place to AI-Net-Guard v5.9.1 (zero-resident + multi-core + SMHNR-off + sleep-resume)...'
 
     # 1. Backfill new rollback fields into existing DNS baseline JSON without altering original values
     $bf = Join-Path $Root 'backup\baseline.json'
@@ -2008,12 +2018,6 @@ try {
     Apply-GuardPolicyToScriptVars
     $requiredRules = @('AI-Guard-Allow-TUN', 'AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-DoH-Ali', 'AI-Guard-Allow-DHCP')
     if ($guardPolicy.AllowLan) { $requiredRules += 'AI-Guard-Allow-LAN' }
-
-    # Bootstrap last-good once on already-deployed healthy hosts without touching it on reads.
-    $lastGoodBootstrapPath = Join-Path $Root 'backup\guard-policy.last-good.json'
-    if (($guardPolicy.PolicyHealth -eq 'ok') -and (Test-Path -LiteralPath $policyFile) -and (-not (Test-Path -LiteralPath $lastGoodBootstrapPath))) {
-        try { Save-GuardPolicyLastGood -PolicyPath $policyFile -LastGoodPath $lastGoodBootstrapPath } catch { }
-    }
 
     if ($ClearProtectedLock -and (Test-Path -LiteralPath $protectedLockFile)) {
         Remove-Item -LiteralPath $protectedLockFile -Force -ErrorAction SilentlyContinue
@@ -3017,29 +3021,28 @@ if (-not $handledEarly) {
     $prevState = Read-PrevState
     $prevTun = if ($prevState -and $null -ne $prevState.TunUp) { [bool]$prevState.TunUp } else { $null }
     $tunUp = Test-TunUp
-    $protectedLockActive = (Test-Path -LiteralPath $protectedLockFile)
 
-    if ($Mode -eq 'Protected' -or $protectedLockActive) {
-        if ($Mode -eq 'Protected') {
-            $lockDir = Split-Path -Parent $protectedLockFile
-            if ($lockDir -and -not (Test-Path -LiteralPath $lockDir)) {
-                New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
-            }
-            [System.IO.File]::WriteAllText($protectedLockFile, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
-            Say '[+] PROTECTED: default deny, CN allow disabled (fail closed, persisted until -ClearProtectedLock or policy apply)'
-            Write-MonitorLog 'mode -> Protected (CN allow disabled, fail closed; protected-lock.flag written)'
+    if ($Mode -eq 'Protected') {
+        $lockDir = Split-Path -Parent $protectedLockFile
+        if ($lockDir -and -not (Test-Path -LiteralPath $lockDir)) {
+            New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
         }
-        else {
-            Say '[+] PROTECTED (locked): backup\protected-lock.flag active - keeping CN allow disabled (fail closed)'
-            Write-MonitorLog 'Protected lock active (backup\protected-lock.flag); keeping CN direct disabled (pass -ClearProtectedLock or apply policy to release)'
-        }
-        Set-NetFirewallProfile -Profile Domain, Private, Public -DefaultOutboundAction Block -Enabled True
-        Disable-NetFirewallRule -Name $cnRuleName -ErrorAction SilentlyContinue
-        Write-State -Label 'Protected' -CnEnabled $false -Sig '' -TunState $tunUp
-        $scriptExitCode = 0
+        [System.IO.File]::WriteAllText($protectedLockFile, (Get-Date).ToString('o'), (New-Object System.Text.UTF8Encoding($false)))
+        Say '[+] PROTECTED: default deny, CN allow disabled (fail closed, persisted with full self-healing)'
+        Write-MonitorLog 'mode -> Protected (protected-lock.flag written; forcing AllowCnDirect=false while running full Ensure-Guard)'
     }
-    else {
-        if ($OnNetworkEvent) {
+
+    # Protected persistence (#01): override AllowCnDirect=false instead of skipping Ensure-Guard
+    $protectedLockActive = (Test-Path -LiteralPath $protectedLockFile)
+    if ($protectedLockActive) {
+        $script:guardPolicy.AllowCnDirect = $false
+        if ($Mode -ne 'Protected') {
+            Say '[+] PROTECTED (locked): backup\protected-lock.flag active - forcing AllowCnDirect=false with full self-healing'
+            Write-MonitorLog 'Protected lock active (backup\protected-lock.flag); forcing AllowCnDirect=false while running full Ensure-Guard'
+        }
+    }
+
+    if ($OnNetworkEvent) {
             if ($null -eq $prevTun -or $tunUp -ne $prevTun) {
                 if ($tunUp) {
                     if ($prevTun -eq $false) {
@@ -3135,8 +3138,12 @@ if (-not $handledEarly) {
                 Write-MonitorLog 'periodic fast verify ok (0 CIM loaded)'
             }
 
-            $label = if ($tunUp) { 'Guard (proxy on)' } else { 'Guard (proxy off)' }
-            if ($sig -eq 'POLICY-NO-CN') {
+            $label = if ($protectedLockActive) { 'Protected (locked)' } elseif ($tunUp) { 'Guard (proxy on)' } else { 'Guard (proxy off)' }
+            if ($protectedLockActive) {
+                Say ('[+] ' + $label + ': static guard intact, CN direct disabled by Protected lock (full self-healing active)')
+                Write-State -Label $label -CnEnabled $false -Sig $sig -TunState $tunUp -Missing $script:missingRules -B1 $script:B1State
+            }
+            elseif ($sig -eq 'POLICY-NO-CN') {
                 Say ('[+] ' + $label + ': static guard intact, strict global lock (CN direct disabled by policy)')
                 Write-State -Label $label -CnEnabled $false -Sig $sig -TunState $tunUp -Missing $script:missingRules -B1 $script:B1State
             }
@@ -3158,7 +3165,6 @@ if (-not $handledEarly) {
                 $scriptExitCode = 3
             }
         }
-    }
 }
 }
 finally {
