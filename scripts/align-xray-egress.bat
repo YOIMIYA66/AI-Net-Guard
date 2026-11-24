@@ -15,7 +15,7 @@ set "SCRIPT_DIR=%~dp0"
 set "PS_SCRIPT=%SCRIPT_DIR%align-xray-egress.ps1"
 
 if not exist "%PS_SCRIPT%" (
-    set "PS_SCRIPT=C:\Users\86198\Documents\deepseek-harness\default-workspace\AI-Net-Guard\scripts\align-xray-egress.ps1"
+    set "PS_SCRIPT=C:\AI-Net-Guard\scripts\align-xray-egress.ps1"
 )
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%PS_SCRIPT%"

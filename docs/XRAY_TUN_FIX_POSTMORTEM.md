@@ -21,7 +21,7 @@
 - **GUI 客户端**：v2rayN 7.25.6 (X64)
 - **底层代理核心**：Xray-core v26.10.31 (源码基准 commit `a4a3dff5b20c2faae567b742c172c7b95e75c083`)
 - **TUN 驱动**：Wintun 0.14
-- **节点协议**：VLESS + REALITY + Vision (`20.89.232.246:443`)
+- **节点协议**：VLESS + REALITY + Vision (`198.51.100.10:443`)
 - **注册表配置**：`HKLM\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\DisabledComponents = 0x28` (十进制 40)
 - **安全边界**：AI-Net-Guard 防火墙规则（出站默认全阻断，仅白名单放行）
 

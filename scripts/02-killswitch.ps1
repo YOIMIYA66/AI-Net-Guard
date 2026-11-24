@@ -524,7 +524,7 @@ function New-AiRule {
 }
 
 # ------------------------------------------------------------------ IPv4 subnet helpers
-# The WebRTC LocalAddress block used to store the exact DHCP lease (e.g. 192.168.1.165).
+# The WebRTC LocalAddress block used to store the exact DHCP lease (e.g. 192.168.1.x).
 # That value is a snapshot: the moment the router hands out a different address the rule
 # keeps pointing at an address the machine no longer owns, so it silently stops blocking.
 # Widening each leased address to its own subnet makes the rule survive a renumber inside

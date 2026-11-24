@@ -339,7 +339,7 @@ v5.7.3 针对原生桌面 GUI 客户端进行了全链路深度美化与人机�
 
 1. **根因实测**：
    - 在 Windows TUN 模式下，无论使用 `sing-box`（如 Hysteria2 节点）还是 `Xray`（如 VLESS 节点），物理网卡默认路由仍与虚拟 TUN 网卡并存。
-   - 当浏览器 WebRTC ICE 显式将 UDP Socket 绑定至物理网卡本地 IP（如 `192.168.1.165`）向公网 STUN 服务器（如 `74.125.250.129:19302`）发包时，即使 `Xray` 开启了 `autoSystemWfpBlockLeak=["dns","misconfigtun"]`，该机制仅覆盖 53 端口及 `0.0.0.0` 未绑定流，仍无法拦截绑定物理网卡 IP 的 STUN 出站包，导致 STUN 响应直接暴露真实运营商公网 IP。
+   - 当浏览器 WebRTC ICE 显式将 UDP Socket 绑定至物理网卡本地 IP（如 `192.168.1.x`）向公网 STUN 服务器（如 `74.125.250.129:19302`）发包时，即使 `Xray` 开启了 `autoSystemWfpBlockLeak=["dns","misconfigtun"]`，该机制仅覆盖 53 端口及 `0.0.0.0` 未绑定流，仍无法拦截绑定物理网卡 IP 的 STUN 出站包，导致 STUN 响应直接暴露真实运营商公网 IP。
 2. **双层防御实现**：
    - **内核/防火墙层 (`AI-Guard-Block-WebRTC-UDP/TCP` & `AI-Guard-Block-WebRTC-LocalIP-UDP/TCP` & `AI-Guard-Allow-TUN` 源 IP 隔离)**：
      - 除物理网卡别名与物理源 IP 的 STUN/TURN 显式阻断规则（`3478, 3479, 5349, 5350, 19302-19309`）外，还将 `AI-Guard-Allow-TUN` 与 `AI-Guard-Allow-TUN-Alt` 的 `LocalAddress` 收窄为实际 TUN 地址与私网 TUN 网段（排除任何物理网卡子网），从根源彻底阻断“绑定物理 IP 借道 `0.0.0.0/0` TUN 规则绕过 `DefaultOutboundAction=Block`”的任意端口直连旁路泄漏（含 `13.107.246.51:443` 探针与 TURN-over-TLS/443）。
@@ -353,7 +353,7 @@ v5.7.3 针对原生桌面 GUI 客户端进行了全链路深度美化与人机�
 ## 14. v5.7.6 升级版本：显式物理境外阻断 (`AI-Guard-Block-Foreign-Physical`) 与 Hysteria2/VLESS 多核深化优化
 
 1. **第三方 WFP 软放行与物理网卡旁路彻底封堵**：
-   - 在同时安装第三方安全/流控 WFP 驱动（如 `hrwfpdrv` 火绒、`idmwfp` IDM、`nfwfp` NetFilter）的环境下，其 `Flow Established Callout` 等软放行优先级高于 Windows 防火墙底层的 `DefaultOutboundAction = Block`，导致仅依赖默认拒绝时，显式绑定物理 IP（如 `192.168.1.165`）的非 CN 请求仍可能出站。
+   - 在同时安装第三方安全/流控 WFP 驱动（如 `hrwfpdrv` 火绒、`idmwfp` IDM、`nfwfp` NetFilter）的环境下，其 `Flow Established Callout` 等软放行优先级高于 Windows 防火墙底层的 `DefaultOutboundAction = Block`，导致仅依赖默认拒绝时，显式绑定物理 IP（如 `192.168.1.x`）的非 CN 请求仍可能出站。
    - **核心修复**：
      - 新增共享模块 [`scripts/lib-foreign-block.ps1`](./scripts/lib-foreign-block.ps1)，基于 `[0, 2^32-1]` IPv4 区间扫面算法精准计算 `cn-ipv4.txt` + 私网/LAN + NCSI(`13.107.4.52`) + 阿里 DoH(`223.5.5.5/223.6.6.6`) + 落地节点 IP 之外的全部补集网段，在物理网卡接口写入显式 `Action=Block` 规则 **`AI-Guard-Block-Foreign-Physical`**，跨子层一票否决任何第三方 WFP 软放行与 `Xray TUN` 软放行。
      - 同步收窄 `AI-Guard-Allow-TUN` / `AI-Guard-Allow-TUN-Alt` 的 `LocalAddress` 为 TUN 地址及非重叠私网 TUN 网段，并维护 `AI-Guard-Block-PhysicalIP-On-TUN` 显式阻断。
@@ -382,15 +382,15 @@ v5.7.x 把"防火墙 Block 规则已启用"当成 WebRTC 已封堵的证据，�
 
 | 目标 | 结果 | 判定 |
 | --- | --- | --- |
-| `stun.miwifi.com:3478`（111.206.174.x） | `mapped=183.188.38.12` | **泄露真实宽带 IP** |
-| `stun.chat.bilibili.com:3478`（106.12.x） | `mapped=183.188.38.12` | **泄露** |
-| `stun.l.google.com:19302` | `mapped=20.89.232.246` | 走代理，正常 |
+| `stun.miwifi.com:3478`（111.206.174.x） | `mapped=203.0.113.10` | **泄露真实宽带 IP** |
+| `stun.chat.bilibili.com:3478`（106.12.x） | `mapped=203.0.113.10` | **泄露** |
+| `stun.l.google.com:19302` | `mapped=198.51.100.10` | 走代理，正常 |
 
 当时 8 条 `AI-Guard-Block-WebRTC-*` 全部 `Active=TRUE`，`xray.exe` 程序路径、12 个 STUN 端口、网卡 GUID 全部正确。真实链路是：
 
 ```
 任意进程 -> xray_tun（默认路由 metric 0）-> xray.exe 路由命中 geoip:cn -> direct
-        -> xray.exe 从物理网卡重发，源 IP 192.168.1.165 -> NAT -> 183.188.38.12
+        -> xray.exe 从物理网卡重发，源 IP 192.168.1.x -> NAT -> 203.0.113.10
 ```
 
 根因不是"规则不够具体"。Windows 防火墙的仲裁是**显式 Block 一律压过 Allow**，与具体度无关。真正原因是 TUN 提供方在 `ALE_AUTH_CONNECT` 层对核心自身的出站安装 callout 并 **PERMIT + 终结分类**，防火墙的 Block 过滤器根本没有被求值。旁证：同一个探针若显式绑定物理地址（`verify-leak-test.ps1` 第 3 段即如此）规则一定生效，失效的只是"核心自己发包"这一跳。**任何防火墙规则都堵不住这一跳**。
@@ -443,7 +443,7 @@ v5.8.1 的两个脚本经过一次逐行审查，暴露出 7 个问题，其中 
 
 **P0 —— 第 9 段把境外 STUN 应答判成 PASS（最严重）**
 
-旧逻辑是 `if ($isCn) { FAIL } else { WARN }`，汇总时只统计 `$stunLeaks`（境内应答数）。B1 是纯端口匹配、不看目标，境外应答恰恰证明端口没被丢弃；旧逻辑却把唯一能证伪的情况降级成一条 WARN，然后照样打印 PASS。实测现场就能复现：`stun.l.google.com:19302` 返回 `20.89.232.246`（机场落地 IP），旧代码判 PASS。
+旧逻辑是 `if ($isCn) { FAIL } else { WARN }`，汇总时只统计 `$stunLeaks`（境内应答数）。B1 是纯端口匹配、不看目标，境外应答恰恰证明端口没被丢弃；旧逻辑却把唯一能证伪的情况降级成一条 WARN，然后照样打印 PASS。实测现场就能复现：`stun.l.google.com:19302` 返回 `198.51.100.10`（机场落地 IP），旧代码判 PASS。
 
 现在判定收敛为三态，且**失败优先级最高**：
 
@@ -733,7 +733,7 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 
 #### 16.13.1 P0：停止扫描 `configTest*.json` 与持久化 `/32` 路由污染
 
-1. **现网问题**：实机路由表 `PersistentStore` 中积压了 368 条挂在 `WLAN -> 192.168.1.1` 下的 `/32` 主机路由（除活跃节点 `20.89.232.246/32` 外有 367 条历史孤儿路由，涵盖 Cloudflare / AWS / Fastly 及国内中转 IP）。
+1. **现网问题**：实机路由表 `PersistentStore` 中积压了 368 条挂在 `WLAN -> 192.168.1.1` 下的 `/32` 主机路由（除活跃节点 `198.51.100.10/32` 外有 367 条历史孤儿路由，涵盖 Cloudflare / AWS / Fastly 及国内中转 IP）。
 2. **根因**：`02-killswitch.ps1`、`07-mode.ps1`、`10-sync-node-rule.ps1` 会扫描 `binConfigs\configTest*.json`（v2rayN 批量延迟测速产生的临时订阅节点表），合并所有 IP 并调用未指定 `-PolicyStore` 的 `New-NetRoute`——Windows 默认写入 `PersistentStore` 持久化，且旧版仅凭前一次 `node-sync.meta` 差集清理，一旦临时文件消失便永久失联。
 3. **修法**：
    - `02` / `07` / `10` 全部移除 `configTest*.json` 扫描，只信任活跃 `binConfigs\config.json`；

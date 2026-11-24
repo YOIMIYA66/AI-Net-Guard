@@ -807,6 +807,46 @@ Assert-True 'Enter-GuardWriteLock supports PowerShell 7 MutexAcl::Create alongsi
     (($libCommonAclRaw -match 'System\.Threading\.MutexAcl') -and ($libCommonAclRaw -match 'New-Object System\.Threading\.Mutex\(') -and ($libCommonAclRaw -match 'if \(-not \$mtx\)')) `
     'MutexAcl / null guard missing in lib-guard-common.ps1'
 
+# ---------------------------------------------------------------- 22. Anti-PII / local path & personal IP leak gate
+$piiMarkers = @(
+    ('C:' + [char]92 + 'Us' + 'ers' + [char]92 + '86' + '198'),
+    ('deepseek-' + 'harness'),
+    ('default-' + 'workspace'),
+    ('183.' + '188.' + '38.12'),
+    ('20.' + '89.' + '232.246'),
+    ('192.168.' + '1.165')
+)
+$piiFiles = New-Object System.Collections.Generic.List[string]
+foreach ($rootMd in @(Get-ChildItem -LiteralPath $repo -Filter '*.md' -File -ErrorAction SilentlyContinue)) {
+    $piiFiles.Add($rootMd.FullName)
+}
+foreach ($subDir in @('scripts', 'docs', 'tests')) {
+    $subPath = Join-Path $repo $subDir
+    if (Test-Path -LiteralPath $subPath) {
+        foreach ($sf in @(Get-ChildItem -LiteralPath $subPath -Recurse -File -ErrorAction SilentlyContinue)) {
+            if ($sf.Extension -in @('.md', '.ps1', '.bat')) { $piiFiles.Add($sf.FullName) }
+        }
+    }
+}
+$guiDirPath = Join-Path $repo 'gui'
+if (Test-Path -LiteralPath $guiDirPath) {
+    foreach ($gf in @(Get-ChildItem -LiteralPath $guiDirPath -Recurse -File -ErrorAction SilentlyContinue)) {
+        if ($gf.FullName -match '\\(obj|bin)\\') { continue }
+        if ($gf.Extension -in @('.cs', '.xaml', '.csproj', '.ps1')) { $piiFiles.Add($gf.FullName) }
+    }
+}
+$piiHits = New-Object System.Collections.Generic.List[string]
+foreach ($pf in $piiFiles) {
+    $pTxt = [System.IO.File]::ReadAllText($pf, [System.Text.Encoding]::UTF8)
+    foreach ($mk in $piiMarkers) {
+        if ($pTxt.IndexOf($mk, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $piiHits.Add((Split-Path -Leaf $pf) + ':' + $mk)
+        }
+    }
+}
+Assert-True 'Repository docs, scripts, tests, and GUI contain zero personal paths or private IPs' `
+    ($piiHits.Count -eq 0) ($piiHits -join ' | ')
+
 Write-Host ' '
 if ($script:fail -gt 0) {
     Write-Host ('=== ' + $script:fail + ' assertion(s) FAILED ===') -ForegroundColor Red

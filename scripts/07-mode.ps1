@@ -352,7 +352,7 @@ function Get-ActivePhysicalNicsFast {
 }
 
 # ------------------------------------------------------------ IPv4 subnet helpers
-# The WebRTC LocalAddress rules used to store the exact DHCP lease (e.g. 192.168.1.165).
+# The WebRTC LocalAddress rules used to store the exact DHCP lease (e.g. 192.168.1.x).
 # A lease change then leaves the rule pointing at an address this host no longer owns, so it
 # silently stops blocking while still looking "enabled" in every status view.  Comparing the
 # rule against the *subnet* of each physical NIC survives an in-LAN renumber, and /32 is kept

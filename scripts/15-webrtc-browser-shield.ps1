@@ -27,7 +27,7 @@
     It also repairs the two drift bugs in the stock shield:
       * AI-Guard-Block-WebRTC-{UDP,TCP}   interface list re-synced to all live physical NICs
       * AI-Guard-Block-WebRTC-LocalIP-*   LocalAddress widened from the single leased address
-        (the stock rules stored whatever IP existed at apply time, e.g. 192.168.1.165, and went
+        (the stock rules stored whatever IP existed at apply time, e.g. 192.168.1.x, and went
         dead after a DHCP renumber) to the physical NIC subnet, so an in-LAN lease change no
         longer voids the block.  /32 is kept whenever the subnet would also cover a TUN address,
         because that would black-hole proxied WebRTC instead of unproxied leaks.
@@ -36,8 +36,8 @@
     not enough when a TUN is up.  The browser hands the STUN packet to the tunnel, the tunnel
     core re-sends it from the physical NIC, and the rule that names chrome.exe never sees it.
     A CN-resident STUN server (stun.miwifi.com, stun.chat.bilibili.com) matched geoip:cn ->
-    direct and came back with the real ISP address (183.188.38.12), while Google/Cloudflare
-    STUN servers returned the proxy exit (20.89.232.246).  That is exactly the "sometimes it
+    direct and came back with the real ISP address (203.0.113.10), while Google/Cloudflare
+    STUN servers returned the proxy exit (198.51.100.10).  That is exactly the "sometimes it
     leaks, sometimes it does not" pattern: it depends on which STUN server the test page hits.
 
     Follow-up measurement, same day, independent STUN client (no browser involved): the

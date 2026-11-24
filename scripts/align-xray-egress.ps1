@@ -51,7 +51,7 @@ if (-not $V2rayNRoot) {
 $cfgPath = Join-Path $V2rayNRoot 'binConfigs\config.json'
 if (-not (Test-Path -LiteralPath $cfgPath)) {
     Write-Host ('[!] Cannot find config.json at ' + $cfgPath) -ForegroundColor Yellow
-    $nodeIps = @('20.89.232.246')
+    $nodeIps = @()
 } else {
     try {
         $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -80,7 +80,7 @@ if (-not (Test-Path -LiteralPath $cfgPath)) {
             $nodeIps = @(Resolve-DnsName -Name $address -Type A -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress } | Select-Object -ExpandProperty IPAddress)
         }
     } catch {
-        $nodeIps = @('20.89.232.246')
+        $nodeIps = @()
     }
 }
 
