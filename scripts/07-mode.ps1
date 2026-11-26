@@ -1773,6 +1773,13 @@ function Show-Status {
         }
     }
 
+    if (Get-Command Read-GuardCandidateNodes -ErrorAction SilentlyContinue) {
+        $candStatus = Read-GuardCandidateNodes -Path (Join-Path $Root 'backup\candidate-nodes.json')
+        if ($candStatus.Enabled) {
+            Write-Host ('  candidate nodes   : ' + $candStatus.Ips.Count + ' IPs (TCP:' + $candStatus.TcpPorts.Count + ' port(s), UDP:' + $candStatus.UdpPorts.Count + ' port(s))') -ForegroundColor Cyan
+        }
+    }
+
     # B1 routing-table guard (18-route-stun-guard.ps1). Read-only line: the fix requires
     # v2rayN to be closed, so it is reported, not repaired, everywhere it is checked.
     $b1 = if ($script:B1State) { $script:B1State } else { Get-B1GuardState (Join-Path $V2rayNRoot 'binConfigs\config.json') }
@@ -2945,6 +2952,12 @@ function Ensure-Guard {
                         $nodeIpsMeta = @($nmParts[1].Split(',') | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Sort-Object -Unique)
                     }
                 } catch { }
+            }
+            if (Get-Command Read-GuardCandidateNodes -ErrorAction SilentlyContinue) {
+                $candMeta = Read-GuardCandidateNodes -Path (Join-Path $Root 'backup\candidate-nodes.json')
+                if ($candMeta.Enabled -and $candMeta.Ips.Count -gt 0) {
+                    $nodeIpsMeta = @($nodeIpsMeta + @($candMeta.Ips) | Sort-Object -Unique)
+                }
             }
 
             $cnStampFp = 'nocn'
