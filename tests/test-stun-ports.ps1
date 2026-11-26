@@ -885,7 +885,8 @@ $candWireOk = ($sync10Raw -match '\[switch\]\$IncludeAllNodes') -and ($sync10Raw
     ($sync10Raw -match "\(Split-Path -Leaf \`$PSScriptRoot\) -ieq 'scripts'") -and `
     ($sync10Raw -match 'mode=ro') -and ($sync10Raw -match 'AI-Guard-Allow-Candidates-') -and `
     ($sync10Raw -match '-NodeIps \$foreignNodeIps') -and `
-    ($mode07Raw -match 'Read-GuardCandidateNodes') -and ($rollback -match 'candidate-nodes\.json')
+    ($mode07Raw -match 'Read-GuardCandidateNodes') -and ($mode07Raw -match 'AI-Guard-Allow-Candidates-') -and `
+    ($mode07Raw -match '\$isCandidateRule') -and ($rollback -match 'candidate-nodes\.json')
 Assert-True '10-sync-node-rule, 07-mode, and 09-rollback wire opt-in candidate node whitelist and foreign-block exemption' `
     $candWireOk 'candidate node wiring check failed'
 

@@ -611,8 +611,12 @@ function Get-FirewallRuleAnalysis {
             $isDangerousBlanket = ($active -and ($v -match '(^|\|)Dir=Out(\||$)') -and ($v -match '(^|\|)Action=Allow(\||$)') -and
                                    ($v -notmatch '(^|\|)RA[46]=') -and ($v -notmatch '(^|\|)IF=') -and ($v -notmatch '(^|\|)App='))
             $ruleIdent = if ($dn) { $dn } else { $pr.Name }
-            $isAuthorizedAiGuard = $isAiGuard -and (-not $isDangerousBlanket) -and
-                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|PhysicalIP-On-TUN|Foreign-Physical|Foreign-Physical-IPv6|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$')
+            $isCandidateRule = ($ruleIdent -match '^AI-Guard-Allow-Candidates-[A-Za-z0-9._-]+-(TCP|UDP)$') -and
+                ($v -match '(^|\|)App=') -and ($v -match '(^|\|)RA4=')
+            $isAuthorizedAiGuard = $isAiGuard -and (-not $isDangerousBlanket) -and (
+                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|PhysicalIP-On-TUN|Foreign-Physical|Foreign-Physical-IPv6|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$') -or
+                $isCandidateRule
+            )
 
             if ($isAuthorizedAiGuard) {
                 if (-not $rawByRule.ContainsKey($pr.Name) -or $active) { $rawByRule[$pr.Name] = $v }
