@@ -127,17 +127,46 @@ uri = 'file:%s?mode=ro' % db_path.replace('%', '%25').replace('?', '%3f').replac
 con = sqlite3.connect(uri, uri=True, timeout=5)
 try:
     cur = con.cursor()
-    rows = cur.execute(
-        "SELECT ConfigType, Address, Port, Ports, Network, Alpn FROM ProfileItem "
+    cols = {str(c[1]).lower(): str(c[1]) for c in cur.execute("PRAGMA table_info(ProfileItem)").fetchall()}
+    sel = [
+        cols.get('configtype', 'ConfigType'),
+        cols.get('address', 'Address'),
+        cols.get('port', 'Port'),
+        cols['ports'] if 'ports' in cols else "''",
+        cols['network'] if 'network' in cols else "''",
+        cols['alpn'] if 'alpn' in cols else "''",
+        cols['protoextra'] if 'protoextra' in cols else "''",
+    ]
+    sql = (
+        "SELECT " + ", ".join(sel) + " FROM ProfileItem "
         "WHERE Address IS NOT NULL AND Address != '' AND Port IS NOT NULL AND Port > 0"
-    ).fetchall()
+    )
+    rows = cur.execute(sql).fetchall()
     out = []
     for r in rows:
+        port_parts = []
+        if r[3]:
+            port_parts.append(str(r[3]).strip())
+        if r[6]:
+            try:
+                pe = json.loads(str(r[6]))
+                if isinstance(pe, dict):
+                    ep = pe.get('Ports')
+                    if ep is None:
+                        ep = pe.get('ports')
+                    if isinstance(ep, list):
+                        for item in ep:
+                            if item is not None and str(item).strip():
+                                port_parts.append(str(item).strip())
+                    elif ep is not None and str(ep).strip():
+                        port_parts.append(str(ep).strip())
+            except Exception:
+                pass
         out.append({
             'ConfigType': int(r[0]) if r[0] is not None else 0,
             'Address': str(r[1]).strip(),
             'Port': int(r[2]),
-            'Ports': str(r[3]).strip() if r[3] is not None else '',
+            'Ports': ','.join([p for p in port_parts if p]),
             'Network': str(r[4]).strip() if r[4] is not None else '',
             'Alpn': str(r[5]).strip() if r[5] is not None else '',
         })
@@ -158,6 +187,9 @@ finally:
     }
 
     $rows = @($jsonOut | ConvertFrom-Json)
+    if ($rows.Count -eq 1 -and ($rows[0] -is [System.Array])) {
+        $rows = @($rows[0])
+    }
     $addrSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     $addrList = New-Object System.Collections.Generic.List[string]
     $tcpSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
@@ -191,7 +223,7 @@ finally:
             }
         }
         if ($row.Ports) {
-            foreach ($seg in @(([string]$row.Ports).Split(',', [System.StringSplitOptions]::RemoveEmptyEntries))) {
+            foreach ($seg in @(([string]$row.Ports).Split([char[]]@(',', ';', ' ', "`t"), [System.StringSplitOptions]::RemoveEmptyEntries))) {
                 $normSeg = $seg.Trim().Replace(':', '-')
                 if (Test-GuardPortSpec -Spec $normSeg) {
                     if ($ct -in @(7, 8, 9)) { [void]$udpSet.Add($normSeg) }
@@ -220,12 +252,18 @@ finally:
         }
     }
 
+    $rawTcpArr = New-Object string[] $tcpSet.Count
+    $tcpSet.CopyTo($rawTcpArr)
+    $rawUdpArr = New-Object string[] $udpSet.Count
+    $udpSet.CopyTo($rawUdpArr)
+    $mergedTcp = Merge-GuardPortSpecs -Specs $rawTcpArr
+    $mergedUdp = Merge-GuardPortSpecs -Specs $rawUdpArr
     return [pscustomobject]@{
         ProfileCount      = $rows.Count
         UniqueAddresses   = $addrList.Count
         Ips               = [string[]]($resolvedIps.ToArray() | Sort-Object)
-        TcpPorts          = [string[]](@($tcpSet) | Sort-Object)
-        UdpPorts          = [string[]](@($udpSet) | Sort-Object)
+        TcpPorts          = [string[]]$mergedTcp
+        UdpPorts          = [string[]]$mergedUdp
         UnresolvedDomains = $unresolvedDomains
     }
 }

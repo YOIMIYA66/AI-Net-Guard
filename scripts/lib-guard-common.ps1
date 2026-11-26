@@ -714,6 +714,62 @@ function Test-GuardPortSpec {
     return $false
 }
 
+function Merge-GuardPortSpecs {
+    param([AllowNull()][string[]]$Specs = @())
+
+    if ($null -eq $Specs -or $Specs.Count -eq 0) {
+        return ,([string[]]@())
+    }
+
+    $intervals = New-Object System.Collections.Generic.List[object]
+    foreach ($raw in $Specs) {
+        if ($null -eq $raw) { continue }
+        $t = ([string]$raw).Trim().Replace(':', '-')
+        if (-not (Test-GuardPortSpec -Spec $t)) { continue }
+        if ($t -match '^(\d{1,5})-(\d{1,5})$') {
+            $s = [int]$matches[1]
+            $e = [int]$matches[2]
+        }
+        else {
+            $s = [int]$t
+            $e = $s
+        }
+        $intervals.Add([pscustomobject]@{ Start = $s; End = $e })
+    }
+
+    if ($intervals.Count -eq 0) {
+        return ,([string[]]@())
+    }
+
+    $sorted = @($intervals | Sort-Object Start, End)
+    $merged = New-Object System.Collections.Generic.List[object]
+    foreach ($cur in $sorted) {
+        if ($merged.Count -eq 0) {
+            $merged.Add([pscustomobject]@{ Start = $cur.Start; End = $cur.End })
+        }
+        else {
+            $last = $merged[$merged.Count - 1]
+            if ($cur.Start -le ($last.End + 1)) {
+                if ($cur.End -gt $last.End) { $last.End = $cur.End }
+            }
+            else {
+                $merged.Add([pscustomobject]@{ Start = $cur.Start; End = $cur.End })
+            }
+        }
+    }
+
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($m in $merged) {
+        if ($m.Start -eq $m.End) {
+            $out.Add([string]$m.Start)
+        }
+        else {
+            $out.Add(([string]$m.Start) + '-' + ([string]$m.End))
+        }
+    }
+    return ,([string[]]$out.ToArray())
+}
+
 function Read-GuardCandidateNodes {
     param([string]$Path)
 
@@ -797,27 +853,9 @@ function Write-GuardCandidateNodes {
         }
     }
 
-    $tcpSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
-    $tcpList = New-Object System.Collections.Generic.List[string]
-    if ($null -ne $TcpPorts) {
-        foreach ($tp in $TcpPorts) {
-            $s = if ($null -ne $tp) { ([string]$tp).Trim() } else { '' }
-            if ((Test-GuardPortSpec -Spec $s) -and $tcpSet.Add($s)) { $tcpList.Add($s) }
-        }
-    }
-
-    $udpSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
-    $udpList = New-Object System.Collections.Generic.List[string]
-    if ($null -ne $UdpPorts) {
-        foreach ($up in $UdpPorts) {
-            $s = if ($null -ne $up) { ([string]$up).Trim() } else { '' }
-            if ((Test-GuardPortSpec -Spec $s) -and $udpSet.Add($s)) { $udpList.Add($s) }
-        }
-    }
-
     $ipArr = @($ipList.ToArray() | Sort-Object)
-    $tcpArr = @($tcpList.ToArray() | Sort-Object)
-    $udpArr = @($udpList.ToArray() | Sort-Object)
+    $tcpArr = Merge-GuardPortSpecs -Specs $TcpPorts
+    $udpArr = Merge-GuardPortSpecs -Specs $UdpPorts
 
     $payload = [pscustomobject]@{
         UpdatedAt = (Get-Date).ToString('o')
