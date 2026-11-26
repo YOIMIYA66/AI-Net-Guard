@@ -92,5 +92,6 @@ git tag v5.8.x ─> .github/workflows/release-exe.yml ─> GitHub Release（自�
 | [`docs/releases/v5.9.3.md`](releases/v5.9.3.md) | v5.9.3 维护修复发布说明（PS 5.1 `auto-disabled-outbound-allow.json` 嵌套数组自愈、`scripts\` 默认 `$Root` 与 Check 7 守卫、58 项门禁） |
 | [`docs/releases/v5.9.4.md`](releases/v5.9.4.md) | v5.9.4 热修发布说明（PowerShell 7.x `MutexAcl::Create` 写锁兼容、PS 5.1 & PS 7.7 双引擎 59/59 门禁通过） |
 | [`docs/releases/v5.9.5.md`](releases/v5.9.5.md) | v5.9.5 脱敏发布说明（基于脱敏基线重构 `AI-Net-Guard.exe` 与 `portable.zip`，第 60 条防 PII 门禁与双引擎 60/60 通过） |
+| [`docs/releases/v5.9.6.md`](releases/v5.9.6.md) | v5.9.6 发布说明（新增 `-IncludeAllNodes` 候选节点按需测速伴生白名单与 `62/62` 双引擎门禁） |
 
 `dist/release-notes-v*.md` 是同样内容的工作副本，发版前需核对两者哈希一致；**以 `docs/releases/` 为权威来源**。

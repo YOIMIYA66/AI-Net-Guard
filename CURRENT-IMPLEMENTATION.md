@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.9.5 · 全量脱敏打包重发与防泄密门禁版）
+# AI-Net-Guard 实现方案与持续审查文档（v5.9.6 · 候选节点测速白名单与防误杀版）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.9.5 脱敏重发维护版**（基于 `78bafd9` 彻底清理脚本、文档、GUI 载荷及发行压缩包中的本机路径、用户名与非示例公/内网 IP，并固化第 60 条防 PII 回归门禁，详见 16.21）
+> 版本状态：**v5.9.6 候选节点按需测速白名单版**（新增 `10-sync-node-rule.ps1 -IncludeAllNodes` / `-ClearCandidateNodes` opt-in 候选节点伴生白名单 `AI-Guard-Allow-Candidates-*` 与物理外网阻断豁免，保持 `DefaultOutbound=Block` 与活动节点单一 `/32` 主路由不变，详见 16.22）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -567,7 +567,7 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 
 #### 16.9.3 P1：回归门禁进构建，且测试脚本不进发行物
 
-新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12），v5.8.7 起为 33 条（见 16.13），v5.8.8 为 39 条（见 16.14），v5.8.9 扩至 45 条（见 16.15），v5.9.0 扩至 49 条（见 16.16），v5.9.1 扩至 52 条（见 16.17），v5.9.2 扩至 54 条（见 16.18），v5.9.3 扩至 58 条（见 16.19），v5.9.4 扩至 59 条（见 16.20），v5.9.5 扩至 60 条（见 16.21）。）
+新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12），v5.8.7 起为 33 条（见 16.13），v5.8.8 为 39 条（见 16.14），v5.8.9 扩至 45 条（见 16.15），v5.9.0 扩至 49 条（见 16.16），v5.9.1 扩至 52 条（见 16.17），v5.9.2 扩至 54 条（见 16.18），v5.9.3 扩至 58 条（见 16.19），v5.9.4 扩至 59 条（见 16.20），v5.9.5 扩至 60 条（见 16.21），v5.9.6 扩至 62 条（见 16.22）。）
 
 #### 16.9.4 第二轮 review 修掉的 6 处
 
@@ -882,3 +882,11 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 1. **清理所有内嵌文档与脚本中的本机路径和示例 IP**：确认 `CURRENT-IMPLEMENTATION.md`、`docs/XRAY_TUN_FIX_POSTMORTEM.md`、`docs/releases/*.md`、`scripts/align-xray-egress.bat` / `.ps1`、`scripts/15-webrtc-browser-shield.ps1`、`scripts/02-killswitch.ps1`、`scripts/07-mode.ps1` 均已替换为 `C:\path\to\AI-Net-Guard`、通用安装路径或 RFC 5737 示例地址（`203.0.113.10` / `198.51.100.10` / `192.168.1.x`），`align-xray-egress.ps1` 移除硬编码节点 IP 兜底。
 2. **第 60 条防 PII 回归门禁（`tests/test-stun-ports.ps1`）**：自动扫描全仓脚本、文档、测试与 GUI 源码，确保无本机用户名路径、工作区名或已脱敏 IP 回流。
 3. **双引擎门禁与打包扫描**：Windows PowerShell 5.1 与 PowerShell 7.7 均通过 **60/60 断言**，且新打包的 `dist\AI-Net-Guard.exe`（含内嵌载荷 `payload.zip`）与 `dist\AI-Net-Guard-portable.zip` 经扫描 **0 命中**。
+
+### 16.22 v5.9.6：候选节点按需测速白名单与防误杀修复（2026-11-26）
+
+解决在 `DefaultOutbound=Block` 与单活动节点白名单策略下，v2rayN 对订阅候选节点执行批量测速（临时 `configTest*.json` 连接其余节点服务器 IP/端口）被防火墙默认阻断、表现为“高延迟/超时”的问题，同时保持 fail-closed 安全边界不退化：
+
+1. **按需候选节点伴生白名单（`scripts/10-sync-node-rule.ps1`）**：新增 `-IncludeAllNodes` 与 `-ClearCandidateNodes` 开关及 SQLite 只读解析 `Get-V2rayNCandidateNodes`（`mode=ro` 读取 `guiConfigs\guiNDB.db`），仅对解析到的核心二进制（`xray.exe` / `sing-box.exe` / `mihomo*.exe` 等）和公网候选节点 IP/端口创建 `AI-Guard-Allow-Candidates-<Core>-{TCP,UDP}` 伴生放行规则，并将候选节点 IP 持久化到 `backup\candidate-nodes.json`。默认不扩大通用出站放行，不向物理网卡添加批量 `/32` 静态路由。
+2. **共享校验与物理阻断联动（`scripts/lib-guard-common.ps1`、`scripts/07-mode.ps1`、`scripts/09-rollback.ps1`）**：新增 `Test-GuardPublicNodeIpv4`、`Test-GuardPortSpec`、`Read-GuardCandidateNodes`、`Write-GuardCandidateNodes` 共享函数；`07-mode.ps1` 在 `Get-FirewallRuleAnalysis` 中强制校验 `AI-Guard-Allow-Candidates-*` 同时绑定 `App=` 与 `RA4=`，在 `Sync-ForeignPhysicalBlockRule` 中豁免已授权的候选节点 IP，并在 `-Status` 中展示候选节点统计；`09-rollback.ps1` 将 `candidate-nodes.json` 纳入回滚清理。
+3. **测试与门禁扩展（`tests/test-stun-ports.ps1`）**：新增第 61–62 条静态与行为断言，覆盖候选节点辅助函数与 `Sync-ForeignPhysicalBlockRule` 豁免逻辑，Windows PowerShell 5.1 与 PowerShell 7.7 双引擎均通过 **62/62 断言**。
