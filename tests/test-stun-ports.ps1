@@ -847,6 +847,49 @@ foreach ($pf in $piiFiles) {
 Assert-True 'Repository docs, scripts, tests, and GUI contain zero personal paths or private IPs' `
     ($piiHits.Count -eq 0) ($piiHits -join ' | ')
 
+# ---------------------------------------------------------------- 23. Opt-in candidate node whitelist helpers & wiring
+$tmpCandDir = Join-Path ([System.IO.Path]::GetTempPath()) ('ai-guard-cand-test-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $tmpCandDir -Force | Out-Null
+try {
+    $candJsonPath = Join-Path $tmpCandDir 'candidate-nodes.json'
+    $missingCand = Read-GuardCandidateNodes -Path $candJsonPath
+    [System.IO.File]::WriteAllText($candJsonPath, '{corrupt', (New-Object System.Text.UTF8Encoding($false)))
+    $corruptCand = Read-GuardCandidateNodes -Path $candJsonPath
+
+    Write-GuardCandidateNodes -Path $candJsonPath `
+        -Ips @('198.51.100.10', '203.0.113.20', '127.0.0.1', '192.168.1.10', '10.0.0.1', '999.1.1.1') `
+        -TcpPorts @('443', '0', '70000', 'abc') `
+        -UdpPorts @('20000-30000', '500-100')
+    $loadedCand = Read-GuardCandidateNodes -Path $candJsonPath
+    $candFilterOk = (-not $missingCand.Enabled) -and (-not $corruptCand.Enabled) -and $loadedCand.Enabled -and `
+        ($loadedCand.Ips.Count -eq 2) -and ($loadedCand.Ips -contains '198.51.100.10') -and ($loadedCand.Ips -contains '203.0.113.20') -and `
+        ($loadedCand.TcpPorts.Count -eq 1) -and ($loadedCand.TcpPorts[0] -eq '443') -and `
+        ($loadedCand.UdpPorts.Count -eq 1) -and ($loadedCand.UdpPorts[0] -eq '20000-30000')
+
+    # Verify single-item round-trip stays clean array in both PS 5.1 and PS 7.x
+    Write-GuardCandidateNodes -Path $candJsonPath -Ips @('198.51.100.99') -TcpPorts @('8443') -UdpPorts @()
+    $singleCand = Read-GuardCandidateNodes -Path $candJsonPath
+    $singleCandOk = $singleCand.Enabled -and ($singleCand.Ips.Count -eq 1) -and ($singleCand.Ips[0] -eq '198.51.100.99') -and `
+        ($singleCand.TcpPorts.Count -eq 1) -and ($singleCand.TcpPorts[0] -eq '8443') -and ($singleCand.UdpPorts.Count -eq 0)
+
+    Assert-True 'Read/Write-GuardCandidateNodes validates public IPs & ports, fails closed, and round-trips single-item arrays' `
+        ($candFilterOk -and $singleCandOk) `
+        ('filterOk=' + $candFilterOk + ' singleOk=' + $singleCandOk + ' ips=' + ($loadedCand.Ips -join ','))
+}
+finally {
+    Remove-Item -LiteralPath $tmpCandDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$sync10Raw = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\10-sync-node-rule.ps1'), [System.Text.Encoding]::UTF8)
+$candWireOk = ($sync10Raw -match '\[switch\]\$IncludeAllNodes') -and ($sync10Raw -match '\[switch\]\$ClearCandidateNodes') -and `
+    ($sync10Raw -match "\(Split-Path -Leaf \`$PSScriptRoot\) -ieq 'scripts'") -and `
+    ($sync10Raw -match 'mode=ro') -and ($sync10Raw -match 'AI-Guard-Allow-Candidates-') -and `
+    ($sync10Raw -match '-NodeIps \$foreignNodeIps') -and `
+    ($mode07Raw -match 'Read-GuardCandidateNodes') -and ($mode07Raw -match 'AI-Guard-Allow-Candidates-') -and `
+    ($mode07Raw -match '\$isCandidateRule') -and ($rollback -match 'candidate-nodes\.json')
+Assert-True '10-sync-node-rule, 07-mode, and 09-rollback wire opt-in candidate node whitelist and foreign-block exemption' `
+    $candWireOk 'candidate node wiring check failed'
+
 Write-Host ' '
 if ($script:fail -gt 0) {
     Write-Host ('=== ' + $script:fail + ' assertion(s) FAILED ===') -ForegroundColor Red

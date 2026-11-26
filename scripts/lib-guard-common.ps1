@@ -675,3 +675,163 @@ function Write-GuardQuarantineList {
     [System.IO.File]::WriteAllText($tmpPath, $json + [Environment]::NewLine, $utf8NoBom)
     Move-Item -LiteralPath $tmpPath -Destination $Path -Force
 }
+
+function Test-GuardPublicNodeIpv4 {
+    param([string]$IpStr)
+
+    if (-not $IpStr) { return $false }
+    $t = $IpStr.Trim()
+    if (-not $t) { return $false }
+    $ipObj = $null
+    if (-not [System.Net.IPAddress]::TryParse($t, [ref]$ipObj)) { return $false }
+    if ($ipObj.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) { return $false }
+    if ($ipObj.ToString() -ne $t) { return $false }
+
+    $b = $ipObj.GetAddressBytes()
+    $o0 = [int]$b[0]
+    $o1 = [int]$b[1]
+    if ($o0 -eq 0 -or $o0 -eq 10 -or $o0 -eq 127 -or $o0 -ge 224) { return $false }
+    if ($o0 -eq 169 -and $o1 -eq 254) { return $false }
+    if ($o0 -eq 172 -and $o1 -ge 16 -and $o1 -le 31) { return $false }
+    if ($o0 -eq 192 -and $o1 -eq 168) { return $false }
+    return $true
+}
+
+function Test-GuardPortSpec {
+    param([string]$Spec)
+
+    if (-not $Spec) { return $false }
+    $t = $Spec.Trim()
+    if ($t -match '^(\d{1,5})$') {
+        $p = [int]$matches[1]
+        return ($p -ge 1 -and $p -le 65535)
+    }
+    if ($t -match '^(\d{1,5})-(\d{1,5})$') {
+        $p1 = [int]$matches[1]
+        $p2 = [int]$matches[2]
+        return ($p1 -ge 1 -and $p2 -le 65535 -and $p1 -le $p2)
+    }
+    return $false
+}
+
+function Read-GuardCandidateNodes {
+    param([string]$Path)
+
+    $empty = [pscustomobject]@{
+        Enabled   = $false
+        Ips       = [string[]]@()
+        TcpPorts  = [string[]]@()
+        UdpPorts  = [string[]]@()
+        UpdatedAt = ''
+    }
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $empty }
+
+    try {
+        $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $empty }
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        if (-not $obj -or ($obj -is [string])) { return $empty }
+
+        $ipSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+        $ipList = New-Object System.Collections.Generic.List[string]
+        if ($obj.PSObject.Properties['Ips'] -and $null -ne $obj.Ips) {
+            foreach ($candIp in @($obj.Ips)) {
+                $s = if ($null -ne $candIp) { ([string]$candIp).Trim() } else { '' }
+                if ((Test-GuardPublicNodeIpv4 -IpStr $s) -and $ipSet.Add($s)) {
+                    $ipList.Add($s)
+                }
+            }
+        }
+
+        $tcpSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+        $tcpList = New-Object System.Collections.Generic.List[string]
+        if ($obj.PSObject.Properties['TcpPorts'] -and $null -ne $obj.TcpPorts) {
+            foreach ($tp in @($obj.TcpPorts)) {
+                $s = if ($null -ne $tp) { ([string]$tp).Trim() } else { '' }
+                if ((Test-GuardPortSpec -Spec $s) -and $tcpSet.Add($s)) {
+                    $tcpList.Add($s)
+                }
+            }
+        }
+
+        $udpSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+        $udpList = New-Object System.Collections.Generic.List[string]
+        if ($obj.PSObject.Properties['UdpPorts'] -and $null -ne $obj.UdpPorts) {
+            foreach ($up in @($obj.UdpPorts)) {
+                $s = if ($null -ne $up) { ([string]$up).Trim() } else { '' }
+                if ((Test-GuardPortSpec -Spec $s) -and $udpSet.Add($s)) {
+                    $udpList.Add($s)
+                }
+            }
+        }
+
+        $upd = if ($obj.PSObject.Properties['UpdatedAt'] -and $null -ne $obj.UpdatedAt) { [string]$obj.UpdatedAt } else { '' }
+        $isEnabled = ($ipList.Count -gt 0) -and (($tcpList.Count -gt 0) -or ($udpList.Count -gt 0))
+        return [pscustomobject]@{
+            Enabled   = $isEnabled
+            Ips       = [string[]]$ipList.ToArray()
+            TcpPorts  = [string[]]$tcpList.ToArray()
+            UdpPorts  = [string[]]$udpList.ToArray()
+            UpdatedAt = $upd
+        }
+    }
+    catch {
+        return $empty
+    }
+}
+
+function Write-GuardCandidateNodes {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [AllowNull()][string[]]$Ips = @(),
+        [AllowNull()][string[]]$TcpPorts = @(),
+        [AllowNull()][string[]]$UdpPorts = @()
+    )
+
+    $ipSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $ipList = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $Ips) {
+        foreach ($candIp in $Ips) {
+            $s = if ($null -ne $candIp) { ([string]$candIp).Trim() } else { '' }
+            if ((Test-GuardPublicNodeIpv4 -IpStr $s) -and $ipSet.Add($s)) { $ipList.Add($s) }
+        }
+    }
+
+    $tcpSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $tcpList = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $TcpPorts) {
+        foreach ($tp in $TcpPorts) {
+            $s = if ($null -ne $tp) { ([string]$tp).Trim() } else { '' }
+            if ((Test-GuardPortSpec -Spec $s) -and $tcpSet.Add($s)) { $tcpList.Add($s) }
+        }
+    }
+
+    $udpSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $udpList = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $UdpPorts) {
+        foreach ($up in $UdpPorts) {
+            $s = if ($null -ne $up) { ([string]$up).Trim() } else { '' }
+            if ((Test-GuardPortSpec -Spec $s) -and $udpSet.Add($s)) { $udpList.Add($s) }
+        }
+    }
+
+    $ipArr = @($ipList.ToArray() | Sort-Object)
+    $tcpArr = @($tcpList.ToArray() | Sort-Object)
+    $udpArr = @($udpList.ToArray() | Sort-Object)
+
+    $payload = [pscustomobject]@{
+        UpdatedAt = (Get-Date).ToString('o')
+        Ips       = [string[]]$ipArr
+        TcpPorts  = [string[]]$tcpArr
+        UdpPorts  = [string[]]$udpArr
+    }
+    $json = ConvertTo-Json -InputObject $payload -Depth 4
+    $parent = Split-Path -Parent $Path
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $tmpPath = $Path + '.tmp.' + $PID
+    [System.IO.File]::WriteAllText($tmpPath, $json + [Environment]::NewLine, $utf8NoBom)
+    Move-Item -LiteralPath $tmpPath -Destination $Path -Force
+}

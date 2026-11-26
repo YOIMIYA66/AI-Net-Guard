@@ -611,8 +611,12 @@ function Get-FirewallRuleAnalysis {
             $isDangerousBlanket = ($active -and ($v -match '(^|\|)Dir=Out(\||$)') -and ($v -match '(^|\|)Action=Allow(\||$)') -and
                                    ($v -notmatch '(^|\|)RA[46]=') -and ($v -notmatch '(^|\|)IF=') -and ($v -notmatch '(^|\|)App='))
             $ruleIdent = if ($dn) { $dn } else { $pr.Name }
-            $isAuthorizedAiGuard = $isAiGuard -and (-not $isDangerousBlanket) -and
-                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|PhysicalIP-On-TUN|Foreign-Physical|Foreign-Physical-IPv6|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$')
+            $isCandidateRule = ($ruleIdent -match '^AI-Guard-Allow-Candidates-[A-Za-z0-9._-]+-(TCP|UDP)$') -and
+                ($v -match '(^|\|)App=') -and ($v -match '(^|\|)RA4=')
+            $isAuthorizedAiGuard = $isAiGuard -and (-not $isDangerousBlanket) -and (
+                ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|PhysicalIP-On-TUN|Foreign-Physical|Foreign-Physical-IPv6|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$') -or
+                $isCandidateRule
+            )
 
             if ($isAuthorizedAiGuard) {
                 if (-not $rawByRule.ContainsKey($pr.Name) -or $active) { $rawByRule[$pr.Name] = $v }
@@ -1770,6 +1774,13 @@ function Show-Status {
         }
         else {
             Write-Host ('  rule {0,-24} : MISSING' -f $rn) -ForegroundColor Red
+        }
+    }
+
+    if (Get-Command Read-GuardCandidateNodes -ErrorAction SilentlyContinue) {
+        $candStatus = Read-GuardCandidateNodes -Path (Join-Path $Root 'backup\candidate-nodes.json')
+        if ($candStatus.Enabled) {
+            Write-Host ('  candidate nodes   : ' + $candStatus.Ips.Count + ' IPs (TCP:' + $candStatus.TcpPorts.Count + ' port(s), UDP:' + $candStatus.UdpPorts.Count + ' port(s))') -ForegroundColor Cyan
         }
     }
 
@@ -2945,6 +2956,12 @@ function Ensure-Guard {
                         $nodeIpsMeta = @($nmParts[1].Split(',') | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Sort-Object -Unique)
                     }
                 } catch { }
+            }
+            if (Get-Command Read-GuardCandidateNodes -ErrorAction SilentlyContinue) {
+                $candMeta = Read-GuardCandidateNodes -Path (Join-Path $Root 'backup\candidate-nodes.json')
+                if ($candMeta.Enabled -and $candMeta.Ips.Count -gt 0) {
+                    $nodeIpsMeta = @($nodeIpsMeta + @($candMeta.Ips) | Sort-Object -Unique)
+                }
             }
 
             $cnStampFp = 'nocn'

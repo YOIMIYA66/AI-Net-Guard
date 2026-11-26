@@ -20,15 +20,20 @@
 
 [CmdletBinding()]
 param(
-    [string]$Root = $(if ($PSScriptRoot) { $PSScriptRoot } else { 'C:\AI-Net-Guard' }),
+    [string]$Root = $(if ($PSScriptRoot) { if ((Split-Path -Leaf $PSScriptRoot) -ieq 'scripts') { Split-Path -Parent $PSScriptRoot } else { $PSScriptRoot } } else { 'C:\AI-Net-Guard' }),
     [string]$V2rayNRoot = '',
     [string[]]$ExtraTcpPorts = @(),
     [switch]$ReplacePorts,
+    [switch]$IncludeAllNodes,
+    [switch]$ClearCandidateNodes,
     [switch]$PruneStaleNodeRoutes,
     [switch]$WhatIfOnly
 )
 
 $ErrorActionPreference = 'Stop'
+if ($IncludeAllNodes -and $ClearCandidateNodes) {
+    throw 'Pass either -IncludeAllNodes or -ClearCandidateNodes, not both.'
+}
 if (-not $V2rayNRoot) {
     if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
     else {
@@ -95,6 +100,134 @@ function Resolve-CoreExe([string]$CoreType) {
         if (Test-Path -LiteralPath $sb) { return $sb }
     }
     return (Join-Path $V2rayNRoot 'bin\xray\xray.exe')
+}
+
+function Get-V2rayNCandidateNodes {
+    param([Parameter(Mandatory = $true)][string]$DbPath)
+
+    if (-not (Test-Path -LiteralPath $DbPath)) {
+        throw ('missing v2rayN database: ' + $DbPath)
+    }
+    $pyExe = ''
+    foreach ($candPy in @('python', 'python3', 'py')) {
+        $cmdPy = Get-Command $candPy -ErrorAction SilentlyContinue
+        if ($cmdPy) { $pyExe = $cmdPy.Source; break }
+    }
+    if (-not $pyExe) {
+        throw 'python 3 is required to read guiNDB.db in read-only mode'
+    }
+
+    $pySrc = @'
+import json
+import sqlite3
+import sys
+
+db_path = sys.argv[1]
+uri = 'file:%s?mode=ro' % db_path.replace('%', '%25').replace('?', '%3f').replace('#', '%23')
+con = sqlite3.connect(uri, uri=True, timeout=5)
+try:
+    cur = con.cursor()
+    rows = cur.execute(
+        "SELECT ConfigType, Address, Port, Ports, Network, Alpn FROM ProfileItem "
+        "WHERE Address IS NOT NULL AND Address != '' AND Port IS NOT NULL AND Port > 0"
+    ).fetchall()
+    out = []
+    for r in rows:
+        out.append({
+            'ConfigType': int(r[0]) if r[0] is not None else 0,
+            'Address': str(r[1]).strip(),
+            'Port': int(r[2]),
+            'Ports': str(r[3]).strip() if r[3] is not None else '',
+            'Network': str(r[4]).strip() if r[4] is not None else '',
+            'Alpn': str(r[5]).strip() if r[5] is not None else '',
+        })
+    print(json.dumps(out, ensure_ascii=True))
+finally:
+    con.close()
+'@
+    $tmpPy = Join-Path ([System.IO.Path]::GetTempPath()) ('ai-guard-cand-' + $PID + '.py')
+    [System.IO.File]::WriteAllText($tmpPy, $pySrc, (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        $jsonOut = & $pyExe $tmpPy $DbPath
+        if ($LASTEXITCODE -ne 0) {
+            throw ('failed reading guiNDB.db (exit ' + $LASTEXITCODE + ')')
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $tmpPy -Force -ErrorAction SilentlyContinue
+    }
+
+    $rows = @($jsonOut | ConvertFrom-Json)
+    $addrSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $addrList = New-Object System.Collections.Generic.List[string]
+    $tcpSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $udpSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+
+    foreach ($row in $rows) {
+        $ct = [int]$row.ConfigType
+        if ($ct -ge 100) { continue }
+        $addr = ([string]$row.Address).Trim().Trim('[', ']')
+        if (-not $addr) { continue }
+        if ($addr -match '^(?i)localhost$') { continue }
+        if ($addr -match '^\d{1,3}(\.\d{1,3}){3}$') {
+            if (-not (Test-GuardPublicNodeIpv4 -IpStr $addr)) { continue }
+        }
+        [void]$addrSet.Add($addr)
+        if (-not $addrList.Contains($addr)) { [void]$addrList.Add($addr) }
+
+        $pStr = [string]$row.Port
+        if (Test-GuardPortSpec -Spec $pStr) {
+            if ($ct -in @(7, 8, 9)) {
+                [void]$udpSet.Add($pStr)
+                [void]$tcpSet.Add($pStr)
+            }
+            else {
+                [void]$tcpSet.Add($pStr)
+                $net = [string]$row.Network
+                $alpn = [string]$row.Alpn
+                if (($net -match '(?i)quic|kcp|hysteria|wireguard') -or ($alpn -match '(?i)\bh3\b')) {
+                    [void]$udpSet.Add($pStr)
+                }
+            }
+        }
+        if ($row.Ports) {
+            foreach ($seg in @(([string]$row.Ports).Split(',', [System.StringSplitOptions]::RemoveEmptyEntries))) {
+                $normSeg = $seg.Trim().Replace(':', '-')
+                if (Test-GuardPortSpec -Spec $normSeg) {
+                    if ($ct -in @(7, 8, 9)) { [void]$udpSet.Add($normSeg) }
+                    else { [void]$tcpSet.Add($normSeg) }
+                }
+            }
+        }
+    }
+
+    $ipSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    $resolvedIps = New-Object System.Collections.Generic.List[string]
+    $unresolvedDomains = 0
+    foreach ($a in $addrList) {
+        if ($a -match '^\d{1,3}(\.\d{1,3}){3}$') {
+            if ((Test-GuardPublicNodeIpv4 -IpStr $a) -and $ipSet.Add($a)) { [void]$resolvedIps.Add($a) }
+        }
+        else {
+            try {
+                foreach ($rip in @(Resolve-NodeDomainSafe -Domain $a)) {
+                    if ((Test-GuardPublicNodeIpv4 -IpStr $rip) -and $ipSet.Add($rip)) { [void]$resolvedIps.Add($rip) }
+                }
+            }
+            catch {
+                $unresolvedDomains++
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        ProfileCount      = $rows.Count
+        UniqueAddresses   = $addrList.Count
+        Ips               = [string[]]($resolvedIps.ToArray() | Sort-Object)
+        TcpPorts          = [string[]](@($tcpSet) | Sort-Object)
+        UdpPorts          = [string[]](@($udpSet) | Sort-Object)
+        UnresolvedDomains = $unresolvedDomains
+    }
 }
 
 $cfgPath = Join-Path $V2rayNRoot 'binConfigs\config.json'
@@ -231,6 +364,20 @@ Write-Host ('core: ' + (Split-Path -Leaf $coreExe) + '  node: ' + $address + '  
 Write-Host ('allowed IPs: ' + ($ips -join ', '))
 Write-Host ('allowed TCP ports: ' + ($tcpPorts -join ', '))
 Write-Host ('transport uses UDP: ' + $udp + $(if ($udp) { ' (' + ($baseUdpPorts -join ', ') + ')' } else { '' }))
+
+$candFile = Join-Path $Root 'backup\candidate-nodes.json'
+$candPreview = $null
+if ($IncludeAllNodes) {
+    $dbPath = Join-Path $V2rayNRoot 'guiConfigs\guiNDB.db'
+    Write-Host ('scanning candidate nodes (read-only): ' + $dbPath) -ForegroundColor Cyan
+    $candPreview = Get-V2rayNCandidateNodes -DbPath $dbPath
+    Write-Host ('candidate nodes: profiles=' + $candPreview.ProfileCount + ', uniqueAddresses=' + $candPreview.UniqueAddresses + ', resolvedIPs=' + $candPreview.Ips.Count + ', unresolvedDomains=' + $candPreview.UnresolvedDomains) -ForegroundColor Cyan
+    Write-Host ('candidate TCP ports: ' + $(if ($candPreview.TcpPorts.Count -gt 0) { $candPreview.TcpPorts -join ', ' } else { '(none)' }))
+    Write-Host ('candidate UDP ports: ' + $(if ($candPreview.UdpPorts.Count -gt 0) { $candPreview.UdpPorts -join ', ' } else { '(none)' }))
+}
+elseif ($ClearCandidateNodes) {
+    Write-Host 'candidate nodes: will CLEAR backup\candidate-nodes.json and remove AI-Guard-Allow-Candidates-* rules' -ForegroundColor Yellow
+}
 
 if ($WhatIfOnly) { Write-Host 'WhatIfOnly: no firewall change made.'; return }
 if (-not $isAdmin) { throw 'run elevated to modify firewall rules' }
@@ -417,7 +564,67 @@ $domainTag = if ($usedDomain) { '|domain' } else { '|ip' }
 $metaLine = ($cfgItem.Length.ToString() + ':' + $cfgItem.LastWriteTimeUtc.Ticks.ToString() + '|' + ($ips -join ',') + '|' + ($tcpPorts -join ',') + '|' + ($udpPorts -join ',') + '|' + $coreExe + $domainTag)
 Set-Content -LiteralPath $nodeMeta -Value $metaLine -Encoding ASCII
 
-# Sync explicit physical-NIC foreign IPv4 block rule with newly synced node IPs
+# Optional opt-in candidate subscription node rules (AI-Guard-Allow-Candidates-*)
+if ($ClearCandidateNodes) {
+    if (Test-Path -LiteralPath $candFile) {
+        Remove-Item -LiteralPath $candFile -Force -ErrorAction SilentlyContinue
+    }
+    @(Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-Candidates-*' -ErrorAction SilentlyContinue) |
+        Remove-NetFirewallRule -ErrorAction SilentlyContinue
+    Write-Host '[+] cleared candidate node allowlist and AI-Guard-Allow-Candidates-* rules' -ForegroundColor Green
+}
+elseif ($IncludeAllNodes -and $candPreview) {
+    if ($candPreview.Ips.Count -eq 0) {
+        throw 'no valid public candidate node IPs found in guiNDB.db; refusing to clear/write empty candidate rules'
+    }
+    Write-GuardCandidateNodes -Path $candFile -Ips $candPreview.Ips -TcpPorts $candPreview.TcpPorts -UdpPorts $candPreview.UdpPorts
+    foreach ($ck in $allCores.Keys) {
+        $cExe = $allCores[$ck]
+        $cName = if ($ck -like '*xray*') { 'Xray' } elseif ($ck -like '*sing*') { 'SingBox' } elseif ($ck -like '*v2rayn*') { 'V2rayN' } else { $ck }
+        $candTcpName = 'AI-Guard-Allow-Candidates-' + $cName + '-TCP'
+        $candUdpName = 'AI-Guard-Allow-Candidates-' + $cName + '-UDP'
+        $candTcpRule = Get-NetFirewallRule -DisplayName $candTcpName -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($candPreview.TcpPorts.Count -gt 0) {
+            if ($candTcpRule) {
+                Set-NetFirewallRule -InputObject $candTcpRule -Program $cExe -RemoteAddress $candPreview.Ips -RemotePort $candPreview.TcpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
+            }
+            else {
+                New-NetFirewallRule -Name $candTcpName -DisplayName $candTcpName `
+                    -Direction Outbound -Action Allow -Program $cExe -Protocol TCP `
+                    -RemoteAddress $candPreview.Ips -RemotePort $candPreview.TcpPorts -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+            }
+        }
+        elseif ($candTcpRule) {
+            $candTcpRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        }
+
+        $candUdpRule = Get-NetFirewallRule -DisplayName $candUdpName -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($candPreview.UdpPorts.Count -gt 0) {
+            if ($candUdpRule) {
+                Set-NetFirewallRule -InputObject $candUdpRule -Program $cExe -RemoteAddress $candPreview.Ips -RemotePort $candPreview.UdpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
+            }
+            else {
+                New-NetFirewallRule -Name $candUdpName -DisplayName $candUdpName `
+                    -Direction Outbound -Action Allow -Program $cExe -Protocol UDP `
+                    -RemoteAddress $candPreview.Ips -RemotePort $candPreview.UdpPorts -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+            }
+        }
+        elseif ($candUdpRule) {
+            $candUdpRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        }
+    }
+    Write-Host ('[+] AI-Guard-Allow-Candidates-* updated (' + $candPreview.Ips.Count + ' IPs across ' + $allCores.Count + ' core binary/binaries)') -ForegroundColor Green
+}
+
+$foreignNodeIps = @($ips)
+if (Get-Command Read-GuardCandidateNodes -ErrorAction SilentlyContinue) {
+    $candStored = Read-GuardCandidateNodes -Path $candFile
+    if ($candStored.Enabled -and $candStored.Ips.Count -gt 0) {
+        $foreignNodeIps = @($foreignNodeIps + @($candStored.Ips) | Sort-Object -Unique)
+    }
+}
+
+# Sync explicit physical-NIC foreign IPv4 block rule with active (+ opt-in candidate) node IPs
 try {
     $libForeign = if ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'lib-foreign-block.ps1'))) {
         Join-Path $PSScriptRoot 'lib-foreign-block.ps1'
@@ -446,7 +653,7 @@ try {
             $_.Name -notmatch '(?i)tun|loopback|xray|singbox|mihomo'
         } | Select-Object -ExpandProperty Name)
         if ($physAliases.Count -gt 0) {
-            if (Sync-ForeignPhysicalBlockRule -Root $Root -PhysicalAliases $physAliases -NodeIps $ips `
+            if (Sync-ForeignPhysicalBlockRule -Root $Root -PhysicalAliases $physAliases -NodeIps $foreignNodeIps `
                 -AllowCnDirect $allowCn -AllowLan $allowLan -AllowNcsi $allowNcsi -BlockPhysicalIpv6 $blockPhysIpv6) {
                 Write-Host '[+] AI-Guard-Block-Foreign-Physical updated for new node/policy' -ForegroundColor Green
             }
