@@ -885,10 +885,74 @@ $candWireOk = ($sync10Raw -match '\[switch\]\$IncludeAllNodes') -and ($sync10Raw
     ($sync10Raw -match "\(Split-Path -Leaf \`$PSScriptRoot\) -ieq 'scripts'") -and `
     ($sync10Raw -match 'mode=ro') -and ($sync10Raw -match 'AI-Guard-Allow-Candidates-') -and `
     ($sync10Raw -match '-NodeIps \$foreignNodeIps') -and `
+    ($sync10Raw -match 'PRAGMA table_info\(ProfileItem\)') -and ($sync10Raw -match 'ProtoExtra') -and `
+    ($sync10Raw -match 'Merge-GuardPortSpecs') -and `
     ($mode07Raw -match 'Read-GuardCandidateNodes') -and ($mode07Raw -match 'AI-Guard-Allow-Candidates-') -and `
     ($mode07Raw -match '\$isCandidateRule') -and ($rollback -match 'candidate-nodes\.json')
 Assert-True '10-sync-node-rule, 07-mode, and 09-rollback wire opt-in candidate node whitelist and foreign-block exemption' `
     $candWireOk 'candidate node wiring check failed'
+
+# ---------------------------------------------------------------- 24. Merge-GuardPortSpecs & ProtoExtra.Ports extraction
+$mergedSample = Merge-GuardPortSpecs -Specs @('60000', '35000', '35000-39000', '38000-40000', '60000:63000', '443', '444', '0', 'abc', '900-100')
+$mergedSingle = Merge-GuardPortSpecs -Specs @('443')
+$mergedEmpty = Merge-GuardPortSpecs -Specs @()
+$mergeOk = ($mergedSample -is [System.Array]) -and ($mergedSample.Count -eq 3) -and `
+    ($mergedSample[0] -eq '443-444') -and ($mergedSample[1] -eq '35000-40000') -and ($mergedSample[2] -eq '60000-63000') -and `
+    ($mergedSingle -is [System.Array]) -and ($mergedSingle.Count -eq 1) -and ($mergedSingle[0] -eq '443') -and `
+    ($mergedEmpty -is [System.Array]) -and ($mergedEmpty.Count -eq 0)
+Assert-True 'Merge-GuardPortSpecs merges overlapping/adjacent ports and preserves array shape for 0/1/N specs' `
+    $mergeOk ('sample=' + ($mergedSample -join ',') + ' singleCount=' + $mergedSingle.Count + ' emptyCount=' + $mergedEmpty.Count)
+
+$pyTestExe = ''
+foreach ($candPy in @('python', 'python3', 'py')) {
+    $cmdPy = Get-Command $candPy -ErrorAction SilentlyContinue
+    if ($cmdPy) { $pyTestExe = $cmdPy.Source; break }
+}
+Assert-True 'Python 3 is available to run Get-V2rayNCandidateNodes SQLite test' ([bool]$pyTestExe) 'python executable not found'
+
+$syncAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'scripts\10-sync-node-rule.ps1'), [ref]$null, [ref]$null)
+$candFnAst = $syncAst.FindAll({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and ($n.Name -eq 'Get-V2rayNCandidateNodes') }, $true) | Select-Object -First 1
+Assert-True 'Get-V2rayNCandidateNodes AST definition found in 10-sync-node-rule.ps1' ($null -ne $candFnAst) 'function AST missing'
+if ($candFnAst -and $pyTestExe) {
+    . ([scriptblock]::Create($candFnAst.Extent.Text))
+    $tmpDbDir = Join-Path ([System.IO.Path]::GetTempPath()) ('ai-guard-db-test-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tmpDbDir -Force | Out-Null
+    try {
+        $db1 = Join-Path $tmpDbDir 'v7.db'
+        $db2 = Join-Path $tmpDbDir 'legacy.db'
+        $mkDbPy = Join-Path $tmpDbDir 'mkdb.py'
+        [System.IO.File]::WriteAllText($mkDbPy, @'
+import sqlite3, sys
+c1 = sqlite3.connect(sys.argv[1])
+c1.execute("CREATE TABLE ProfileItem (ConfigType INT, Address TEXT, Port INT, Ports TEXT, Network TEXT, Alpn TEXT, ProtoExtra TEXT)")
+c1.executemany("INSERT INTO ProfileItem VALUES (?,?,?,?,?,?,?)", [
+    (7, '198.51.100.10', 35000, None, '', '', '{"SalamanderPass":"","Ports":"35000-39000"}'),
+    (7, '203.0.113.20', 60000, '', '', '', '{"Ports":"60000:63000"}'),
+    (7, '198.51.100.11', 25000, '25000-25100', '', '', None),
+    (5, '198.51.100.12', 443, None, 'tcp', '', '{"Flow":"xtls-rprx-vision"}'),
+])
+c1.commit(); c1.close()
+
+c2 = sqlite3.connect(sys.argv[2])
+c2.execute("CREATE TABLE ProfileItem (ConfigType INT, Address TEXT, Port INT, Ports TEXT, Network TEXT, Alpn TEXT)")
+c2.execute("INSERT INTO ProfileItem VALUES (?,?,?,?,?,?)", (7, '198.51.100.20', 443, '20000-20010', '', ''))
+c2.commit(); c2.close()
+'@, (New-Object System.Text.UTF8Encoding($false)))
+        & $pyTestExe $mkDbPy $db1 $db2
+        $res1 = Get-V2rayNCandidateNodes -DbPath $db1
+        $res2 = Get-V2rayNCandidateNodes -DbPath $db2
+        $db1Ok = ($res1.Ips.Count -eq 4) -and `
+            (($res1.UdpPorts -join ',') -eq '25000-25100,35000-39000,60000-63000') -and `
+            (($res1.TcpPorts -join ',') -eq '443,25000,35000,60000')
+        $db2Ok = ($res2.Ips.Count -eq 1) -and (($res2.UdpPorts -join ',') -eq '443,20000-20010')
+        Assert-True 'Get-V2rayNCandidateNodes extracts and merges ProtoExtra.Ports on v2rayN 7.x DB and supports legacy schema without ProtoExtra' `
+            ($db1Ok -and $db2Ok) `
+            ('db1Udp=' + ($res1.UdpPorts -join ',') + ' db1Tcp=' + ($res1.TcpPorts -join ',') + ' db2Udp=' + ($res2.UdpPorts -join ','))
+    }
+    finally {
+        Remove-Item -LiteralPath $tmpDbDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
 Write-Host ' '
 if ($script:fail -gt 0) {
