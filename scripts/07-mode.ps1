@@ -613,12 +613,15 @@ function Get-FirewallRuleAnalysis {
             $ruleIdent = if ($dn) { $dn } else { $pr.Name }
             $isCandidateRule = ($ruleIdent -match '^AI-Guard-Allow-Candidates-[A-Za-z0-9._-]+-(TCP|UDP)$') -and
                 ($v -match '(^|\|)App=') -and ($v -match '(^|\|)RA[46]=')
+            $isPinnedRule = ($ruleIdent -match '^AI-Guard-Allow-Pinned-[A-Za-z0-9._-]+-(TCP|UDP)$') -and
+                ($v -match '(^|\|)App=') -and ($v -match '(^|\|)RA[46]=')
             $isIpv6BootstrapRule = (-not $guardPolicy.DisablePhysicalIpv6) -and
                 ($ruleIdent -in @('AI-Guard-Allow-DHCPv6', 'AI-Guard-Allow-NDP')) -and
                 ($v -match '(^|\|)RA6=')
             $isAuthorizedAiGuard = $isAiGuard -and (-not $isDangerousBlanket) -and (
                 ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|PhysicalIP-On-TUN|Foreign-Physical|Foreign-Physical-IPv6|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$') -or
                 $isCandidateRule -or
+                $isPinnedRule -or
                 $isIpv6BootstrapRule
             )
 
@@ -1556,7 +1559,7 @@ function Register-ZeroResidentEventTask([string]$ModeScriptPath, [string]$ExtraF
     </Principal>
   </Principals>
   <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <MultipleInstancesPolicy>Queue</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
@@ -1862,6 +1865,12 @@ function Show-Status {
             $v6CandCnt = if ($candStatus.PSObject.Properties['Ipv6Ips']) { $candStatus.Ipv6Ips.Count } else { 0 }
             $candIpLabel = if ($v6CandCnt -gt 0) { $candStatus.Ips.Count.ToString() + ' IPv4 + ' + $v6CandCnt + ' IPv6' } else { $candStatus.Ips.Count.ToString() + ' IPs' }
             Write-Host ('  candidate nodes   : ' + $candIpLabel + ' (TCP:' + $candStatus.TcpPorts.Count + ' port(s), UDP:' + $candStatus.UdpPorts.Count + ' port(s))') -ForegroundColor Cyan
+        }
+        $pinStatus = Read-GuardCandidateNodes -Path (Join-Path $Root 'backup\pinned-nodes.json')
+        if ($pinStatus.Enabled) {
+            $v6PinCnt = if ($pinStatus.PSObject.Properties['Ipv6Ips']) { $pinStatus.Ipv6Ips.Count } else { 0 }
+            $pinIpLabel = if ($v6PinCnt -gt 0) { $pinStatus.Ips.Count.ToString() + ' IPv4 + ' + $v6PinCnt + ' IPv6' } else { $pinStatus.Ips.Count.ToString() + ' IPs' }
+            Write-Host ('  pinned nodes      : ' + $pinIpLabel + ' (TCP:' + $pinStatus.TcpPorts.Count + ' port(s), UDP:' + $pinStatus.UdpPorts.Count + ' port(s))') -ForegroundColor Cyan
         }
     }
 
@@ -2281,6 +2290,115 @@ function Test-ShieldDriftFast($Analysis, $PhysNics) {
     }
 
     return $false
+}
+
+function Sync-ForeignPhysicalBlockIfNeeded {
+    param([hashtable]$RuleStates)
+
+    if ($null -eq $RuleStates) { return }
+    try {
+        $libForeign = if ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'lib-foreign-block.ps1'))) {
+            Join-Path $PSScriptRoot 'lib-foreign-block.ps1'
+        }
+        else {
+            Join-Path $Root 'scripts\lib-foreign-block.ps1'
+        }
+        if (Test-Path -LiteralPath $libForeign) {
+            $fpActive = $RuleStates.ContainsKey('AI-Guard-Block-Foreign-Physical') -and $RuleStates['AI-Guard-Block-Foreign-Physical']
+            $fpV6Active = $RuleStates.ContainsKey('AI-Guard-Block-Foreign-Physical-IPv6') -and $RuleStates['AI-Guard-Block-Foreign-Physical-IPv6']
+            $wantV6Block = [bool]$guardPolicy.DisablePhysicalIpv6
+            $physFastFp = @(Get-ActivePhysicalNicsFast)
+            $physNamesFastFp = @($physFastFp | Select-Object -ExpandProperty Name | Sort-Object -Unique)
+
+            $nodeIpsMeta = @()
+            if (Test-Path -LiteralPath $nodeMeta) {
+                try {
+                    $nmRaw = (Get-Content -LiteralPath $nodeMeta -Raw -Encoding ASCII -ErrorAction SilentlyContinue).Trim()
+                    $nmParts = $nmRaw.Split('|')
+                    if ($nmParts.Count -ge 2 -and $nmParts[1]) {
+                        $nodeIpsMeta = @($nmParts[1].Split(',') | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Sort-Object -Unique)
+                    }
+                } catch { }
+            }
+            if (Get-Command Read-GuardCandidateNodes -ErrorAction SilentlyContinue) {
+                $candMeta = Read-GuardCandidateNodes -Path (Join-Path $Root 'backup\candidate-nodes.json')
+                if ($candMeta.Enabled -and $candMeta.Ips.Count -gt 0) {
+                    $nodeIpsMeta = @($nodeIpsMeta + @($candMeta.Ips) | Sort-Object -Unique)
+                }
+                $pinMeta = Read-GuardCandidateNodes -Path (Join-Path $Root 'backup\pinned-nodes.json')
+                if ($pinMeta.Enabled -and $pinMeta.Ips.Count -gt 0) {
+                    $nodeIpsMeta = @($nodeIpsMeta + @($pinMeta.Ips) | Sort-Object -Unique)
+                }
+            }
+
+            $cnStampFp = 'nocn'
+            if ($guardPolicy.AllowCnDirect -and (Test-Path -LiteralPath $cnList)) {
+                $cnItemFp = Get-Item -LiteralPath $cnList -ErrorAction SilentlyContinue
+                if ($cnItemFp) { $cnStampFp = ($cnItemFp.Length.ToString() + ':' + $cnItemFp.LastWriteTimeUtc.Ticks.ToString()) }
+            }
+
+            $fpMetaFile = Join-Path $Root 'backup\foreign-block.meta'
+            $fpNeedsSync = (-not $fpActive) -or ($wantV6Block -and -not $fpV6Active) -or ((-not $wantV6Block) -and $fpV6Active)
+            if (-not $fpNeedsSync -and (Test-Path -LiteralPath $fpMetaFile)) {
+                try {
+                    # UTF-8 must match how Sync-ForeignPhysicalBlockRule writes it: the
+                    # signature carries localised adapter aliases, and reading them back as
+                    # ASCII turned each one into '?' so this gate never matched and the
+                    # whole foreign-block rule got rebuilt on every single run.
+                    $fpMetaRaw = [System.IO.File]::ReadAllText($fpMetaFile, [System.Text.Encoding]::UTF8).Trim()
+                    $fpParts = $fpMetaRaw.Split('|')
+                    if ($fpParts.Count -ge 7) {
+                        $metaCn = [int]$fpParts[0]
+                        $metaLan = [int]$fpParts[1]
+                        $metaNcsi = [int]$fpParts[2]
+                        $metaPhys = @($fpParts[3].Split(',') | Where-Object { $_ })
+                        $metaNodes = @($fpParts[4].Split(',') | Where-Object { $_ })
+                        $metaStamp = $fpParts[5]
+                        $metaV6 = [int]$fpParts[6]
+                        if ($metaCn -ne [int][bool]$guardPolicy.AllowCnDirect -or
+                            $metaLan -ne [int][bool]$guardPolicy.AllowLan -or
+                            $metaNcsi -ne [int][bool]$guardPolicy.AllowNcsi -or
+                            $metaV6 -ne [int]$wantV6Block -or
+                            $metaStamp -ne $cnStampFp -or
+                            (($metaNodes -join ',') -ne ($nodeIpsMeta -join ','))) {
+                            $fpNeedsSync = $true
+                        }
+                        if (-not $fpNeedsSync) {
+                            foreach ($pn in $physNamesFastFp) {
+                                if ($metaPhys -notcontains $pn) { $fpNeedsSync = $true; break }
+                            }
+                        }
+                    }
+                    else { $fpNeedsSync = $true }
+                } catch { $fpNeedsSync = $true }
+            }
+            elseif (-not (Test-Path -LiteralPath $fpMetaFile)) {
+                $fpNeedsSync = $true
+            }
+
+            if ($fpNeedsSync) {
+                $activeTunsFp = @(Get-ActiveTunNamesFast)
+                $allPhysFp = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Status -ne 'Not Present' -and
+                    $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|Loopback' -and
+                    $_.Name -notmatch '(?i)loopback' -and
+                    ($knownTunNames -notcontains $_.Name) -and
+                    ($activeTunsFp -notcontains $_.Name)
+                } | Select-Object -ExpandProperty Name)
+                if ($allPhysFp.Count -eq 0) { $allPhysFp = $physNamesFastFp }
+                if ($allPhysFp.Count -gt 0) {
+                    . $libForeign
+                    if (Sync-ForeignPhysicalBlockRule -Root $Root -PhysicalAliases $allPhysFp -NodeIps $nodeIpsMeta `
+                        -AllowCnDirect ([bool]$guardPolicy.AllowCnDirect) -AllowLan ([bool]$guardPolicy.AllowLan) `
+                        -AllowNcsi ([bool]$guardPolicy.AllowNcsi) -BlockPhysicalIpv6 $wantV6Block) {
+                        $script:repairedItems += 'Foreign-Physical-synced'
+                        Say '    enforced AI-Guard-Block-Foreign-Physical (vetoes WFP soft-permit callouts)'
+                    }
+                }
+            }
+        }
+    }
+    catch { }
 }
 
 function Ensure-Guard {
@@ -3019,105 +3137,7 @@ function Ensure-Guard {
     }
 
     # 10. Explicit physical-NIC foreign IPv4 block (vetoes third-party WFP soft-permit callouts)
-    try {
-        $libForeign = if ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'lib-foreign-block.ps1'))) {
-            Join-Path $PSScriptRoot 'lib-foreign-block.ps1'
-        }
-        else {
-            Join-Path $Root 'scripts\lib-foreign-block.ps1'
-        }
-        if (Test-Path -LiteralPath $libForeign) {
-            $fpActive = $ruleStates.ContainsKey('AI-Guard-Block-Foreign-Physical') -and $ruleStates['AI-Guard-Block-Foreign-Physical']
-            $fpV6Active = $ruleStates.ContainsKey('AI-Guard-Block-Foreign-Physical-IPv6') -and $ruleStates['AI-Guard-Block-Foreign-Physical-IPv6']
-            $wantV6Block = [bool]$guardPolicy.DisablePhysicalIpv6
-            $physFastFp = @(Get-ActivePhysicalNicsFast)
-            $physNamesFastFp = @($physFastFp | Select-Object -ExpandProperty Name | Sort-Object -Unique)
-
-            $nodeIpsMeta = @()
-            if (Test-Path -LiteralPath $nodeMeta) {
-                try {
-                    $nmRaw = (Get-Content -LiteralPath $nodeMeta -Raw -Encoding ASCII -ErrorAction SilentlyContinue).Trim()
-                    $nmParts = $nmRaw.Split('|')
-                    if ($nmParts.Count -ge 2 -and $nmParts[1]) {
-                        $nodeIpsMeta = @($nmParts[1].Split(',') | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Sort-Object -Unique)
-                    }
-                } catch { }
-            }
-            if (Get-Command Read-GuardCandidateNodes -ErrorAction SilentlyContinue) {
-                $candMeta = Read-GuardCandidateNodes -Path (Join-Path $Root 'backup\candidate-nodes.json')
-                if ($candMeta.Enabled -and $candMeta.Ips.Count -gt 0) {
-                    $nodeIpsMeta = @($nodeIpsMeta + @($candMeta.Ips) | Sort-Object -Unique)
-                }
-            }
-
-            $cnStampFp = 'nocn'
-            if ($guardPolicy.AllowCnDirect -and (Test-Path -LiteralPath $cnList)) {
-                $cnItemFp = Get-Item -LiteralPath $cnList -ErrorAction SilentlyContinue
-                if ($cnItemFp) { $cnStampFp = ($cnItemFp.Length.ToString() + ':' + $cnItemFp.LastWriteTimeUtc.Ticks.ToString()) }
-            }
-
-            $fpMetaFile = Join-Path $Root 'backup\foreign-block.meta'
-            $fpNeedsSync = (-not $fpActive) -or ($wantV6Block -and -not $fpV6Active) -or ((-not $wantV6Block) -and $fpV6Active)
-            if (-not $fpNeedsSync -and (Test-Path -LiteralPath $fpMetaFile)) {
-                try {
-                    # UTF-8 must match how Sync-ForeignPhysicalBlockRule writes it: the
-                    # signature carries localised adapter aliases, and reading them back as
-                    # ASCII turned each one into '?' so this gate never matched and the
-                    # whole foreign-block rule got rebuilt on every single run.
-                    $fpMetaRaw = [System.IO.File]::ReadAllText($fpMetaFile, [System.Text.Encoding]::UTF8).Trim()
-                    $fpParts = $fpMetaRaw.Split('|')
-                    if ($fpParts.Count -ge 7) {
-                        $metaCn = [int]$fpParts[0]
-                        $metaLan = [int]$fpParts[1]
-                        $metaNcsi = [int]$fpParts[2]
-                        $metaPhys = @($fpParts[3].Split(',') | Where-Object { $_ })
-                        $metaNodes = @($fpParts[4].Split(',') | Where-Object { $_ })
-                        $metaStamp = $fpParts[5]
-                        $metaV6 = [int]$fpParts[6]
-                        if ($metaCn -ne [int][bool]$guardPolicy.AllowCnDirect -or
-                            $metaLan -ne [int][bool]$guardPolicy.AllowLan -or
-                            $metaNcsi -ne [int][bool]$guardPolicy.AllowNcsi -or
-                            $metaV6 -ne [int]$wantV6Block -or
-                            $metaStamp -ne $cnStampFp -or
-                            (($metaNodes -join ',') -ne ($nodeIpsMeta -join ','))) {
-                            $fpNeedsSync = $true
-                        }
-                        if (-not $fpNeedsSync) {
-                            foreach ($pn in $physNamesFastFp) {
-                                if ($metaPhys -notcontains $pn) { $fpNeedsSync = $true; break }
-                            }
-                        }
-                    }
-                    else { $fpNeedsSync = $true }
-                } catch { $fpNeedsSync = $true }
-            }
-            elseif (-not (Test-Path -LiteralPath $fpMetaFile)) {
-                $fpNeedsSync = $true
-            }
-
-            if ($fpNeedsSync) {
-                $activeTunsFp = @(Get-ActiveTunNamesFast)
-                $allPhysFp = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
-                    $_.Status -ne 'Not Present' -and
-                    $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|Loopback' -and
-                    $_.Name -notmatch '(?i)loopback' -and
-                    ($knownTunNames -notcontains $_.Name) -and
-                    ($activeTunsFp -notcontains $_.Name)
-                } | Select-Object -ExpandProperty Name)
-                if ($allPhysFp.Count -eq 0) { $allPhysFp = $physNamesFastFp }
-                if ($allPhysFp.Count -gt 0) {
-                    . $libForeign
-                    if (Sync-ForeignPhysicalBlockRule -Root $Root -PhysicalAliases $allPhysFp -NodeIps $nodeIpsMeta `
-                        -AllowCnDirect ([bool]$guardPolicy.AllowCnDirect) -AllowLan ([bool]$guardPolicy.AllowLan) `
-                        -AllowNcsi ([bool]$guardPolicy.AllowNcsi) -BlockPhysicalIpv6 $wantV6Block) {
-                        $script:repairedItems += 'Foreign-Physical-synced'
-                        Say '    enforced AI-Guard-Block-Foreign-Physical (vetoes WFP soft-permit callouts)'
-                    }
-                }
-            }
-        }
-    }
-    catch { }
+    Sync-ForeignPhysicalBlockIfNeeded -RuleStates $ruleStates
 
     return $sig
 }
@@ -3206,6 +3226,7 @@ if (-not $handledEarly) {
                         if ($tunFlipped -or -not (Test-NodeMetaFastHit -StampPrefix $lateStamp)) {
                             $lateAnalysis = Get-FirewallRuleAnalysis
                             Sync-NodeRuleFast -Analysis $lateAnalysis
+                            Sync-ForeignPhysicalBlockIfNeeded -RuleStates $lateAnalysis.States
                         }
                     }
                 }
