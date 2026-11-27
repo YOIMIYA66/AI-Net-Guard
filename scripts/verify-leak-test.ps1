@@ -80,7 +80,7 @@ if ($activeTuns.Count -gt 0) {
 }
 
 # 3. Direct Physical NIC Leak Probe (Target: Foreign Non-CN IP 13.107.246.51:443)
-$physNics = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch '(?i)wintun|singbox|xray|tap|loopback|virtual|hyper-v|vethernet' })
+$physNics = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch '(?i)wintun|sing-tun|mihomo|singbox|xray|tap|loopback|virtual|hyper-v|vethernet' -and $_.Name -notmatch '(?i)tun|loopback|xray|singbox|mihomo' })
 if ($physNics.Count -gt 0) {
     foreach ($pNic in $physNics) {
         $pIp = (Get-NetIPAddress -InterfaceIndex $pNic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress

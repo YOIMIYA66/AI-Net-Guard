@@ -716,7 +716,7 @@ if ($tunUp) {
     }
 
     Check 'physical adapter socket direct egress blocked to foreign IP while TUN up' {
-        $physNic = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch '(?i)wintun|singbox|xray|tap|loopback|virtual' } | Select-Object -First 1
+        $physNic = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch '(?i)wintun|sing-tun|mihomo|singbox|xray|tap|loopback|virtual' -and $_.Name -notmatch '(?i)tun|loopback|xray|singbox|mihomo' } | Select-Object -First 1
         if (-not $physNic) { return 'SKIP - no active physical adapter' }
         $physIp = (Get-NetIPAddress -InterfaceIndex $physNic.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress
         if (-not $physIp) { return 'SKIP - no physical IPv4' }

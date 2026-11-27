@@ -1037,6 +1037,16 @@ c.commit(); c.close()
             ($sync10Updated -match '/128')
         Assert-True '14-apply-policy, 07-mode, and 10-sync-node-rule wire temporary IPv6 bootstrap, DisabledComponents=0x20, RA[46]=, and /128 host routes' `
             $v6WireOk 'temporary IPv6 wiring check failed'
+
+        $vltRaw = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\verify-leak-test.ps1'), [System.Text.Encoding]::UTF8)
+        $ver03Raw = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\03-verify.ps1'), [System.Text.Encoding]::UTF8)
+        $singTunOk = ($vltRaw -notmatch 'wintun\|singbox\|xray') -and `
+            ($reg12Raw -notmatch 'wintun\|singbox\|xray') -and `
+            ($ver03Raw -notmatch 'wintun\|singbox\|xray') -and `
+            ($vltRaw -match 'sing-tun') -and ($vltRaw -match '\$_\.Name -notmatch') -and `
+            ($reg12Raw -match 'sing-tun') -and ($ver03Raw -match 'sing-tun')
+        Assert-True 'verify-leak-test, 12-regression, and 03-verify exclude sing-tun adapters and TUN names from physical NIC probes' `
+            $singTunOk 'sing-tun physical adapter exclusion check failed'
     }
     finally {
         Remove-Item -LiteralPath $tmpDbDir -Recurse -Force -ErrorAction SilentlyContinue
