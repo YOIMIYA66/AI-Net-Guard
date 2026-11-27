@@ -1083,6 +1083,16 @@ c.commit(); c.close()
             (($loadedPin2.UdpPorts -join ',') -eq '25000')
         Assert-True 'Pinned node additive merge preserves prior ports and accumulates new TCP/UDP ports cleanly' `
             $pinMergeOk ('ips=' + ($loadedPin2.Ips -join ',') + ' tcp=' + ($loadedPin2.TcpPorts -join ',') + ' udp=' + ($loadedPin2.UdpPorts -join ','))
+
+        $shield15Raw = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\15-webrtc-browser-shield.ps1'), [System.Text.Encoding]::UTF8)
+        $shieldFailClosedOk = ($shield15Raw -match 'if \(-not \$isAdmin\)') -and ($shield15Raw -match 'Get-NetAdapter -ErrorAction Stop') -and ($shield15Raw -match 'exit 5')
+        Assert-True '15-webrtc-browser-shield fails closed (exit 5) on non-elevated session or Get-NetAdapter failure' `
+            $shieldFailClosedOk 'non-elevated or Get-NetAdapter fail-closed check missing in 15-webrtc-browser-shield.ps1'
+
+        $wrtcStatusUsesRegOk = ($mode07Updated -match '\$wrtcFwOk = \(\$ruleStates\.ContainsKey\(''AI-Guard-Block-WebRTC-UDP''\)') -and `
+            ($mode07Updated -notmatch '\$wrtcUdp\s*=\s*Get-GuardRule')
+        Assert-True '07-mode Show-Status reads WebRTC FW status from Registry ruleStates instead of CIM Get-GuardRule' `
+            $wrtcStatusUsesRegOk '07-mode Show-Status still queries CIM for WebRTC status'
     }
     finally {
         Remove-Item -LiteralPath $tmpDbDir -Recurse -Force -ErrorAction SilentlyContinue

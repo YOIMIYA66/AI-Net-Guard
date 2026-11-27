@@ -1940,15 +1940,14 @@ function Show-Status {
     $mdnsOff = ($dnsSvc -and $dnsSvc.EnableMDNS -eq 0)
     $smhnrOff = ($dnsPol -and $dnsPol.DisableSmartNameResolution -eq 1)
     Write-Host ('  DNS leak-shield   : LLMNR={0}  mDNS={1}  SMHNR={2}' -f $(if ($llmnrOff) { 'off' } else { 'ON' }), $(if ($mdnsOff) { 'off' } else { 'ON' }), $(if ($smhnrOff) { 'off' } else { 'pending (auto-applies on next event or .\07-mode.ps1)' }))
-    $wrtcUdp = Get-GuardRule 'AI-Guard-Block-WebRTC-UDP'
-    $wrtcTcp = Get-GuardRule 'AI-Guard-Block-WebRTC-TCP'
     $cProps = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Google\Chrome' -ErrorAction SilentlyContinue
     $eProps = Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -ErrorAction SilentlyContinue
     $cPol = if ($cProps) { $cProps.WebRtcIPHandlingPolicy } else { $null }
     $ePol = if ($eProps) { $eProps.WebRtcIPHandlingPolicy } else { $null }
     $cDoh = if ($cProps) { $cProps.DnsOverHttpsMode } else { $null }
     $eDoh = if ($eProps) { $eProps.DnsOverHttpsMode } else { $null }
-    $wrtcFwOk = ($wrtcUdp -and $wrtcUdp.Enabled -eq 'True' -and $wrtcTcp -and $wrtcTcp.Enabled -eq 'True')
+    $wrtcFwOk = ($ruleStates.ContainsKey('AI-Guard-Block-WebRTC-UDP') -and $ruleStates['AI-Guard-Block-WebRTC-UDP'] -and
+                 $ruleStates.ContainsKey('AI-Guard-Block-WebRTC-TCP') -and $ruleStates['AI-Guard-Block-WebRTC-TCP'])
     $wrtcPolOk = ($cPol -eq 'disable_non_proxied_udp' -and $ePol -eq 'disable_non_proxied_udp')
     $dohOffOk = ($cDoh -eq 'off' -and $eDoh -eq 'off')
     $wrtcStatus = if ($wrtcFwOk -and $wrtcPolOk) { 'ACTIVE (FW+browser policy)' } elseif ($wrtcFwOk) { 'FW only (browser policy missing)' } elseif ($wrtcPolOk) { 'browser policy only (FW rules missing)' } else { 'MISSING - run 02-killswitch.ps1' }

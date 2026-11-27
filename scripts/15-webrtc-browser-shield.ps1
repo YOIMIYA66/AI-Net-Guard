@@ -149,16 +149,26 @@ function Get-GuardRuleFilter([string]$Key, [string]$Kind) {
 
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Say '[!] 15-webrtc-browser-shield.ps1 requires elevated (Administrator) PowerShell.' 'Red'
+    exit 5
+}
 
 # ---------------------------------------------------------------- discovery
 $knownTun = @('xray_tun', 'singbox_tun', 'mihomo_tun', 'Meta', 'Mihomo', 'wintun')
 
-$physical = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
-        $_.Status -ne 'Not Present' -and
-        $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|TAP-Windows|Loopback' -and
-        $_.Name -notmatch '(?i)loopback' -and
-        ($knownTun -notcontains $_.Name)
-    })
+try {
+    $physical = @(Get-NetAdapter -ErrorAction Stop | Where-Object {
+            $_.Status -ne 'Not Present' -and
+            $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|TAP-Windows|Loopback' -and
+            $_.Name -notmatch '(?i)loopback' -and
+            ($knownTun -notcontains $_.Name)
+        })
+}
+catch {
+    Say ('[!] Get-NetAdapter failed: ' + $_.Exception.Message) 'Red'
+    exit 5
+}
 
 if ($physical.Count -eq 0) {
     Say 'no physical NIC found - nothing to scope' 'Yellow'
