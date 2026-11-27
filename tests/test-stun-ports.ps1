@@ -715,6 +715,33 @@ try {
     Assert-True 'Invoke-GuardPolicyTransaction handles mid-apply exceptions, initial deploy failure, commit failure, and clean commit' `
         ($caseAOk -and $caseBOk -and $caseCOk -and $caseDOk) `
         ('A=' + $caseAOk + ' B=' + $caseBOk + ' C=' + $caseCOk + ' D=' + $caseDOk)
+
+    # Case E: commit inside a [CmdletBinding()] script invoked with & (PowerShell 7 script-scope closure)
+    $caseEHost = (Get-Process -Id $PID).Path
+    $caseEScript = Join-Path $tmpTxDir 'case-e-cmdlet.ps1'
+    $canE = Join-Path $tmpTxDir 'can-e.json'
+    $lgE = Join-Path $tmpTxDir 'lg-e.json'
+    $escapedLib = $libCommonPath.Replace("'", "''")
+    $escapedCanE = $canE.Replace("'", "''")
+    $escapedLgE = $lgE.Replace("'", "''")
+    $caseEBody = @"
+[CmdletBinding()]
+param([string]`$Dummy = '')
+. '$escapedLib'
+`$resE = Invoke-GuardPolicyTransaction -CanonicalPolicyPath '$escapedCanE' -LastGoodPolicyPath '$escapedLgE' -ApplyAction {
+    param(`$st, `$stageFn, `$commitFn)
+    & `$stageFn '$newJson'
+    & `$commitFn
+}
+if (-not `$resE.PolicyCommitted) {
+    throw ('Case E PolicyCommitted=False: ' + `$resE.ErrorMessage)
+}
+"@
+    [System.IO.File]::WriteAllText($caseEScript, $caseEBody, $utf8NoBomTx)
+    & $caseEHost -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& '$($caseEScript.Replace("'", "''"))'"
+    $caseEOk = ($LASTEXITCODE -eq 0) -and (Test-Path -LiteralPath $lgE) -and (([System.IO.File]::ReadAllText($lgE)).Trim() -eq $newJson)
+    Assert-True 'Invoke-GuardPolicyTransaction commits cleanly inside [CmdletBinding()] script invoked via &' `
+        $caseEOk ('exit=' + $LASTEXITCODE + ' lgExists=' + (Test-Path -LiteralPath $lgE))
 }
 finally {
     Remove-Item -LiteralPath $tmpTxDir -Recurse -Force -ErrorAction SilentlyContinue

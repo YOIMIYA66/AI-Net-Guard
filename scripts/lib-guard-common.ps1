@@ -340,7 +340,17 @@ function Invoke-GuardPolicyTransaction {
     }).GetNewClosure()
 
     $commitPolicy = ({
-        Save-GuardPolicyLastGood -PolicyPath $CanonicalPolicyPath -LastGoodPath $LastGoodPolicyPath
+        if (-not (Test-Path -LiteralPath $CanonicalPolicyPath)) {
+            throw ('cannot save last-good policy: missing ' + $CanonicalPolicyPath)
+        }
+        $lgDir = Split-Path -Parent $LastGoodPolicyPath
+        if ($lgDir -and -not (Test-Path -LiteralPath $lgDir)) {
+            New-Item -ItemType Directory -Path $lgDir -Force | Out-Null
+        }
+        $tmpLg = $LastGoodPolicyPath + '.tmp.' + $PID
+        $rawJson = [System.IO.File]::ReadAllText($CanonicalPolicyPath, [System.Text.Encoding]::UTF8)
+        [System.IO.File]::WriteAllText($tmpLg, $rawJson, (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmpLg -Destination $LastGoodPolicyPath -Force -ErrorAction Stop
         $state.PolicyCommitted = $true
     }).GetNewClosure()
 
