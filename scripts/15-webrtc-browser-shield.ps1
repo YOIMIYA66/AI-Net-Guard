@@ -58,8 +58,10 @@
 .PARAMETER Quiet     Suppress per-item chatter (used by 02-killswitch / 07-mode auto-heal).
 
 .NOTES
-    Creating or changing firewall rules requires an elevated PowerShell.
-    Exit codes: 0 ok, 1 error, 5 not elevated.
+    -Apply, -Remove, and -Verify require an elevated (Administrator) PowerShell.
+    -DryRun is read-only and may run non-elevated when physical NIC enumeration succeeds
+    (still fails closed with exit 5 if Get-NetAdapter fails).
+    Exit codes: 0 ok, 1 error, 5 not elevated or enumeration failure.
 #>
 
 [CmdletBinding()]
@@ -149,8 +151,8 @@ function Get-GuardRuleFilter([string]$Key, [string]$Kind) {
 
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Say '[!] 15-webrtc-browser-shield.ps1 requires elevated (Administrator) PowerShell.' 'Red'
+if (-not $isAdmin -and (-not $DryRun -or $Verify -or $Remove)) {
+    Say '[!] 15-webrtc-browser-shield.ps1 requires elevated (Administrator) PowerShell for -Apply, -Remove, and -Verify.' 'Red'
     exit 5
 }
 
