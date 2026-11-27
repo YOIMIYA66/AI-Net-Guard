@@ -948,6 +948,68 @@ c2.commit(); c2.close()
         Assert-True 'Get-V2rayNCandidateNodes extracts and merges ProtoExtra.Ports on v2rayN 7.x DB and supports legacy schema without ProtoExtra' `
             ($db1Ok -and $db2Ok) `
             ('db1Udp=' + ($res1.UdpPorts -join ',') + ' db1Tcp=' + ($res1.TcpPorts -join ',') + ' db2Udp=' + ($res2.UdpPorts -join ','))
+
+        # ---------------------------------------------------------------- 25. Temporary IPv6 node sync & policy wiring
+        $v6PassAll = (Test-GuardPublicNodeIpv6 -IpStr '2001:db8::1') -and `
+            (Test-GuardPublicNodeIpv6 -IpStr '2400:3200::1') -and `
+            (Test-GuardPublicNodeIpv6 -IpStr '[2606:4700::1]')
+        $v6RejectBad = $true
+        foreach ($badV6 in @('::', '::1', 'fe80::1', 'fc00::1', 'fd12::1', 'ff02::1', '::ffff:192.0.2.1', '198.51.100.10', '')) {
+            if (Test-GuardPublicNodeIpv6 -IpStr $badV6) { $v6RejectBad = $false }
+        }
+        Assert-True 'Test-GuardPublicNodeIpv6 accepts global unicast 2000::/3 and rejects loopback/ULA/link-local/multicast/IPv4' `
+            ($v6PassAll -and $v6RejectBad) ('passAll=' + $v6PassAll + ' rejectBad=' + $v6RejectBad)
+
+        $v6CandPath = Join-Path $tmpDbDir 'cand-v6.json'
+        Write-GuardCandidateNodes -Path $v6CandPath `
+            -Ips @('198.51.100.10') `
+            -Ipv6Ips @('2001:DB8::1', '2001:db8::2', 'fe80::1', 'fd12::1') `
+            -TcpPorts @('443') `
+            -UdpPorts @()
+        $v6CandLoaded = Read-GuardCandidateNodes -Path $v6CandPath
+        $v6OnlyPath = Join-Path $tmpDbDir 'cand-v6-only.json'
+        Write-GuardCandidateNodes -Path $v6OnlyPath -Ips @() -Ipv6Ips @('2001:DB8::9') -TcpPorts @('8443') -UdpPorts @()
+        $v6OnlyLoaded = Read-GuardCandidateNodes -Path $v6OnlyPath
+        $v6RoundTripOk = $v6CandLoaded.Enabled -and ($v6CandLoaded.Ips.Count -eq 1) -and `
+            ($v6CandLoaded.Ipv6Ips.Count -eq 2) -and ($v6CandLoaded.Ipv6Ips[0] -eq '2001:db8::1') -and ($v6CandLoaded.Ipv6Ips[1] -eq '2001:db8::2') -and `
+            $v6OnlyLoaded.Enabled -and ($v6OnlyLoaded.Ips.Count -eq 0) -and ($v6OnlyLoaded.Ipv6Ips.Count -eq 1) -and ($v6OnlyLoaded.Ipv6Ips[0] -eq '2001:db8::9')
+        Assert-True 'Write/Read-GuardCandidateNodes normalizes and round-trips IPv6 candidate IPs alongside IPv4 and IPv6-only sets' `
+            $v6RoundTripOk ('v6=' + ($v6CandLoaded.Ipv6Ips -join ',') + ' v6Only=' + $v6OnlyLoaded.Enabled)
+
+        $dbV6 = Join-Path $tmpDbDir 'v6-nodes.db'
+        $mkV6Py = Join-Path $tmpDbDir 'mkv6.py'
+        [System.IO.File]::WriteAllText($mkV6Py, @'
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute("CREATE TABLE ProfileItem (ConfigType INT, Address TEXT, Port INT, Ports TEXT, Network TEXT, Alpn TEXT, ProtoExtra TEXT)")
+c.executemany("INSERT INTO ProfileItem VALUES (?,?,?,?,?,?,?)", [
+    (5, '198.51.100.30', 443, None, 'raw', '', '{}'),
+    (5, '2001:db8::10', 2100, None, 'raw', '', '{}'),
+    (5, '[2001:DB8::20]', 2101, None, 'raw', '', '{}'),
+    (5, 'fe80::1', 2102, None, 'raw', '', '{}'),
+])
+c.commit(); c.close()
+'@, (New-Object System.Text.UTF8Encoding($false)))
+        & $pyTestExe $mkV6Py $dbV6
+        $resV4Only = Get-V2rayNCandidateNodes -DbPath $dbV6
+        $resWithV6 = Get-V2rayNCandidateNodes -DbPath $dbV6 -IncludeIpv6
+        $candV6Ok = ($resV4Only.Ips.Count -eq 1) -and ($resV4Only.Ipv6Ips.Count -eq 0) -and `
+            ($resWithV6.Ips.Count -eq 1) -and ($resWithV6.Ipv6Ips.Count -eq 2) -and `
+            (($resWithV6.Ipv6Ips -join ',') -eq '2001:db8::10,2001:db8::20') -and `
+            (($resWithV6.TcpPorts -join ',') -eq '443,2100-2101')
+        Assert-True 'Get-V2rayNCandidateNodes keeps IPv6 excluded by default and extracts public IPv6 nodes when -IncludeIpv6 is passed' `
+            $candV6Ok ('defaultV6=' + $resV4Only.Ipv6Ips.Count + ' optInV6=' + ($resWithV6.Ipv6Ips -join ','))
+
+        $apply14Raw = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\14-apply-policy.ps1'), [System.Text.Encoding]::UTF8)
+        $mode07Updated = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\07-mode.ps1'), [System.Text.Encoding]::UTF8)
+        $sync10Updated = [System.IO.File]::ReadAllText((Join-Path $repo 'scripts\10-sync-node-rule.ps1'), [System.Text.Encoding]::UTF8)
+        $v6WireOk = ($apply14Raw -match '\$TemporaryIpv6') -and ($apply14Raw -match 'AI-Guard-Allow-DHCPv6') -and `
+            ($apply14Raw -match 'AI-Guard-Allow-NDP') -and ($apply14Raw -match '0x20') -and `
+            ($mode07Updated -match 'AI-Guard-Allow-DHCPv6') -and ($mode07Updated -match 'RA\[46\]=') -and `
+            ($mode07Updated -match '/128') -and ($sync10Updated -match '-IncludeIpv6:\$allowIpv6Nodes') -and `
+            ($sync10Updated -match '/128')
+        Assert-True '14-apply-policy, 07-mode, and 10-sync-node-rule wire temporary IPv6 bootstrap, DisabledComponents=0x20, RA[46]=, and /128 host routes' `
+            $v6WireOk 'temporary IPv6 wiring check failed'
     }
     finally {
         Remove-Item -LiteralPath $tmpDbDir -Recurse -Force -ErrorAction SilentlyContinue

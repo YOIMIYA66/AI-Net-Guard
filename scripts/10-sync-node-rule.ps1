@@ -55,28 +55,62 @@ foreach ($cand in @((Join-Path $PSScriptRoot 'lib-guard-common.ps1'), (Join-Path
 }
 if ($libCommonSync) { . $libCommonSync }
 
-function Resolve-NodeDomainSafe([string]$Domain) {
+function Resolve-NodeDomainSafe {
+    param(
+        [string]$Domain,
+        [switch]$IncludeIpv6
+    )
+
     $res = @()
-    try {
-        if ([int][Net.ServicePointManager]::SecurityProtocol -ne 0) {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-        }
-        $uri = 'https://223.5.5.5/resolve?name=' + [uri]::EscapeDataString($Domain) + '&type=A'
-        $req = [System.Net.HttpWebRequest]::Create($uri)
-        $req.Proxy = $null
-        $req.Timeout = 4000
-        $req.ReadWriteTimeout = 4000
-        $resp = $req.GetResponse()
+    $qTypes = if ($IncludeIpv6) { @('A', 'AAAA') } else { @('A') }
+    foreach ($qt in $qTypes) {
+        $wantType = if ($qt -eq 'AAAA') { 28 } else { 1 }
+        $qtRes = @()
         try {
-            $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
-            $json = $sr.ReadToEnd() | ConvertFrom-Json
-            $res = @($json.Answer | Where-Object { $_.type -eq 1 -and $_.data -match '^\d{1,3}(\.\d{1,3}){3}$' } | ForEach-Object { [string]$_.data })
+            if ([int][Net.ServicePointManager]::SecurityProtocol -ne 0) {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            }
+            $uri = 'https://223.5.5.5/resolve?name=' + [uri]::EscapeDataString($Domain) + '&type=' + $qt
+            $req = [System.Net.HttpWebRequest]::Create($uri)
+            $req.Proxy = $null
+            $req.Timeout = 4000
+            $req.ReadWriteTimeout = 4000
+            $resp = $req.GetResponse()
+            try {
+                $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+                $json = $sr.ReadToEnd() | ConvertFrom-Json
+                foreach ($ans in @($json.Answer)) {
+                    if (-not $ans -or [int]$ans.type -ne $wantType) { continue }
+                    $d = [string]$ans.data
+                    if ($wantType -eq 1 -and (Test-GuardPublicNodeIpv4 -IpStr $d)) {
+                        $qtRes += $d.Trim()
+                    }
+                    elseif ($wantType -eq 28 -and (Test-GuardPublicNodeIpv6 -IpStr $d)) {
+                        $qtRes += ([System.Net.IPAddress]::Parse($d.Trim().Trim('[', ']'))).IPAddressToString.ToLowerInvariant()
+                    }
+                }
+            }
+            finally { $resp.Close() }
         }
-        finally { $resp.Close() }
+        catch { }
+        if ($qtRes.Count -eq 0) {
+            try {
+                foreach ($dnsRec in @(Resolve-DnsName -Name $Domain -Type $qt -ErrorAction Stop | Where-Object { $_.IPAddress })) {
+                    $ipText = [string]$dnsRec.IPAddress
+                    if ($wantType -eq 1 -and (Test-GuardPublicNodeIpv4 -IpStr $ipText)) {
+                        $qtRes += $ipText.Trim()
+                    }
+                    elseif ($wantType -eq 28 -and (Test-GuardPublicNodeIpv6 -IpStr $ipText)) {
+                        $qtRes += ([System.Net.IPAddress]::Parse($ipText.Trim().Trim('[', ']'))).IPAddressToString.ToLowerInvariant()
+                    }
+                }
+            }
+            catch { }
+        }
+        $res += @($qtRes)
     }
-    catch { }
-    if ($res.Count -eq 0) {
-        $res = @(Resolve-DnsName -Name $Domain -Type A -ErrorAction Stop | Where-Object { $_.IPAddress } | Select-Object -ExpandProperty IPAddress)
+    if (-not $IncludeIpv6 -and $res.Count -eq 0) {
+        throw ('cannot resolve A record for domain: ' + $Domain)
     }
     return @($res | Where-Object { $_ } | Select-Object -Unique)
 }
@@ -103,7 +137,10 @@ function Resolve-CoreExe([string]$CoreType) {
 }
 
 function Get-V2rayNCandidateNodes {
-    param([Parameter(Mandatory = $true)][string]$DbPath)
+    param(
+        [Parameter(Mandatory = $true)][string]$DbPath,
+        [switch]$IncludeIpv6
+    )
 
     if (-not (Test-Path -LiteralPath $DbPath)) {
         throw ('missing v2rayN database: ' + $DbPath)
@@ -204,6 +241,10 @@ finally:
         if ($addr -match '^\d{1,3}(\.\d{1,3}){3}$') {
             if (-not (Test-GuardPublicNodeIpv4 -IpStr $addr)) { continue }
         }
+        elseif ($addr -like '*:*') {
+            if (-not $IncludeIpv6 -or -not (Test-GuardPublicNodeIpv6 -IpStr $addr)) { continue }
+            $addr = ([System.Net.IPAddress]::Parse($addr)).IPAddressToString.ToLowerInvariant()
+        }
         [void]$addrSet.Add($addr)
         if (-not $addrList.Contains($addr)) { [void]$addrList.Add($addr) }
 
@@ -235,16 +276,34 @@ finally:
 
     $ipSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
     $resolvedIps = New-Object System.Collections.Generic.List[string]
+    $v6Set = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $resolvedIpv6 = New-Object System.Collections.Generic.List[string]
     $unresolvedDomains = 0
     foreach ($a in $addrList) {
         if ($a -match '^\d{1,3}(\.\d{1,3}){3}$') {
             if ((Test-GuardPublicNodeIpv4 -IpStr $a) -and $ipSet.Add($a)) { [void]$resolvedIps.Add($a) }
         }
+        elseif ($a -like '*:*') {
+            if ($IncludeIpv6 -and (Test-GuardPublicNodeIpv6 -IpStr $a)) {
+                $normV6 = ([System.Net.IPAddress]::Parse($a)).IPAddressToString.ToLowerInvariant()
+                if ($v6Set.Add($normV6)) { [void]$resolvedIpv6.Add($normV6) }
+            }
+        }
         else {
             try {
-                foreach ($rip in @(Resolve-NodeDomainSafe -Domain $a)) {
-                    if ((Test-GuardPublicNodeIpv4 -IpStr $rip) -and $ipSet.Add($rip)) { [void]$resolvedIps.Add($rip) }
+                $gotAny = $false
+                foreach ($rip in @(Resolve-NodeDomainSafe -Domain $a -IncludeIpv6:$IncludeIpv6)) {
+                    if ((Test-GuardPublicNodeIpv4 -IpStr $rip) -and $ipSet.Add($rip)) {
+                        [void]$resolvedIps.Add($rip)
+                        $gotAny = $true
+                    }
+                    elseif ($IncludeIpv6 -and (Test-GuardPublicNodeIpv6 -IpStr $rip)) {
+                        $normV6 = ([System.Net.IPAddress]::Parse($rip)).IPAddressToString.ToLowerInvariant()
+                        if ($v6Set.Add($normV6)) { [void]$resolvedIpv6.Add($normV6) }
+                        $gotAny = $true
+                    }
                 }
+                if (-not $gotAny) { $unresolvedDomains++ }
             }
             catch {
                 $unresolvedDomains++
@@ -262,6 +321,7 @@ finally:
         ProfileCount      = $rows.Count
         UniqueAddresses   = $addrList.Count
         Ips               = [string[]]($resolvedIps.ToArray() | Sort-Object)
+        Ipv6Ips           = [string[]]($resolvedIpv6.ToArray() | Sort-Object)
         TcpPorts          = [string[]]$mergedTcp
         UdpPorts          = [string[]]$mergedUdp
         UnresolvedDomains = $unresolvedDomains
@@ -354,17 +414,38 @@ else {
 if (-not $address) { throw 'cannot find node address in config.json' }
 $coreExe = Resolve-CoreExe -CoreType $coreType
 
+$allowCn = $true; $allowLan = $true; $allowNcsi = $true; $blockPhysIpv6 = $true
+$polPath = Join-Path $Root 'backup\guard-policy.json'
+if (Test-Path -LiteralPath $polPath) {
+    try {
+        $rawP = Get-Content -LiteralPath $polPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($rawP) {
+            if ($rawP.PSObject.Properties.Name -contains 'AllowCnDirect' -and ($rawP.AllowCnDirect -is [bool])) { $allowCn = [bool]$rawP.AllowCnDirect }
+            if ($rawP.PSObject.Properties.Name -contains 'AllowLan' -and ($rawP.AllowLan -is [bool])) { $allowLan = [bool]$rawP.AllowLan }
+            if ($rawP.PSObject.Properties.Name -contains 'AllowNcsi' -and ($rawP.AllowNcsi -is [bool])) { $allowNcsi = [bool]$rawP.AllowNcsi }
+            if ($rawP.PSObject.Properties.Name -contains 'DisablePhysicalIpv6' -and ($rawP.DisablePhysicalIpv6 -is [bool])) { $blockPhysIpv6 = [bool]$rawP.DisablePhysicalIpv6 }
+        }
+    } catch { }
+}
+$allowIpv6Nodes = (-not $blockPhysIpv6)
+
 $rawAddrList = if ($addresses -and $addresses.Count -gt 0) { $addresses } else { @($address) }
 $ips = @()
 $usedDomain = $false
 foreach ($raItem in $rawAddrList) {
     if (-not $raItem) { continue }
-    if ($raItem -match '^\d{1,3}(\.\d{1,3}){3}$') {
-        $ips += @($raItem)
+    $cleanRa = ([string]$raItem).Trim().Trim('[', ']')
+    if ($cleanRa -match '^\d{1,3}(\.\d{1,3}){3}$') {
+        $ips += @($cleanRa)
+    }
+    elseif ($cleanRa -like '*:*') {
+        if ($allowIpv6Nodes -and (Test-GuardPublicNodeIpv6 -IpStr $cleanRa)) {
+            $ips += @(([System.Net.IPAddress]::Parse($cleanRa)).IPAddressToString.ToLowerInvariant())
+        }
     }
     else {
         $usedDomain = $true
-        $ips += @(Resolve-NodeDomainSafe -Domain $raItem)
+        $ips += @(Resolve-NodeDomainSafe -Domain $cleanRa -IncludeIpv6:$allowIpv6Nodes)
     }
 }
 if ($ips.Count -eq 0) { throw ('cannot resolve node address: ' + $address) }
@@ -408,8 +489,9 @@ $candPreview = $null
 if ($IncludeAllNodes) {
     $dbPath = Join-Path $V2rayNRoot 'guiConfigs\guiNDB.db'
     Write-Host ('scanning candidate nodes (read-only): ' + $dbPath) -ForegroundColor Cyan
-    $candPreview = Get-V2rayNCandidateNodes -DbPath $dbPath
-    Write-Host ('candidate nodes: profiles=' + $candPreview.ProfileCount + ', uniqueAddresses=' + $candPreview.UniqueAddresses + ', resolvedIPs=' + $candPreview.Ips.Count + ', unresolvedDomains=' + $candPreview.UnresolvedDomains) -ForegroundColor Cyan
+    $candPreview = Get-V2rayNCandidateNodes -DbPath $dbPath -IncludeIpv6:$allowIpv6Nodes
+    $v6Cnt = if ($candPreview.PSObject.Properties['Ipv6Ips']) { $candPreview.Ipv6Ips.Count } else { 0 }
+    Write-Host ('candidate nodes: profiles=' + $candPreview.ProfileCount + ', uniqueAddresses=' + $candPreview.UniqueAddresses + ', resolvedIPs=' + $candPreview.Ips.Count + $(if ($v6Cnt -gt 0) { ', resolvedIPv6=' + $v6Cnt } else { '' }) + ', unresolvedDomains=' + $candPreview.UnresolvedDomains) -ForegroundColor Cyan
     Write-Host ('candidate TCP ports: ' + $(if ($candPreview.TcpPorts.Count -gt 0) { $candPreview.TcpPorts -join ', ' } else { '(none)' }))
     Write-Host ('candidate UDP ports: ' + $(if ($candPreview.UdpPorts.Count -gt 0) { $candPreview.UdpPorts -join ', ' } else { '(none)' }))
 }
@@ -475,12 +557,20 @@ try {
             $staleCandidates += @($oldRoutesRaw.Split(','))
         }
     }
-    $staleCandidates = @($staleCandidates | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Select-Object -Unique)
-    foreach ($pIp in $staleCandidates) {
+    $staleCandidatesV4 = @($staleCandidates | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Select-Object -Unique)
+    foreach ($pIp in $staleCandidatesV4) {
         if ($ips -notcontains $pIp) {
             Remove-NetRoute -DestinationPrefix ($pIp + '/32') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
             Remove-NetRoute -DestinationPrefix ($pIp + '/32') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
             Write-Host ('[-] removed stale node host route: ' + $pIp + '/32') -ForegroundColor Yellow
+        }
+    }
+    $staleCandidatesV6 = @($staleCandidates | Where-Object { $_ -and (Test-GuardPublicNodeIpv6 -IpStr $_) } | ForEach-Object { ([System.Net.IPAddress]::Parse($_)).IPAddressToString.ToLowerInvariant() } | Select-Object -Unique)
+    foreach ($pV6 in $staleCandidatesV6) {
+        if ($ips -notcontains $pV6) {
+            Remove-NetRoute -DestinationPrefix ($pV6 + '/128') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+            Remove-NetRoute -DestinationPrefix ($pV6 + '/128') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+            Write-Host ('[-] removed stale node IPv6 host route: ' + $pV6 + '/128') -ForegroundColor Yellow
         }
     }
 
@@ -536,6 +626,24 @@ try {
                     New-NetRoute -DestinationPrefix ($nodeIp + '/32') -InterfaceAlias $physRoute.InterfaceAlias -NextHop $physRoute.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
                     Write-Host ('[+] proxy node physical /32 host route updated (ActiveStore): ' + $nodeIp + '/32 -> ' + $physRoute.NextHop + ' on ' + $physRoute.InterfaceAlias) -ForegroundColor Green
                 }
+            }
+        }
+    }
+    $physRouteV6 = Get-NetRoute -DestinationPrefix '::/0' -AddressFamily IPv6 -ErrorAction SilentlyContinue |
+        Where-Object { $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback' -and $_.NextHop -ne '::' } |
+        Select-Object -First 1
+    if ($allowIpv6Nodes -and $physRouteV6 -and $physRouteV6.NextHop) {
+        foreach ($nodeV6 in @($ips | Where-Object { Test-GuardPublicNodeIpv6 -IpStr $_ })) {
+            Remove-NetRoute -DestinationPrefix ($nodeV6 + '/128') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+            $curV6Route = @(Get-NetRoute -DestinationPrefix ($nodeV6 + '/128') -PolicyStore ActiveStore -ErrorAction SilentlyContinue)
+            if ($curV6Route.Count -eq 0) {
+                New-NetRoute -DestinationPrefix ($nodeV6 + '/128') -InterfaceAlias $physRouteV6.InterfaceAlias -NextHop $physRouteV6.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+                Write-Host ('[+] proxy node physical /128 IPv6 route added (ActiveStore): ' + $nodeV6 + '/128 -> ' + $physRouteV6.NextHop + ' on ' + $physRouteV6.InterfaceAlias) -ForegroundColor Green
+            }
+            elseif ($curV6Route[0].NextHop -ne $physRouteV6.NextHop -or $curV6Route[0].InterfaceAlias -ne $physRouteV6.InterfaceAlias -or $curV6Route[0].RouteMetric -ne 1) {
+                Remove-NetRoute -DestinationPrefix ($nodeV6 + '/128') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                New-NetRoute -DestinationPrefix ($nodeV6 + '/128') -InterfaceAlias $physRouteV6.InterfaceAlias -NextHop $physRouteV6.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+                Write-Host ('[+] proxy node physical /128 IPv6 route updated (ActiveStore): ' + $nodeV6 + '/128 -> ' + $physRouteV6.NextHop + ' on ' + $physRouteV6.InterfaceAlias) -ForegroundColor Green
             }
         }
     }
@@ -612,10 +720,12 @@ if ($ClearCandidateNodes) {
     Write-Host '[+] cleared candidate node allowlist and AI-Guard-Allow-Candidates-* rules' -ForegroundColor Green
 }
 elseif ($IncludeAllNodes -and $candPreview) {
-    if ($candPreview.Ips.Count -eq 0) {
+    $candIpv6 = if ($candPreview.PSObject.Properties['Ipv6Ips']) { @($candPreview.Ipv6Ips) } else { @() }
+    $candAllIps = @(@($candPreview.Ips) + @($candIpv6) | Where-Object { $_ } | Select-Object -Unique)
+    if ($candAllIps.Count -eq 0) {
         throw 'no valid public candidate node IPs found in guiNDB.db; refusing to clear/write empty candidate rules'
     }
-    Write-GuardCandidateNodes -Path $candFile -Ips $candPreview.Ips -TcpPorts $candPreview.TcpPorts -UdpPorts $candPreview.UdpPorts
+    Write-GuardCandidateNodes -Path $candFile -Ips $candPreview.Ips -Ipv6Ips $candIpv6 -TcpPorts $candPreview.TcpPorts -UdpPorts $candPreview.UdpPorts
     foreach ($ck in $allCores.Keys) {
         $cExe = $allCores[$ck]
         $cName = if ($ck -like '*xray*') { 'Xray' } elseif ($ck -like '*sing*') { 'SingBox' } elseif ($ck -like '*v2rayn*') { 'V2rayN' } else { $ck }
@@ -624,12 +734,12 @@ elseif ($IncludeAllNodes -and $candPreview) {
         $candTcpRule = Get-NetFirewallRule -DisplayName $candTcpName -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($candPreview.TcpPorts.Count -gt 0) {
             if ($candTcpRule) {
-                Set-NetFirewallRule -InputObject $candTcpRule -Program $cExe -RemoteAddress $candPreview.Ips -RemotePort $candPreview.TcpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
+                Set-NetFirewallRule -InputObject $candTcpRule -Program $cExe -RemoteAddress $candAllIps -RemotePort $candPreview.TcpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
             }
             else {
                 New-NetFirewallRule -Name $candTcpName -DisplayName $candTcpName `
                     -Direction Outbound -Action Allow -Program $cExe -Protocol TCP `
-                    -RemoteAddress $candPreview.Ips -RemotePort $candPreview.TcpPorts -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+                    -RemoteAddress $candAllIps -RemotePort $candPreview.TcpPorts -Profile Any -Enabled True -ErrorAction Stop | Out-Null
             }
         }
         elseif ($candTcpRule) {
@@ -639,22 +749,22 @@ elseif ($IncludeAllNodes -and $candPreview) {
         $candUdpRule = Get-NetFirewallRule -DisplayName $candUdpName -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($candPreview.UdpPorts.Count -gt 0) {
             if ($candUdpRule) {
-                Set-NetFirewallRule -InputObject $candUdpRule -Program $cExe -RemoteAddress $candPreview.Ips -RemotePort $candPreview.UdpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
+                Set-NetFirewallRule -InputObject $candUdpRule -Program $cExe -RemoteAddress $candAllIps -RemotePort $candPreview.UdpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
             }
             else {
                 New-NetFirewallRule -Name $candUdpName -DisplayName $candUdpName `
                     -Direction Outbound -Action Allow -Program $cExe -Protocol UDP `
-                    -RemoteAddress $candPreview.Ips -RemotePort $candPreview.UdpPorts -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+                    -RemoteAddress $candAllIps -RemotePort $candPreview.UdpPorts -Profile Any -Enabled True -ErrorAction Stop | Out-Null
             }
         }
         elseif ($candUdpRule) {
             $candUdpRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
         }
     }
-    Write-Host ('[+] AI-Guard-Allow-Candidates-* updated (' + $candPreview.Ips.Count + ' IPs across ' + $allCores.Count + ' core binary/binaries)') -ForegroundColor Green
+    Write-Host ('[+] AI-Guard-Allow-Candidates-* updated (' + $candPreview.Ips.Count + ' IPv4 + ' + $candIpv6.Count + ' IPv6 across ' + $allCores.Count + ' core binary/binaries)') -ForegroundColor Green
 }
 
-$foreignNodeIps = @($ips)
+$foreignNodeIps = @($ips | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') })
 if (Get-Command Read-GuardCandidateNodes -ErrorAction SilentlyContinue) {
     $candStored = Read-GuardCandidateNodes -Path $candFile
     if ($candStored.Enabled -and $candStored.Ips.Count -gt 0) {
@@ -672,19 +782,6 @@ try {
     }
     if (Test-Path -LiteralPath $libForeign) {
         . $libForeign
-        $allowCn = $true; $allowLan = $true; $allowNcsi = $true; $blockPhysIpv6 = $true
-        $polPath = Join-Path $Root 'backup\guard-policy.json'
-        if (Test-Path -LiteralPath $polPath) {
-            try {
-                $rawP = Get-Content -LiteralPath $polPath -Raw -Encoding UTF8 | ConvertFrom-Json
-                if ($rawP) {
-                    if ($rawP.PSObject.Properties.Name -contains 'AllowCnDirect' -and ($rawP.AllowCnDirect -is [bool])) { $allowCn = [bool]$rawP.AllowCnDirect }
-                    if ($rawP.PSObject.Properties.Name -contains 'AllowLan' -and ($rawP.AllowLan -is [bool])) { $allowLan = [bool]$rawP.AllowLan }
-                    if ($rawP.PSObject.Properties.Name -contains 'AllowNcsi' -and ($rawP.AllowNcsi -is [bool])) { $allowNcsi = [bool]$rawP.AllowNcsi }
-                    if ($rawP.PSObject.Properties.Name -contains 'DisablePhysicalIpv6' -and ($rawP.DisablePhysicalIpv6 -is [bool])) { $blockPhysIpv6 = [bool]$rawP.DisablePhysicalIpv6 }
-                }
-            } catch { }
-        }
         $physAliases = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
             $_.Status -ne 'Not Present' -and
             $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|Loopback' -and
