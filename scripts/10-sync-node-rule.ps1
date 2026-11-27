@@ -26,6 +26,8 @@ param(
     [switch]$ReplacePorts,
     [switch]$IncludeAllNodes,
     [switch]$ClearCandidateNodes,
+    [switch]$PinCurrentNode,
+    [switch]$ClearPinnedNodes,
     [switch]$PruneStaleNodeRoutes,
     [switch]$WhatIfOnly
 )
@@ -33,6 +35,9 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($IncludeAllNodes -and $ClearCandidateNodes) {
     throw 'Pass either -IncludeAllNodes or -ClearCandidateNodes, not both.'
+}
+if ($PinCurrentNode -and $ClearPinnedNodes) {
+    throw 'Pass either -PinCurrentNode or -ClearPinnedNodes, not both.'
 }
 if (-not $V2rayNRoot) {
     if ($env:V2RAYN_ROOT -and (Test-Path -LiteralPath $env:V2RAYN_ROOT)) { $V2rayNRoot = $env:V2RAYN_ROOT }
@@ -499,6 +504,92 @@ elseif ($ClearCandidateNodes) {
     Write-Host 'candidate nodes: will CLEAR backup\candidate-nodes.json and remove AI-Guard-Allow-Candidates-* rules' -ForegroundColor Yellow
 }
 
+$pinFile = Join-Path $Root 'backup\pinned-nodes.json'
+$pinPreview = $null
+if ($PinCurrentNode) {
+    $existingPin = if (Get-Command Read-GuardCandidateNodes -ErrorAction SilentlyContinue) {
+        Read-GuardCandidateNodes -Path $pinFile
+    }
+    else {
+        [pscustomobject]@{ Enabled = $false; Ips = @(); Ipv6Ips = @(); TcpPorts = @(); UdpPorts = @() }
+    }
+    $existingPinV4 = if ($existingPin.Enabled) { @($existingPin.Ips) } else { @() }
+    $existingPinV6 = if ($existingPin.Enabled -and $existingPin.PSObject.Properties['Ipv6Ips']) { @($existingPin.Ipv6Ips) } else { @() }
+    $existingPinTcp = if ($existingPin.Enabled) { @($existingPin.TcpPorts) } else { @() }
+    $existingPinUdp = if ($existingPin.Enabled) { @($existingPin.UdpPorts) } else { @() }
+
+    $curPinV4 = @($ips | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') })
+    $curPinV6 = if ($allowIpv6Nodes -and (Get-Command Test-GuardPublicNodeIpv6 -ErrorAction SilentlyContinue)) {
+        @($ips | Where-Object { $_ -and (Test-GuardPublicNodeIpv6 -IpStr $_) })
+    }
+    else { @() }
+    $mergedPinV4 = @(@($existingPinV4) + @($curPinV4) | Where-Object { $_ } | Sort-Object -Unique)
+    $mergedPinV6 = @(@($existingPinV6) + @($curPinV6) | Where-Object { $_ } | Sort-Object -Unique)
+    $rawPinTcp = @($existingPinTcp) + @($tcpPorts)
+    $rawPinUdp = @($existingPinUdp) + $(if ($udp) { @($baseUdpPorts) } else { @() })
+    $mergedPinTcp = if (Get-Command Merge-GuardPortSpecs -ErrorAction SilentlyContinue) { Merge-GuardPortSpecs -Specs $rawPinTcp } else { @($rawPinTcp | Where-Object { $_ } | Select-Object -Unique) }
+    $mergedPinUdp = if (Get-Command Merge-GuardPortSpecs -ErrorAction SilentlyContinue) { Merge-GuardPortSpecs -Specs $rawPinUdp } else { @($rawPinUdp | Where-Object { $_ } | Select-Object -Unique) }
+
+    $pinPreview = [pscustomobject]@{
+        Ips      = [string[]]@($mergedPinV4)
+        Ipv6Ips  = [string[]]@($mergedPinV6)
+        TcpPorts = [string[]]$mergedPinTcp
+        UdpPorts = [string[]]$mergedPinUdp
+    }
+    Write-Host ('pinned nodes: IPs=' + $pinPreview.Ips.Count + ' IPv4' + $(if ($pinPreview.Ipv6Ips.Count -gt 0) { ' + ' + $pinPreview.Ipv6Ips.Count + ' IPv6' } else { '' }) + ' (' + ((@($pinPreview.Ips) + @($pinPreview.Ipv6Ips)) -join ', ') + ')') -ForegroundColor Cyan
+    Write-Host ('pinned TCP ports: ' + $(if ($pinPreview.TcpPorts.Count -gt 0) { $pinPreview.TcpPorts -join ', ' } else { '(none)' }))
+    Write-Host ('pinned UDP ports: ' + $(if ($pinPreview.UdpPorts.Count -gt 0) { $pinPreview.UdpPorts -join ', ' } else { '(none)' }))
+}
+elseif ($ClearPinnedNodes) {
+    Write-Host 'pinned nodes: will CLEAR backup\pinned-nodes.json and remove AI-Guard-Allow-Pinned-* rules' -ForegroundColor Yellow
+}
+
+function Sync-AllowlistCoreRules {
+    param(
+        [string]$RulePrefix,
+        [hashtable]$CoreMap,
+        [string[]]$RemoteIps,
+        [string[]]$TcpPortList,
+        [string[]]$UdpPortList
+    )
+
+    foreach ($ck in $CoreMap.Keys) {
+        $cExe = $CoreMap[$ck]
+        $cName = if ($ck -like '*xray*') { 'Xray' } elseif ($ck -like '*sing*') { 'SingBox' } elseif ($ck -like '*v2rayn*') { 'V2rayN' } else { $ck }
+        $rTcpName = $RulePrefix + $cName + '-TCP'
+        $rUdpName = $RulePrefix + $cName + '-UDP'
+        $rTcpRule = Get-NetFirewallRule -DisplayName $rTcpName -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($TcpPortList.Count -gt 0) {
+            if ($rTcpRule) {
+                Set-NetFirewallRule -InputObject $rTcpRule -Program $cExe -RemoteAddress $RemoteIps -RemotePort $TcpPortList -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
+            }
+            else {
+                New-NetFirewallRule -Name $rTcpName -DisplayName $rTcpName `
+                    -Direction Outbound -Action Allow -Program $cExe -Protocol TCP `
+                    -RemoteAddress $RemoteIps -RemotePort $TcpPortList -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+            }
+        }
+        elseif ($rTcpRule) {
+            $rTcpRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        }
+
+        $rUdpRule = Get-NetFirewallRule -DisplayName $rUdpName -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($UdpPortList.Count -gt 0) {
+            if ($rUdpRule) {
+                Set-NetFirewallRule -InputObject $rUdpRule -Program $cExe -RemoteAddress $RemoteIps -RemotePort $UdpPortList -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
+            }
+            else {
+                New-NetFirewallRule -Name $rUdpName -DisplayName $rUdpName `
+                    -Direction Outbound -Action Allow -Program $cExe -Protocol UDP `
+                    -RemoteAddress $RemoteIps -RemotePort $UdpPortList -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+            }
+        }
+        elseif ($rUdpRule) {
+            $rUdpRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 if ($WhatIfOnly) { Write-Host 'WhatIfOnly: no firewall change made.'; return }
 if (-not $isAdmin) { throw 'run elevated to modify firewall rules' }
 
@@ -726,42 +817,28 @@ elseif ($IncludeAllNodes -and $candPreview) {
         throw 'no valid public candidate node IPs found in guiNDB.db; refusing to clear/write empty candidate rules'
     }
     Write-GuardCandidateNodes -Path $candFile -Ips $candPreview.Ips -Ipv6Ips $candIpv6 -TcpPorts $candPreview.TcpPorts -UdpPorts $candPreview.UdpPorts
-    foreach ($ck in $allCores.Keys) {
-        $cExe = $allCores[$ck]
-        $cName = if ($ck -like '*xray*') { 'Xray' } elseif ($ck -like '*sing*') { 'SingBox' } elseif ($ck -like '*v2rayn*') { 'V2rayN' } else { $ck }
-        $candTcpName = 'AI-Guard-Allow-Candidates-' + $cName + '-TCP'
-        $candUdpName = 'AI-Guard-Allow-Candidates-' + $cName + '-UDP'
-        $candTcpRule = Get-NetFirewallRule -DisplayName $candTcpName -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($candPreview.TcpPorts.Count -gt 0) {
-            if ($candTcpRule) {
-                Set-NetFirewallRule -InputObject $candTcpRule -Program $cExe -RemoteAddress $candAllIps -RemotePort $candPreview.TcpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
-            }
-            else {
-                New-NetFirewallRule -Name $candTcpName -DisplayName $candTcpName `
-                    -Direction Outbound -Action Allow -Program $cExe -Protocol TCP `
-                    -RemoteAddress $candAllIps -RemotePort $candPreview.TcpPorts -Profile Any -Enabled True -ErrorAction Stop | Out-Null
-            }
-        }
-        elseif ($candTcpRule) {
-            $candTcpRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-        }
-
-        $candUdpRule = Get-NetFirewallRule -DisplayName $candUdpName -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($candPreview.UdpPorts.Count -gt 0) {
-            if ($candUdpRule) {
-                Set-NetFirewallRule -InputObject $candUdpRule -Program $cExe -RemoteAddress $candAllIps -RemotePort $candPreview.UdpPorts -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
-            }
-            else {
-                New-NetFirewallRule -Name $candUdpName -DisplayName $candUdpName `
-                    -Direction Outbound -Action Allow -Program $cExe -Protocol UDP `
-                    -RemoteAddress $candAllIps -RemotePort $candPreview.UdpPorts -Profile Any -Enabled True -ErrorAction Stop | Out-Null
-            }
-        }
-        elseif ($candUdpRule) {
-            $candUdpRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-        }
-    }
+    Sync-AllowlistCoreRules -RulePrefix 'AI-Guard-Allow-Candidates-' -CoreMap $allCores -RemoteIps $candAllIps -TcpPortList $candPreview.TcpPorts -UdpPortList $candPreview.UdpPorts
     Write-Host ('[+] AI-Guard-Allow-Candidates-* updated (' + $candPreview.Ips.Count + ' IPv4 + ' + $candIpv6.Count + ' IPv6 across ' + $allCores.Count + ' core binary/binaries)') -ForegroundColor Green
+}
+
+# Optional pinned primary node rules (AI-Guard-Allow-Pinned-*)
+if ($ClearPinnedNodes) {
+    if (Test-Path -LiteralPath $pinFile) {
+        Remove-Item -LiteralPath $pinFile -Force -ErrorAction SilentlyContinue
+    }
+    @(Get-NetFirewallRule -DisplayName 'AI-Guard-Allow-Pinned-*' -ErrorAction SilentlyContinue) |
+        Remove-NetFirewallRule -ErrorAction SilentlyContinue
+    Write-Host '[+] cleared pinned node allowlist and AI-Guard-Allow-Pinned-* rules' -ForegroundColor Green
+}
+elseif ($PinCurrentNode -and $pinPreview) {
+    $pinRuleV6 = if ($allowIpv6Nodes -and $pinPreview.PSObject.Properties['Ipv6Ips']) { @($pinPreview.Ipv6Ips) } else { @() }
+    $pinAllIps = @(@($pinPreview.Ips) + @($pinRuleV6) | Where-Object { $_ } | Select-Object -Unique)
+    if ($pinAllIps.Count -eq 0) {
+        throw 'no valid public pinned node IPs found; refusing to write empty pinned rules'
+    }
+    Write-GuardCandidateNodes -Path $pinFile -Ips $pinPreview.Ips -Ipv6Ips $pinPreview.Ipv6Ips -TcpPorts $pinPreview.TcpPorts -UdpPorts $pinPreview.UdpPorts
+    Sync-AllowlistCoreRules -RulePrefix 'AI-Guard-Allow-Pinned-' -CoreMap $allCores -RemoteIps $pinAllIps -TcpPortList $pinPreview.TcpPorts -UdpPortList $pinPreview.UdpPorts
+    Write-Host ('[+] AI-Guard-Allow-Pinned-* updated (' + $pinPreview.Ips.Count + ' IPv4 + ' + $pinRuleV6.Count + ' IPv6 across ' + $allCores.Count + ' core binary/binaries)') -ForegroundColor Green
 }
 
 $foreignNodeIps = @($ips | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') })
@@ -769,6 +846,10 @@ if (Get-Command Read-GuardCandidateNodes -ErrorAction SilentlyContinue) {
     $candStored = Read-GuardCandidateNodes -Path $candFile
     if ($candStored.Enabled -and $candStored.Ips.Count -gt 0) {
         $foreignNodeIps = @($foreignNodeIps + @($candStored.Ips) | Sort-Object -Unique)
+    }
+    $pinStored = Read-GuardCandidateNodes -Path $pinFile
+    if ($pinStored.Enabled -and $pinStored.Ips.Count -gt 0) {
+        $foreignNodeIps = @($foreignNodeIps + @($pinStored.Ips) | Sort-Object -Unique)
     }
 }
 

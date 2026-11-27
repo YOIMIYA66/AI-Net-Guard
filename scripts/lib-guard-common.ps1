@@ -186,8 +186,8 @@ function Get-GuardInstallAclIssues {
         }
     }
 
-    # Audit security-critical policy and exception files under backup\.
-    foreach ($bf in @('guard-policy.json', 'guard-policy.last-good.json', 'allowed-outbound-rules.json')) {
+    # Audit security-critical policy, exception, and allowlist files under backup\.
+    foreach ($bf in @('guard-policy.json', 'guard-policy.last-good.json', 'allowed-outbound-rules.json', 'candidate-nodes.json', 'pinned-nodes.json')) {
         $bp = Join-Path (Join-Path $Path 'backup') $bf
         if (Test-Path -LiteralPath $bp) {
             try { & $addTarget (Get-Item -LiteralPath $bp -Force -ErrorAction Stop) }

@@ -1047,6 +1047,42 @@ c.commit(); c.close()
             ($reg12Raw -match 'sing-tun') -and ($ver03Raw -match 'sing-tun')
         Assert-True 'verify-leak-test, 12-regression, and 03-verify exclude sing-tun adapters and TUN names from physical NIC probes' `
             $singTunOk 'sing-tun physical adapter exclusion check failed'
+
+        # ---------------------------------------------------------------- 26. Queued event task (Opt A) & pinned primary node allowlist (Opt B)
+        $modeEventQueueOk = ($mode07Updated -match '<MultipleInstancesPolicy>Queue</MultipleInstancesPolicy>') -and `
+            ($mode07Updated -notmatch '<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>') -and `
+            ($mode07Updated -match 'function Sync-ForeignPhysicalBlockIfNeeded') -and `
+            ($mode07Updated -match 'Sync-NodeRuleFast -Analysis \$lateAnalysis[\r\n]+\s+Sync-ForeignPhysicalBlockIfNeeded -RuleStates \$lateAnalysis\.States')
+        Assert-True '07-mode uses MultipleInstancesPolicy=Queue on AI-Guard-Mode-Event and refreshes Foreign-Physical after late-settle node sync' `
+            $modeEventQueueOk 'event queue or late-settle foreign-block sync wiring missing'
+
+        $pinWireOk = ($sync10Updated -match '\[switch\]\$PinCurrentNode') -and ($sync10Updated -match '\[switch\]\$ClearPinnedNodes') -and `
+            ($sync10Updated -match 'pinned-nodes\.json') -and ($sync10Updated -match 'AI-Guard-Allow-Pinned-') -and `
+            ($sync10Updated -match 'function Sync-AllowlistCoreRules') -and `
+            ($mode07Updated -match '\$isPinnedRule') -and ($mode07Updated -match 'AI-Guard-Allow-Pinned-') -and `
+            ($mode07Updated -match 'pinned nodes\s*:') -and ($mode07Updated -match 'pinned-nodes\.json') -and `
+            ($rollback -match 'pinned-nodes\.json') -and `
+            ($libCommonAclRaw -match "'candidate-nodes\.json'") -and ($libCommonAclRaw -match "'pinned-nodes\.json'")
+        Assert-True '10-sync-node-rule, 07-mode, 09-rollback, and lib-guard-common wire pinned node allowlist, authorization, ACL audit, and cleanup' `
+            $pinWireOk 'pinned node allowlist wiring check failed'
+
+        $pinTmpPath = Join-Path $tmpDbDir 'pinned-nodes.json'
+        $p1V4 = @('198.51.100.42')
+        $p1Tcp = Merge-GuardPortSpecs -Specs @('443')
+        $p1Udp = Merge-GuardPortSpecs -Specs @()
+        Write-GuardCandidateNodes -Path $pinTmpPath -Ips $p1V4 -Ipv6Ips @() -TcpPorts $p1Tcp -UdpPorts $p1Udp
+        $loadedPin1 = Read-GuardCandidateNodes -Path $pinTmpPath
+        $p2V4 = @(@($loadedPin1.Ips) + @('198.51.100.42') | Sort-Object -Unique)
+        $p2Tcp = Merge-GuardPortSpecs -Specs (@($loadedPin1.TcpPorts) + @('25000'))
+        $p2Udp = Merge-GuardPortSpecs -Specs (@($loadedPin1.UdpPorts) + @('25000'))
+        Write-GuardCandidateNodes -Path $pinTmpPath -Ips $p2V4 -Ipv6Ips @() -TcpPorts $p2Tcp -UdpPorts $p2Udp
+        $loadedPin2 = Read-GuardCandidateNodes -Path $pinTmpPath
+        $pinMergeOk = $loadedPin1.Enabled -and $loadedPin2.Enabled -and `
+            ($loadedPin2.Ips.Count -eq 1) -and ($loadedPin2.Ips[0] -eq '198.51.100.42') -and `
+            (($loadedPin2.TcpPorts -join ',') -eq '443,25000') -and `
+            (($loadedPin2.UdpPorts -join ',') -eq '25000')
+        Assert-True 'Pinned node additive merge preserves prior ports and accumulates new TCP/UDP ports cleanly' `
+            $pinMergeOk ('ips=' + ($loadedPin2.Ips -join ',') + ' tcp=' + ($loadedPin2.TcpPorts -join ',') + ' udp=' + ($loadedPin2.UdpPorts -join ','))
     }
     finally {
         Remove-Item -LiteralPath $tmpDbDir -Recurse -Force -ErrorAction SilentlyContinue

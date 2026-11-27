@@ -579,7 +579,7 @@ if (Test-Path -LiteralPath $pf) {
 
 # Remove dynamic metadata files only when rollback succeeded cleanly (#06)
 if ($rollbackErrors.Count -eq 0) {
-    foreach ($metaFile in @('mode-state.json', 'node-sync.meta', 'node-routes.meta', 'candidate-nodes.json', 'foreign-block.meta', 'cn-rule.sig', 'cn-file.meta', 'auto-disabled-outbound-allow.json', 'hotplug-ipv6.json', 'b1-guard.meta', 'guard-policy.last-good.json', 'protected-lock.flag', 'v54-migrated.flag')) {
+    foreach ($metaFile in @('mode-state.json', 'node-sync.meta', 'node-routes.meta', 'candidate-nodes.json', 'pinned-nodes.json', 'foreign-block.meta', 'cn-rule.sig', 'cn-file.meta', 'auto-disabled-outbound-allow.json', 'hotplug-ipv6.json', 'b1-guard.meta', 'guard-policy.last-good.json', 'protected-lock.flag', 'v54-migrated.flag')) {
         $mf = Join-Path $BackupDir $metaFile
         if (Test-Path -LiteralPath $mf) {
             Remove-Item -LiteralPath $mf -Force -ErrorAction SilentlyContinue
