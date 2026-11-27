@@ -58,8 +58,10 @@
 .PARAMETER Quiet     Suppress per-item chatter (used by 02-killswitch / 07-mode auto-heal).
 
 .NOTES
-    Creating or changing firewall rules requires an elevated PowerShell.
-    Exit codes: 0 ok, 1 error, 5 not elevated.
+    -Apply, -Remove, and -Verify require an elevated (Administrator) PowerShell.
+    -DryRun is read-only and may run non-elevated when physical NIC enumeration succeeds
+    (still fails closed with exit 5 if Get-NetAdapter fails).
+    Exit codes: 0 ok, 1 error, 5 not elevated or enumeration failure.
 #>
 
 [CmdletBinding()]
@@ -149,16 +151,26 @@ function Get-GuardRuleFilter([string]$Key, [string]$Kind) {
 
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 $isAdmin = (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin -and (-not $DryRun -or $Verify -or $Remove)) {
+    Say '[!] 15-webrtc-browser-shield.ps1 requires elevated (Administrator) PowerShell for -Apply, -Remove, and -Verify.' 'Red'
+    exit 5
+}
 
 # ---------------------------------------------------------------- discovery
 $knownTun = @('xray_tun', 'singbox_tun', 'mihomo_tun', 'Meta', 'Mihomo', 'wintun')
 
-$physical = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
-        $_.Status -ne 'Not Present' -and
-        $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|TAP-Windows|Loopback' -and
-        $_.Name -notmatch '(?i)loopback' -and
-        ($knownTun -notcontains $_.Name)
-    })
+try {
+    $physical = @(Get-NetAdapter -ErrorAction Stop | Where-Object {
+            $_.Status -ne 'Not Present' -and
+            $_.InterfaceDescription -notmatch '(?i)Wintun|sing-tun|Mihomo|TAP-Windows|Loopback' -and
+            $_.Name -notmatch '(?i)loopback' -and
+            ($knownTun -notcontains $_.Name)
+        })
+}
+catch {
+    Say ('[!] Get-NetAdapter failed: ' + $_.Exception.Message) 'Red'
+    exit 5
+}
 
 if ($physical.Count -eq 0) {
     Say 'no physical NIC found - nothing to scope' 'Yellow'

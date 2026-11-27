@@ -1083,6 +1083,56 @@ c.commit(); c.close()
             (($loadedPin2.UdpPorts -join ',') -eq '25000')
         Assert-True 'Pinned node additive merge preserves prior ports and accumulates new TCP/UDP ports cleanly' `
             $pinMergeOk ('ips=' + ($loadedPin2.Ips -join ',') + ' tcp=' + ($loadedPin2.TcpPorts -join ',') + ' udp=' + ($loadedPin2.UdpPorts -join ','))
+
+        $shield15Path = Join-Path $repo 'scripts\15-webrtc-browser-shield.ps1'
+        $shield15Raw = [System.IO.File]::ReadAllText($shield15Path, [System.Text.Encoding]::UTF8)
+        $shieldFailClosedOk = ($shield15Raw -match 'if \(-not \$isAdmin -and \(-not \$DryRun -or \$Verify -or \$Remove\)\)') -and `
+            ($shield15Raw -match 'Get-NetAdapter -ErrorAction Stop') -and `
+            ($shield15Raw -match 'exit 5') -and `
+            ($shield15Raw -match '-DryRun is read-only and may run non-elevated')
+        Assert-True '15-webrtc-browser-shield enforces elevation on Apply/Remove/Verify, keeps non-elevated -DryRun, and documents mode rules' `
+            $shieldFailClosedOk 'elevation/DryRun/.NOTES check failed in 15-webrtc-browser-shield.ps1'
+
+        # Behavioral test 1: Get-NetAdapter failure under -DryRun must fail closed with exit 5
+        $shieldHost = (Get-Process -Id $PID).Path
+        $escShield = $shield15Path.Replace("'", "''")
+        $shimCmd = "function global:Get-NetAdapter { throw 'simulated CIM failure' }; & '$escShield' -DryRun -Quiet; exit `$LASTEXITCODE"
+        & $shieldHost -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $shimCmd | Out-Null
+        $shimRc = $LASTEXITCODE
+        Assert-True '15-webrtc-browser-shield exits 5 (fail-closed) when Get-NetAdapter throws under -DryRun' `
+            ($shimRc -eq 5) ('exit=' + $shimRc)
+
+        # Behavioral test 2: -DryRun exits 0 cleanly, and non-elevated -Verify exits 5 cleanly
+        & $shieldHost -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $shield15Path -DryRun -Quiet | Out-Null
+        $dryRc = $LASTEXITCODE
+        $curPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+        $curIsAdmin = $curPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        if (-not $curIsAdmin) {
+            & $shieldHost -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $shield15Path -Verify -Quiet | Out-Null
+            $verRc = $LASTEXITCODE
+            Assert-True 'Non-elevated -DryRun succeeds (exit 0) while -Verify fails closed (exit 5)' `
+                (($dryRc -eq 0) -and ($verRc -eq 5)) ('dryRc=' + $dryRc + ' verRc=' + $verRc)
+        }
+        else {
+            Assert-True '-DryRun preview executes cleanly (exit 0)' ($dryRc -eq 0) ('dryRc=' + $dryRc)
+        }
+
+        # Behavioral truth-table test for 07-mode Show-Status $wrtcFwOk predicate
+        $wrtcStatusUsesRegOk = ($mode07Updated -match '\$wrtcFwOk = \(\$ruleStates\.ContainsKey\(''AI-Guard-Block-WebRTC-UDP''\)') -and `
+            ($mode07Updated -match '\$ruleStates\.ContainsKey\(''AI-Guard-Block-WebRTC-TCP''\)') -and `
+            ($mode07Updated -notmatch '\$wrtcUdp\s*=\s*Get-GuardRule')
+        $wrtcExprMatch = [regex]::Match($mode07Updated, '\$wrtcFwOk = (\(\$ruleStates\.ContainsKey\(''AI-Guard-Block-WebRTC-UDP''\)[\s\S]*?''AI-Guard-Block-WebRTC-TCP''\]\))')
+        $wrtcMatrixOk = $false
+        if ($wrtcExprMatch.Success) {
+            $evalPred = [scriptblock]::Create('param([hashtable]$ruleStates) return [bool]' + $wrtcExprMatch.Groups[1].Value)
+            $rBoth  = & $evalPred @{ 'AI-Guard-Block-WebRTC-UDP' = $true;  'AI-Guard-Block-WebRTC-TCP' = $true }
+            $rNoUdp = & $evalPred @{ 'AI-Guard-Block-WebRTC-UDP' = $false; 'AI-Guard-Block-WebRTC-TCP' = $true }
+            $rNoTcp = & $evalPred @{ 'AI-Guard-Block-WebRTC-UDP' = $true;  'AI-Guard-Block-WebRTC-TCP' = $false }
+            $rEmpty = & $evalPred @{}
+            $wrtcMatrixOk = $rBoth -and (-not $rNoUdp) -and (-not $rNoTcp) -and (-not $rEmpty)
+        }
+        Assert-True '07-mode Show-Status reads WebRTC FW status from Registry ruleStates and enforces both UDP and TCP active' `
+            ($wrtcStatusUsesRegOk -and $wrtcMatrixOk) ('regWire=' + $wrtcStatusUsesRegOk + ' matrix=' + $wrtcMatrixOk)
     }
     finally {
         Remove-Item -LiteralPath $tmpDbDir -Recurse -Force -ErrorAction SilentlyContinue
