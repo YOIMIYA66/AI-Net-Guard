@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.9.6 · 候选节点测速白名单与防误杀版）
+# AI-Net-Guard 实现方案与持续审查文档（v5.9.7 · 临时 IPv6 开关、Hysteria2 端口跳跃与 PS 7 兼容版）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.9.6 候选节点按需测速白名单版**（新增 `10-sync-node-rule.ps1 -IncludeAllNodes` / `-ClearCandidateNodes` opt-in 候选节点伴生白名单 `AI-Guard-Allow-Candidates-*` 与物理外网阻断豁免，保持 `DefaultOutbound=Block` 与活动节点单一 `/32` 主路由不变，详见 16.22）
+> 版本状态：**v5.9.7 临时 IPv6 按需开关与兼容性修复版**（新增 `14-apply-policy.ps1 -TemporaryIpv6 On|Off` 与 IPv6 节点 `/128` 白名单同步、PowerShell 7 闭包与 `sing-tun` 误报修复、以及 v2rayN 7.x `ProtoExtra.Ports` 端口跳跃解析与 PS 5.1 数组解包修复，详见 16.23）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -567,7 +567,7 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 
 #### 16.9.3 P1：回归门禁进构建，且测试脚本不进发行物
 
-新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12），v5.8.7 起为 33 条（见 16.13），v5.8.8 为 39 条（见 16.14），v5.8.9 扩至 45 条（见 16.15），v5.9.0 扩至 49 条（见 16.16），v5.9.1 扩至 52 条（见 16.17），v5.9.2 扩至 54 条（见 16.18），v5.9.3 扩至 58 条（见 16.19），v5.9.4 扩至 59 条（见 16.20），v5.9.5 扩至 60 条（见 16.21），v5.9.6 扩至 62 条（见 16.22）。）
+新增 `tests\test-stun-ports.ps1`，由 `gui\build.ps1` 在纯 ASCII / AST 语法门禁之后强制运行，失败即 `throw`。11 条断言覆盖：单一定义内容、三种 getter 一致、其余脚本无本地副本、6 个消费方**先 dot-source 再调用**（按行号比较，不是只查字符串存在）、`09-rollback.ps1` 必须清理 `b1-guard.meta`。`tests\` 只参与门禁，打包段独立从 `scripts\` 取文件，实测 payload 内无 `tests\`。（本节描述的是 v5.8.3 发版时刻；v5.8.4 起扩到 19 条断言、7 个消费方（见 16.10.3），v5.8.5 起为 21 条（见 16.11），v5.8.6 起为 24 条（见 16.12），v5.8.7 起为 33 条（见 16.13），v5.8.8 为 39 条（见 16.14），v5.8.9 扩至 45 条（见 16.15），v5.9.0 扩至 49 条（见 16.16），v5.9.1 扩至 52 条（见 16.17），v5.9.2 扩至 54 条（见 16.18），v5.9.3 扩至 58 条（见 16.19），v5.9.4 扩至 59 条（见 16.20），v5.9.5 扩至 60 条（见 16.21），v5.9.6 扩至 62 条（见 16.22），v5.9.7 扩至 72 条（见 16.23）。）
 
 #### 16.9.4 第二轮 review 修掉的 6 处
 
@@ -890,3 +890,12 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 1. **按需候选节点伴生白名单（`scripts/10-sync-node-rule.ps1`）**：新增 `-IncludeAllNodes` 与 `-ClearCandidateNodes` 开关及 SQLite 只读解析 `Get-V2rayNCandidateNodes`（`mode=ro` 读取 `guiConfigs\guiNDB.db`），仅对解析到的核心二进制（`xray.exe` / `sing-box.exe` / `mihomo*.exe` 等）和公网候选节点 IP/端口创建 `AI-Guard-Allow-Candidates-<Core>-{TCP,UDP}` 伴生放行规则，并将候选节点 IP 持久化到 `backup\candidate-nodes.json`。默认不扩大通用出站放行，不向物理网卡添加批量 `/32` 静态路由。
 2. **共享校验与物理阻断联动（`scripts/lib-guard-common.ps1`、`scripts/07-mode.ps1`、`scripts/09-rollback.ps1`）**：新增 `Test-GuardPublicNodeIpv4`、`Test-GuardPortSpec`、`Read-GuardCandidateNodes`、`Write-GuardCandidateNodes` 共享函数；`07-mode.ps1` 在 `Get-FirewallRuleAnalysis` 中强制校验 `AI-Guard-Allow-Candidates-*` 同时绑定 `App=` 与 `RA4=`，在 `Sync-ForeignPhysicalBlockRule` 中豁免已授权的候选节点 IP，并在 `-Status` 中展示候选节点统计；`09-rollback.ps1` 将 `candidate-nodes.json` 纳入回滚清理。
 3. **测试与门禁扩展（`tests/test-stun-ports.ps1`）**：新增第 61–62 条静态与行为断言，覆盖候选节点辅助函数与 `Sync-ForeignPhysicalBlockRule` 豁免逻辑，Windows PowerShell 5.1 与 PowerShell 7.7 双引擎均通过 **62/62 断言**。
+
+### 16.23 v5.9.7：临时 IPv6 按需开关、Hysteria2 端口跳跃与 PS 7 兼容修复（2026-11-27）
+
+合并了 `ProtoExtra.Ports` 端口跳跃解析（#3）、临时 IPv6 按需支持与兼容修复（#4）及版本号升级：
+
+1. **临时 IPv6 按需开关与 IPv6 节点同步（`scripts/14-apply-policy.ps1`、`scripts/07-mode.ps1`、`scripts/10-sync-node-rule.ps1`、`scripts/lib-guard-common.ps1`）**：`14-apply-policy.ps1` 新增 `-TemporaryIpv6 On|Off` 开关，开启时恢复物理网卡 `ms_tcpip6` 绑定、设置微软推荐 `DisabledComponents=0x20` 并添加仅限链路本地的 `AI-Guard-Allow-DHCPv6`（`fe80::/10, ff02::1:2` UDP 546->547）与 `AI-Guard-Allow-NDP`（ICMPv6 133-136）引导规则；关闭时恢复 `DisablePhysicalIpv6=true` 与物理 IPv6 全阻断。新增 `Test-GuardPublicNodeIpv6`（`2000::/3`）、`Ipv6Ips` 候选持久化、`RA[46]=` 规则解析及 `ActiveStore` `/128` 物理主机路由同步。
+2. **PowerShell 7 闭包提交与 `singbox_tun` 误报修复（`scripts/lib-guard-common.ps1`、`scripts/verify-leak-test.ps1`、`scripts/12-regression.ps1`、`scripts/03-verify.ps1`）**：将 `Invoke-GuardPolicyTransaction` 的 last-good 原子写入内联进 `$commitPolicy` 闭包，修复 PS 7.x 下 `& 14-apply-policy.ps1` 触发 `Save-GuardPolicyLastGood` 作用域丢失问题；同时在物理网卡直连探测中补充 `sing-tun` 与 `tun` 网卡名过滤，消除 `singbox_tun` 假阳性误报。
+3. **兼容 Schema 的 `ProtoExtra.Ports` 提取与端口合并（`scripts/10-sync-node-rule.ps1`、`scripts/lib-guard-common.ps1`）**：`Get-V2rayNCandidateNodes` 通过 `PRAGMA table_info(ProfileItem)` 动态适配表结构并解析 `ProtoExtra.Ports` 跳跃端口（如 `35000-39000` / `60000-63000`），配合 `Merge-GuardPortSpecs` 标准化合并，并修复 Windows PowerShell 5.1 顶层 JSON 数组包装导致的 `[int]` 类型转换异常。
+4. **双引擎门禁扩展（`tests/test-stun-ports.ps1`）**：回归门禁扩至 **72 条**，覆盖端口合并、7.x/旧版 SQLite 候选提取、IPv6 公网校验与 `/128` 路由、`[CmdletBinding()]` + `&` 事务提交以及 `sing-tun` 过滤校验，Windows PowerShell 5.1 与 PowerShell 7.7 双引擎均通过 **72/72 断言**。
