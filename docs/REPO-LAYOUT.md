@@ -94,5 +94,6 @@ git tag v5.8.x ─> .github/workflows/release-exe.yml ─> GitHub Release（自�
 | [`docs/releases/v5.9.5.md`](releases/v5.9.5.md) | v5.9.5 脱敏发布说明（基于脱敏基线重构 `AI-Net-Guard.exe` 与 `portable.zip`，第 60 条防 PII 门禁与双引擎 60/60 通过） |
 | [`docs/releases/v5.9.6.md`](releases/v5.9.6.md) | v5.9.6 发布说明（新增 `-IncludeAllNodes` 候选节点按需测速伴生白名单与 `62/62` 双引擎门禁） |
 | [`docs/releases/v5.9.7.md`](releases/v5.9.7.md) | v5.9.7 发布说明（新增 `-TemporaryIpv6 On|Off` 临时 IPv6 开关与 `/128` 节点同步、PS 7 闭包与 `sing-tun` 误报修复、Hysteria2 `ProtoExtra.Ports` 解析，双引擎 72/72 门禁） |
+| [`docs/releases/v5.9.8.md`](releases/v5.9.8.md) | v5.9.8 发布说明（`AI-Guard-Mode-Event` 排队触发防丢事件、late-settle 物理阻断同步、`10-sync-node-rule.ps1 -PinCurrentNode` 叠加式主力节点白名单与 ACL 审计） |
 
 `dist/release-notes-v*.md` 是同样内容的工作副本，发版前需核对两者哈希一致；**以 `docs/releases/` 为权威来源**。
