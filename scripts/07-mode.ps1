@@ -612,10 +612,14 @@ function Get-FirewallRuleAnalysis {
                                    ($v -notmatch '(^|\|)RA[46]=') -and ($v -notmatch '(^|\|)IF=') -and ($v -notmatch '(^|\|)App='))
             $ruleIdent = if ($dn) { $dn } else { $pr.Name }
             $isCandidateRule = ($ruleIdent -match '^AI-Guard-Allow-Candidates-[A-Za-z0-9._-]+-(TCP|UDP)$') -and
-                ($v -match '(^|\|)App=') -and ($v -match '(^|\|)RA4=')
+                ($v -match '(^|\|)App=') -and ($v -match '(^|\|)RA[46]=')
+            $isIpv6BootstrapRule = (-not $guardPolicy.DisablePhysicalIpv6) -and
+                ($ruleIdent -in @('AI-Guard-Allow-DHCPv6', 'AI-Guard-Allow-NDP')) -and
+                ($v -match '(^|\|)RA6=')
             $isAuthorizedAiGuard = $isAiGuard -and (-not $isDangerousBlanket) -and (
                 ($ruleIdent -match '^AI-Guard-(Allow|Block)-(CN|TUN|TUN-Alt|PhysicalIP-On-TUN|Foreign-Physical|Foreign-Physical-IPv6|Node-TCP|Node-UDP|DoH-Ali|DHCP|LAN|NCSI|Core-.*|WebRTC-.*)$') -or
-                $isCandidateRule
+                $isCandidateRule -or
+                $isIpv6BootstrapRule
             )
 
             if ($isAuthorizedAiGuard) {
@@ -642,34 +646,61 @@ function Get-FirewallRuleAnalysis {
     }
 }
 
-function Resolve-DomainIpsSafe([string]$Domain) {
+function Resolve-DomainIpsSafe {
+    param(
+        [string]$Domain,
+        [switch]$IncludeIpv6
+    )
     # 1. Encrypted AliDNS JSON DoH over direct IP 223.5.5.5:443 (Proxy=null):
     #    works even when TUN is OFF (covered by AI-Guard-Allow-CN) and resists UDP-53 spoofing.
     $ips = @()
-    try {
-        if ([int][Net.ServicePointManager]::SecurityProtocol -ne 0) {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-        }
-        $uri = 'https://223.5.5.5/resolve?name=' + [uri]::EscapeDataString($Domain) + '&type=A'
-        $req = [System.Net.HttpWebRequest]::Create($uri)
-        $req.Proxy = $null
-        $req.Timeout = 4000
-        $req.ReadWriteTimeout = 4000
-        $resp = $req.GetResponse()
+    $qTypes = if ($IncludeIpv6) { @('A', 'AAAA') } else { @('A') }
+    foreach ($qt in $qTypes) {
+        $wantType = if ($qt -eq 'AAAA') { 28 } else { 1 }
+        $qtIps = @()
         try {
-            $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
-            $json = $sr.ReadToEnd() | ConvertFrom-Json
-            $ips = @($json.Answer | Where-Object { $_.type -eq 1 -and $_.data -match '^\d{1,3}(\.\d{1,3}){3}$' } | ForEach-Object { [string]$_.data })
-        }
-        finally { $resp.Close() }
-    }
-    catch { }
-
-    if ($ips.Count -eq 0) {
-        try {
-            $ips = @(Resolve-DnsName -Name $Domain -Type A -ErrorAction Stop | Where-Object { $_.IPAddress } | Select-Object -ExpandProperty IPAddress)
+            if ([int][Net.ServicePointManager]::SecurityProtocol -ne 0) {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            }
+            $uri = 'https://223.5.5.5/resolve?name=' + [uri]::EscapeDataString($Domain) + '&type=' + $qt
+            $req = [System.Net.HttpWebRequest]::Create($uri)
+            $req.Proxy = $null
+            $req.Timeout = 4000
+            $req.ReadWriteTimeout = 4000
+            $resp = $req.GetResponse()
+            try {
+                $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+                $json = $sr.ReadToEnd() | ConvertFrom-Json
+                foreach ($ans in @($json.Answer)) {
+                    if (-not $ans -or [int]$ans.type -ne $wantType) { continue }
+                    $d = [string]$ans.data
+                    if ($wantType -eq 1 -and $d -match '^\d{1,3}(\.\d{1,3}){3}$') {
+                        $qtIps += $d.Trim()
+                    }
+                    elseif ($wantType -eq 28 -and (Get-Command Test-GuardPublicNodeIpv6 -ErrorAction SilentlyContinue) -and (Test-GuardPublicNodeIpv6 -IpStr $d)) {
+                        $qtIps += ([System.Net.IPAddress]::Parse($d.Trim().Trim('[', ']'))).IPAddressToString.ToLowerInvariant()
+                    }
+                }
+            }
+            finally { $resp.Close() }
         }
         catch { }
+
+        if ($qtIps.Count -eq 0) {
+            try {
+                foreach ($dnsRec in @(Resolve-DnsName -Name $Domain -Type $qt -ErrorAction Stop | Where-Object { $_.IPAddress })) {
+                    $ipText = [string]$dnsRec.IPAddress
+                    if ($wantType -eq 1 -and $ipText -match '^\d{1,3}(\.\d{1,3}){3}$') {
+                        $qtIps += $ipText.Trim()
+                    }
+                    elseif ($wantType -eq 28 -and (Get-Command Test-GuardPublicNodeIpv6 -ErrorAction SilentlyContinue) -and (Test-GuardPublicNodeIpv6 -IpStr $ipText)) {
+                        $qtIps += ([System.Net.IPAddress]::Parse($ipText.Trim().Trim('[', ']'))).IPAddressToString.ToLowerInvariant()
+                    }
+                }
+            }
+            catch { }
+        }
+        $ips += @($qtIps)
     }
     return @($ips | Where-Object { $_ } | Select-Object -Unique)
 }
@@ -787,7 +818,11 @@ function Sync-NodeActiveHostRoutes {
     param([string[]]$NodeIps)
 
     $validIps = @($NodeIps | Where-Object { $_ -and ($_ -match '^\d{1,3}(\.\d{1,3}){3}$') } | Select-Object -Unique)
-    if ($validIps.Count -eq 0) { return }
+    $validV6 = @()
+    if (-not $guardPolicy.DisablePhysicalIpv6 -and (Get-Command Test-GuardPublicNodeIpv6 -ErrorAction SilentlyContinue)) {
+        $validV6 = @($NodeIps | Where-Object { $_ -and (Test-GuardPublicNodeIpv6 -IpStr $_) } | ForEach-Object { ([System.Net.IPAddress]::Parse($_.Trim().Trim('[', ']'))).IPAddressToString.ToLowerInvariant() } | Select-Object -Unique)
+    }
+    if ($validIps.Count -eq 0 -and $validV6.Count -eq 0) { return }
 
     # Zero-CIM precheck: read active physical IPv4 gateways (.NET) and live /32 routes (route.exe).
     # After a reboot, ActiveStore /32 routes vanish even while config.json & firewall rules are
@@ -838,7 +873,7 @@ function Sync-NodeActiveHostRoutes {
                 }
                 if (-not $gwHit) { $allLiveOk = $false; break }
             }
-            if ($allLiveOk) { return }
+            if ($allLiveOk -and $validV6.Count -eq 0) { return }
         }
         catch { }
     }
@@ -865,12 +900,19 @@ function Sync-NodeActiveHostRoutes {
             }
         }
 
+        foreach ($prevV6 in @($staleRouteIps | Where-Object { $_ -and (Get-Command Test-GuardPublicNodeIpv6 -ErrorAction SilentlyContinue) -and (Test-GuardPublicNodeIpv6 -IpStr $_) } | ForEach-Object { ([System.Net.IPAddress]::Parse($_)).IPAddressToString.ToLowerInvariant() } | Select-Object -Unique)) {
+            if ($validV6 -notcontains $prevV6) {
+                Remove-NetRoute -DestinationPrefix ($prevV6 + '/128') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                Remove-NetRoute -DestinationPrefix ($prevV6 + '/128') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+            }
+        }
+
         $physRoute = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             Where-Object { $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback' -and $_.NextHop -ne '0.0.0.0' } |
             Sort-Object { [int]$_.RouteMetric + [int]$_.InterfaceMetric } |
             Select-Object -First 1
-        if ($physRoute -and $physRoute.NextHop) {
-            $changedRoutes = $false
+        $changedRoutes = $false
+        if ($physRoute -and $physRoute.NextHop -and $validIps.Count -gt 0) {
             foreach ($nodeIp in $validIps) {
                 $pDup = @(Get-NetRoute -DestinationPrefix ($nodeIp + '/32') -PolicyStore PersistentStore -ErrorAction SilentlyContinue)
                 if ($pDup.Count -gt 0) {
@@ -888,11 +930,35 @@ function Sync-NodeActiveHostRoutes {
                     $changedRoutes = $true
                 }
             }
+        }
+        if ($validV6.Count -gt 0) {
+            $physRouteV6 = Get-NetRoute -DestinationPrefix '::/0' -AddressFamily IPv6 -ErrorAction SilentlyContinue |
+                Where-Object { $_.InterfaceAlias -notmatch '(?i)tun|wintun|sing|xray|meta|mihomo|loopback' -and $_.NextHop -ne '::' } |
+                Sort-Object { [int]$_.RouteMetric + [int]$_.InterfaceMetric } |
+                Select-Object -First 1
+            if ($physRouteV6 -and $physRouteV6.NextHop) {
+                foreach ($nodeV6 in $validV6) {
+                    Remove-NetRoute -DestinationPrefix ($nodeV6 + '/128') -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+                    $curV6 = @(Get-NetRoute -DestinationPrefix ($nodeV6 + '/128') -PolicyStore ActiveStore -ErrorAction SilentlyContinue)
+                    if ($curV6.Count -eq 0) {
+                        New-NetRoute -DestinationPrefix ($nodeV6 + '/128') -InterfaceAlias $physRouteV6.InterfaceAlias -NextHop $physRouteV6.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+                        $changedRoutes = $true
+                    }
+                    elseif ($curV6[0].NextHop -ne $physRouteV6.NextHop -or $curV6[0].InterfaceAlias -ne $physRouteV6.InterfaceAlias -or $curV6[0].RouteMetric -ne 1) {
+                        Remove-NetRoute -DestinationPrefix ($nodeV6 + '/128') -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
+                        New-NetRoute -DestinationPrefix ($nodeV6 + '/128') -InterfaceAlias $physRouteV6.InterfaceAlias -NextHop $physRouteV6.NextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null
+                        $changedRoutes = $true
+                    }
+                }
+            }
+        }
+        $allMetaRoutes = @($validIps) + @($validV6)
+        if ($allMetaRoutes.Count -gt 0) {
             New-Item -ItemType Directory -Path (Split-Path $nodeRoutesMeta) -Force | Out-Null
-            [System.IO.File]::WriteAllText($nodeRoutesMeta, ($validIps -join ','), (New-Object System.Text.UTF8Encoding($false)))
+            [System.IO.File]::WriteAllText($nodeRoutesMeta, ($allMetaRoutes -join ','), (New-Object System.Text.UTF8Encoding($false)))
             if ($changedRoutes) {
                 $script:repairedItems += 'node-route-synced'
-                Say ('    synced ActiveStore /32 route -> ' + ($validIps -join ',') + ' via ' + $physRoute.NextHop + ' (' + $physRoute.InterfaceAlias + ')')
+                Say ('    synced ActiveStore host route -> ' + ($allMetaRoutes -join ','))
             }
         }
     }
@@ -963,7 +1029,8 @@ function Sync-NodeRuleFast {
                     }
                     if ($ok) {
                         foreach ($wip in $wantIps) {
-                            if ($rawTcp -notmatch ('(^|\|)RA4=' + [regex]::Escape($wip) + '(\||$)')) { $ok = $false; break }
+                            $raField = if ($wip -like '*:*') { 'RA6=' } else { 'RA4=' }
+                            if ($rawTcp -notmatch ('(?i)(^|\|)' + $raField + [regex]::Escape($wip) + '(\||$)')) { $ok = $false; break }
                         }
                     }
                     if ($ok) {
@@ -976,7 +1043,8 @@ function Sync-NodeRuleFast {
                             if (-not $udpActive -or -not $rawUdp -or ($rawUdp -notmatch ('(?i)(^|\|)App=' + [regex]::Escape($wantExe) + '(\||$)'))) { $ok = $false }
                             if ($ok) {
                                 foreach ($wip in $wantIps) {
-                                    if ($rawUdp -notmatch ('(^|\|)RA4=' + [regex]::Escape($wip) + '(\||$)')) { $ok = $false; break }
+                                    $raField = if ($wip -like '*:*') { 'RA6=' } else { 'RA4=' }
+                                    if ($rawUdp -notmatch ('(?i)(^|\|)' + $raField + [regex]::Escape($wip) + '(\||$)')) { $ok = $false; break }
                                 }
                             }
                             if ($ok) {
@@ -1007,16 +1075,23 @@ function Sync-NodeRuleFast {
         $coreExe = Resolve-CoreExecutablePath -PreferredCore $parsed.CoreType
         $rawAddrs = if ($parsed.PSObject.Properties.Name -contains 'Addresses' -and $parsed.Addresses) { @($parsed.Addresses) } else { @($parsed.Address) }
 
+        $allowV6 = (-not $guardPolicy.DisablePhysicalIpv6)
         $ips = @()
         $usedDomain = $false
         foreach ($raItem in $rawAddrs) {
             if (-not $raItem) { continue }
-            if ($raItem -match '^\d{1,3}(\.\d{1,3}){3}$') {
-                $ips += @($raItem)
+            $cleanRa = ([string]$raItem).Trim().Trim('[', ']')
+            if ($cleanRa -match '^\d{1,3}(\.\d{1,3}){3}$') {
+                $ips += @($cleanRa)
+            }
+            elseif ($cleanRa -like '*:*') {
+                if ($allowV6 -and (Get-Command Test-GuardPublicNodeIpv6 -ErrorAction SilentlyContinue) -and (Test-GuardPublicNodeIpv6 -IpStr $cleanRa)) {
+                    $ips += @(([System.Net.IPAddress]::Parse($cleanRa)).IPAddressToString.ToLowerInvariant())
+                }
             }
             else {
                 $usedDomain = $true
-                $ips += @(Resolve-DomainIpsSafe -Domain $raItem)
+                $ips += @(Resolve-DomainIpsSafe -Domain $cleanRa -IncludeIpv6:$allowV6)
             }
         }
         if ($ips.Count -eq 0) { return }
@@ -1028,7 +1103,7 @@ function Sync-NodeRuleFast {
         $udpPorts = @($udpPorts | Where-Object { $_ } | Select-Object -Unique)
 
         # Extract existing IPs, ports & app from raw registry string (0 CIM) to preserve same-IP multi-port setup
-        $oldIps = @([regex]::Matches($rawTcp, '(?:^|\|)RA4=([^|]+)') | ForEach-Object { $_.Groups[1].Value })
+        $oldIps = @([regex]::Matches($rawTcp, '(?:^|\|)RA[46]=([^|]+)') | ForEach-Object { $_.Groups[1].Value.ToLowerInvariant() })
         $oldPorts = @([regex]::Matches($rawTcp, '(?:^|\|)RPort=([^|]+)') | ForEach-Object { $_.Groups[1].Value })
         $sameApp = ($rawTcp -match ('(?i)(^|\|)App=' + [regex]::Escape($coreExe) + '(\||$)'))
 
@@ -1041,7 +1116,7 @@ function Sync-NodeRuleFast {
         $tcpPorts = @($tcpPorts | Where-Object { $_ } | Select-Object -Unique)
 
         # Also validate AI-Guard-Allow-Node-UDP (e.g. hy2 port-hopping ranges) before taking fast skip
-        $oldUdpIps = @([regex]::Matches($rawUdp, '(?:^|\|)RA4=([^|]+)') | ForEach-Object { $_.Groups[1].Value })
+        $oldUdpIps = @([regex]::Matches($rawUdp, '(?:^|\|)RA[46]=([^|]+)') | ForEach-Object { $_.Groups[1].Value.ToLowerInvariant() })
         $oldUdpPorts = @([regex]::Matches($rawUdp, '(?:^|\|)RPort=([^|]+)') | ForEach-Object { $_.Groups[1].Value })
         $sameUdpApp = ($rawUdp -match ('(?i)(^|\|)App=' + [regex]::Escape($coreExe) + '(\||$)'))
         $udpExact = if ($udp) {
@@ -1741,6 +1816,10 @@ function Show-Status {
     }
 
     $displayRules = @('AI-Guard-Allow-TUN', 'AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-DoH-Ali', 'AI-Guard-Allow-DHCP', 'AI-Guard-Allow-LAN')
+    if (-not $guardPolicy.DisablePhysicalIpv6) {
+        $displayRules += 'AI-Guard-Allow-DHCPv6'
+        $displayRules += 'AI-Guard-Allow-NDP'
+    }
     if ($ruleStates.ContainsKey('AI-Guard-Allow-Node-UDP')) { $displayRules += 'AI-Guard-Allow-Node-UDP' }
     if ($ruleStates.ContainsKey('AI-Guard-Allow-TUN-Alt')) { $displayRules += 'AI-Guard-Allow-TUN-Alt' }
     $displayRules += 'AI-Guard-Allow-NCSI'
@@ -1756,7 +1835,7 @@ function Show-Status {
             $extra = ''
             if ($rn -in @('AI-Guard-Allow-Node-TCP', 'AI-Guard-Allow-Node-UDP') -and $analysis.RawByRule.ContainsKey($rn)) {
                 $rv = $analysis.RawByRule[$rn]
-                $rips = @([regex]::Matches($rv, '(?:^|\|)RA4=([^|]+)') | ForEach-Object { $_.Groups[1].Value }) -join ','
+                $rips = @([regex]::Matches($rv, '(?:^|\|)RA[46]=([^|]+)') | ForEach-Object { $_.Groups[1].Value }) -join ','
                 $rpts = @([regex]::Matches($rv, '(?:^|\|)RPort=([^|]+)') | ForEach-Object { $_.Groups[1].Value }) -join ','
                 $rapp = ''
                 if ($rv -match '(?:^|\|)App=([^|]+)') { $rapp = ', core=' + (Split-Path -Leaf $matches[1]) }
@@ -1780,7 +1859,9 @@ function Show-Status {
     if (Get-Command Read-GuardCandidateNodes -ErrorAction SilentlyContinue) {
         $candStatus = Read-GuardCandidateNodes -Path (Join-Path $Root 'backup\candidate-nodes.json')
         if ($candStatus.Enabled) {
-            Write-Host ('  candidate nodes   : ' + $candStatus.Ips.Count + ' IPs (TCP:' + $candStatus.TcpPorts.Count + ' port(s), UDP:' + $candStatus.UdpPorts.Count + ' port(s))') -ForegroundColor Cyan
+            $v6CandCnt = if ($candStatus.PSObject.Properties['Ipv6Ips']) { $candStatus.Ipv6Ips.Count } else { 0 }
+            $candIpLabel = if ($v6CandCnt -gt 0) { $candStatus.Ips.Count.ToString() + ' IPv4 + ' + $v6CandCnt + ' IPv6' } else { $candStatus.Ips.Count.ToString() + ' IPs' }
+            Write-Host ('  candidate nodes   : ' + $candIpLabel + ' (TCP:' + $candStatus.TcpPorts.Count + ' port(s), UDP:' + $candStatus.UdpPorts.Count + ' port(s))') -ForegroundColor Cyan
         }
     }
 
@@ -1870,6 +1951,11 @@ function Show-Status {
     if ($v4pol -and $v6pol) {
         $preferV4 = ($v4pol.Precedence -gt $v6pol.Precedence)
         Write-Host ('  IPv4 precedence   : ::ffff:0:0/96={0} vs ::/0={1} (preferIPv4={2})' -f $v4pol.Precedence, $v6pol.Precedence, $preferV4)
+    }
+    if (-not $guardPolicy.DisablePhysicalIpv6) {
+        $curDcSt = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters' -ErrorAction SilentlyContinue).DisabledComponents
+        $dcHex = if ($null -ne $curDcSt) { ('0x{0:x}' -f [int]$curDcSt) } else { '(unset)' }
+        Write-Host ('  temporary IPv6    : ON (ms_tcpip6 + DHCPv6/NDP, DisabledComponents={0})' -f $dcHex) -ForegroundColor Cyan
     }
 
     $modeTasks = @(Get-ScheduledTask -TaskName 'AI-Guard-Mode-*' -ErrorAction SilentlyContinue)

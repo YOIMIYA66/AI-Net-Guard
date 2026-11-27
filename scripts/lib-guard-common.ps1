@@ -340,7 +340,17 @@ function Invoke-GuardPolicyTransaction {
     }).GetNewClosure()
 
     $commitPolicy = ({
-        Save-GuardPolicyLastGood -PolicyPath $CanonicalPolicyPath -LastGoodPath $LastGoodPolicyPath
+        if (-not (Test-Path -LiteralPath $CanonicalPolicyPath)) {
+            throw ('cannot save last-good policy: missing ' + $CanonicalPolicyPath)
+        }
+        $lgDir = Split-Path -Parent $LastGoodPolicyPath
+        if ($lgDir -and -not (Test-Path -LiteralPath $lgDir)) {
+            New-Item -ItemType Directory -Path $lgDir -Force | Out-Null
+        }
+        $tmpLg = $LastGoodPolicyPath + '.tmp.' + $PID
+        $rawJson = [System.IO.File]::ReadAllText($CanonicalPolicyPath, [System.Text.Encoding]::UTF8)
+        [System.IO.File]::WriteAllText($tmpLg, $rawJson, (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $tmpLg -Destination $LastGoodPolicyPath -Force -ErrorAction Stop
         $state.PolicyCommitted = $true
     }).GetNewClosure()
 
@@ -697,6 +707,20 @@ function Test-GuardPublicNodeIpv4 {
     return $true
 }
 
+function Test-GuardPublicNodeIpv6 {
+    param([string]$IpStr)
+
+    if (-not $IpStr) { return $false }
+    $t = $IpStr.Trim().Trim('[', ']')
+    if (-not $t -or ($t -notlike '*:*')) { return $false }
+    $ipObj = $null
+    if (-not [System.Net.IPAddress]::TryParse($t, [ref]$ipObj)) { return $false }
+    if ($ipObj.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetworkV6) { return $false }
+    $b = $ipObj.GetAddressBytes()
+    if ($b.Length -lt 1) { return $false }
+    return (($b[0] -band 0xE0) -eq 0x20)
+}
+
 function Test-GuardPortSpec {
     param([string]$Spec)
 
@@ -776,6 +800,7 @@ function Read-GuardCandidateNodes {
     $empty = [pscustomobject]@{
         Enabled   = $false
         Ips       = [string[]]@()
+        Ipv6Ips   = [string[]]@()
         TcpPorts  = [string[]]@()
         UdpPorts  = [string[]]@()
         UpdatedAt = ''
@@ -795,6 +820,18 @@ function Read-GuardCandidateNodes {
                 $s = if ($null -ne $candIp) { ([string]$candIp).Trim() } else { '' }
                 if ((Test-GuardPublicNodeIpv4 -IpStr $s) -and $ipSet.Add($s)) {
                     $ipList.Add($s)
+                }
+            }
+        }
+
+        $v6Set = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $v6List = New-Object System.Collections.Generic.List[string]
+        if ($obj.PSObject.Properties['Ipv6Ips'] -and $null -ne $obj.Ipv6Ips) {
+            foreach ($candV6 in @($obj.Ipv6Ips)) {
+                $s6 = if ($null -ne $candV6) { ([string]$candV6).Trim().Trim('[', ']') } else { '' }
+                if (Test-GuardPublicNodeIpv6 -IpStr $s6) {
+                    $norm6 = ([System.Net.IPAddress]::Parse($s6)).IPAddressToString.ToLowerInvariant()
+                    if ($v6Set.Add($norm6)) { $v6List.Add($norm6) }
                 }
             }
         }
@@ -822,10 +859,11 @@ function Read-GuardCandidateNodes {
         }
 
         $upd = if ($obj.PSObject.Properties['UpdatedAt'] -and $null -ne $obj.UpdatedAt) { [string]$obj.UpdatedAt } else { '' }
-        $isEnabled = ($ipList.Count -gt 0) -and (($tcpList.Count -gt 0) -or ($udpList.Count -gt 0))
+        $isEnabled = (($ipList.Count -gt 0) -or ($v6List.Count -gt 0)) -and (($tcpList.Count -gt 0) -or ($udpList.Count -gt 0))
         return [pscustomobject]@{
             Enabled   = $isEnabled
             Ips       = [string[]]$ipList.ToArray()
+            Ipv6Ips   = [string[]]$v6List.ToArray()
             TcpPorts  = [string[]]$tcpList.ToArray()
             UdpPorts  = [string[]]$udpList.ToArray()
             UpdatedAt = $upd
@@ -840,6 +878,7 @@ function Write-GuardCandidateNodes {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [AllowNull()][string[]]$Ips = @(),
+        [AllowNull()][string[]]$Ipv6Ips = @(),
         [AllowNull()][string[]]$TcpPorts = @(),
         [AllowNull()][string[]]$UdpPorts = @()
     )
@@ -853,13 +892,27 @@ function Write-GuardCandidateNodes {
         }
     }
 
+    $v6Set = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $v6List = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $Ipv6Ips) {
+        foreach ($candV6 in $Ipv6Ips) {
+            $s6 = if ($null -ne $candV6) { ([string]$candV6).Trim().Trim('[', ']') } else { '' }
+            if (Test-GuardPublicNodeIpv6 -IpStr $s6) {
+                $norm6 = ([System.Net.IPAddress]::Parse($s6)).IPAddressToString.ToLowerInvariant()
+                if ($v6Set.Add($norm6)) { $v6List.Add($norm6) }
+            }
+        }
+    }
+
     $ipArr = @($ipList.ToArray() | Sort-Object)
+    $v6Arr = @($v6List.ToArray() | Sort-Object)
     $tcpArr = Merge-GuardPortSpecs -Specs $TcpPorts
     $udpArr = Merge-GuardPortSpecs -Specs $UdpPorts
 
     $payload = [pscustomobject]@{
         UpdatedAt = (Get-Date).ToString('o')
         Ips       = [string[]]$ipArr
+        Ipv6Ips   = [string[]]$v6Arr
         TcpPorts  = [string[]]$tcpArr
         UdpPorts  = [string[]]$udpArr
     }

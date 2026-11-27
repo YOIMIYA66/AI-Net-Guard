@@ -32,7 +32,8 @@ param(
     [switch]$SetSystemProxy,
     [switch]$ClearSystemProxy,
     [switch]$SyncNodeOnly,
-    [switch]$ForceCommit
+    [switch]$ForceCommit,
+    [ValidateSet('', 'On', 'Off')][string]$TemporaryIpv6 = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -281,6 +282,16 @@ if ($policyLoaded.PolicyWarning -and $applyExitCode -eq 0) {
 $policy = $policyLoaded
 
 if ($applyExitCode -eq 0) {
+    if ($TemporaryIpv6 -eq 'On') {
+        $policy.DisablePhysicalIpv6 = $false
+        $policy.PreferIpv4Prefix = $true
+        Write-Note 'TemporaryIpv6 = On -> DisablePhysicalIpv6=false, PreferIpv4Prefix=true (DisabledComponents=0x20)'
+    }
+    elseif ($TemporaryIpv6 -eq 'Off') {
+        $policy.DisablePhysicalIpv6 = $true
+        $policy.PreferIpv4Prefix = $true
+        Write-Note 'TemporaryIpv6 = Off -> DisablePhysicalIpv6=true, PreferIpv4Prefix=true'
+    }
     # Rule coordination: StrictNrptDoh requires physical DNS locked to 1.1.1.1
     if ($policy.StrictNrptDoh) {
         $policy.LockPhysicalDns = $true
@@ -1054,6 +1065,7 @@ else {
             }
             catch { }
         }
+        Get-NetFirewallRule -Name 'AI-Guard-Allow-DHCPv6', 'AI-Guard-Allow-NDP' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
         Write-Ok 'DisablePhysicalIpv6 = ON (ms_tcpip6 unbound on physical adapters)'
     }
     else {
@@ -1073,17 +1085,58 @@ else {
         if ($v6BlkRule -and $v6BlkRule.Enabled -eq 'True') {
             Disable-NetFirewallRule -InputObject $v6BlkRule -ErrorAction SilentlyContinue
         }
+
+        $dhcp6Rule = Get-NetFirewallRule -Name 'AI-Guard-Allow-DHCPv6' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($dhcp6Rule) {
+            try {
+                Set-NetFirewallRule -InputObject $dhcp6Rule -Protocol UDP -LocalPort @('546') -RemotePort @('547') -RemoteAddress @('fe80::/10', 'ff02::1:2') -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
+            }
+            catch {
+                $dhcp6Rule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+                New-NetFirewallRule -Name 'AI-Guard-Allow-DHCPv6' -DisplayName 'AI-Guard-Allow-DHCPv6' `
+                    -Direction Outbound -Action Allow -Protocol UDP -LocalPort @('546') -RemotePort @('547') `
+                    -RemoteAddress @('fe80::/10', 'ff02::1:2') -Profile Any -Enabled True `
+                    -Description 'Link-local DHCPv6 lease renewal when temporary IPv6 is enabled.' | Out-Null
+            }
+        }
+        else {
+            New-NetFirewallRule -Name 'AI-Guard-Allow-DHCPv6' -DisplayName 'AI-Guard-Allow-DHCPv6' `
+                -Direction Outbound -Action Allow -Protocol UDP -LocalPort @('546') -RemotePort @('547') `
+                -RemoteAddress @('fe80::/10', 'ff02::1:2') -Profile Any -Enabled True `
+                -Description 'Link-local DHCPv6 lease renewal when temporary IPv6 is enabled.' | Out-Null
+        }
+
+        $ndpRule = Get-NetFirewallRule -Name 'AI-Guard-Allow-NDP' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($ndpRule) {
+            try {
+                Set-NetFirewallRule -InputObject $ndpRule -Protocol ICMPv6 -IcmpType @('133', '134', '135', '136') -RemoteAddress @('fe80::/10', 'ff02::/16') -InterfaceAlias 'Any' -Enabled True -ErrorAction Stop
+            }
+            catch {
+                $ndpRule | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+                New-NetFirewallRule -Name 'AI-Guard-Allow-NDP' -DisplayName 'AI-Guard-Allow-NDP' `
+                    -Direction Outbound -Action Allow -Protocol ICMPv6 -IcmpType @('133', '134', '135', '136') `
+                    -RemoteAddress @('fe80::/10', 'ff02::/16') -Profile Any -Enabled True `
+                    -Description 'Link-local IPv6 NDP (RS/RA/NS/NA) when temporary IPv6 is enabled.' | Out-Null
+            }
+        }
+        else {
+            New-NetFirewallRule -Name 'AI-Guard-Allow-NDP' -DisplayName 'AI-Guard-Allow-NDP' `
+                -Direction Outbound -Action Allow -Protocol ICMPv6 -IcmpType @('133', '134', '135', '136') `
+                -RemoteAddress @('fe80::/10', 'ff02::/16') -Profile Any -Enabled True `
+                -Description 'Link-local IPv6 NDP (RS/RA/NS/NA) when temporary IPv6 is enabled.' | Out-Null
+        }
         Write-Ok 'DisablePhysicalIpv6 = OFF (restored ms_tcpip6 binding on physical adapters)'
+        Write-Ok 'temporary IPv6 bootstrap rules active (AI-Guard-Allow-DHCPv6 + AI-Guard-Allow-NDP, link-local only)'
     }
 
     $tcpip6Key = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters'
     if ($policy.PreferIpv4Prefix) {
         if (-not (Test-Path -LiteralPath $tcpip6Key)) { New-Item -Path $tcpip6Key -Force | Out-Null }
         $curDc = (Get-ItemProperty -LiteralPath $tcpip6Key -ErrorAction SilentlyContinue).DisabledComponents
-        $newDc = if ($null -ne $curDc) { ([int]$curDc -bor 0x20) } else { 0x20 }
+        $newDc = if (-not $policy.DisablePhysicalIpv6) { 0x20 } elseif ($null -ne $curDc) { ([int]$curDc -bor 0x20) } else { 0x20 }
         New-ItemProperty -Path $tcpip6Key -Name 'DisabledComponents' -Value $newDc -PropertyType DWord -Force | Out-Null
         netsh interface ipv6 set prefixpolicy ::ffff:0:0/96 50 4 | Out-Null
-        Write-Ok 'PreferIpv4Prefix = ON (::ffff:0:0/96 precedence 50 > ::/0 40)'
+        Write-Ok ('PreferIpv4Prefix = ON (::ffff:0:0/96 precedence 50 > ::/0 40, DisabledComponents=0x' + ('{0:x}' -f $newDc) + ')')
     }
     else {
         if (Test-Path -LiteralPath $tcpip6Key) {
