@@ -1,4 +1,4 @@
-# AI-Net-Guard v5.9.7 - shared security helpers (write lock, recursive ACL audit, Fail-Closed policy loader, strict CN CIDR validation).
+# AI-Net-Guard v5.9.8 - shared security helpers (write lock, recursive ACL audit, Fail-Closed policy loader, strict CN CIDR validation).
 # Pure ASCII script. Dot-sourced by 02-killswitch.ps1, 07-mode.ps1, 09-rollback.ps1, 10-sync-node-rule.ps1, 12-regression.ps1, 13-harden-acl.ps1, 14-apply-policy.ps1.
 
 function Enter-GuardWriteLock {

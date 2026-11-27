@@ -1,9 +1,9 @@
-# AI-Net-Guard 实现方案与持续审查文档（v5.9.7 · 临时 IPv6 开关、Hysteria2 端口跳跃与 PS 7 兼容版）
+# AI-Net-Guard 实现方案与持续审查文档（v5.9.8 · 网络事件排队防丢与主力节点 Pin 常驻白名单版）
 
 > 运行环境：Windows 11 24H2（PowerShell 5.1 & PowerShell 7.x 双引擎兼容）
 > 代理环境：v2rayN 7.x / Xray + sing-box + Mihomo（自动探测 v2rayN 安装路径或通过 `$env:V2RAYN_ROOT` / `-V2rayNRoot` 指定）
 > 节点同步：**v5.8.1 默认开启多内核自动同步**（支持 `sing-box` 多出站/hy2 `server_ports` 端口跳跃、双核心 DoH 伴生规则、域名周期刷新与旧 `/32` 路由清理）
-> 版本状态：**v5.9.7 临时 IPv6 按需开关与兼容性修复版**（新增 `14-apply-policy.ps1 -TemporaryIpv6 On|Off` 与 IPv6 节点 `/128` 白名单同步、PowerShell 7 闭包与 `sing-tun` 误报修复、以及 v2rayN 7.x `ProtoExtra.Ports` 端口跳跃解析与 PS 5.1 数组解包修复，详见 16.23）
+> 版本状态：**v5.9.8 网络事件排队防丢与主力节点 Pin 常驻白名单版**（新增 `AI-Guard-Mode-Event` 排队触发防丢事件、late-settle 物理阻断联动与 `10-sync-node-rule.ps1 -PinCurrentNode` / `-ClearPinnedNodes` 叠加式主力节点常驻白名单，详见 16.24）
 > 默认部署目录：`C:\AI-Net-Guard`（内置 `backup\v54-migrated.flag` 零触控自迁移引擎）
 
 ---
@@ -899,3 +899,17 @@ TUN 入站标签是从 `inbounds` 里实际读出（本例 `tun`），不硬编�
 2. **PowerShell 7 闭包提交与 `singbox_tun` 误报修复（`scripts/lib-guard-common.ps1`、`scripts/verify-leak-test.ps1`、`scripts/12-regression.ps1`、`scripts/03-verify.ps1`）**：将 `Invoke-GuardPolicyTransaction` 的 last-good 原子写入内联进 `$commitPolicy` 闭包，修复 PS 7.x 下 `& 14-apply-policy.ps1` 触发 `Save-GuardPolicyLastGood` 作用域丢失问题；同时在物理网卡直连探测中补充 `sing-tun` 与 `tun` 网卡名过滤，消除 `singbox_tun` 假阳性误报。
 3. **兼容 Schema 的 `ProtoExtra.Ports` 提取与端口合并（`scripts/10-sync-node-rule.ps1`、`scripts/lib-guard-common.ps1`）**：`Get-V2rayNCandidateNodes` 通过 `PRAGMA table_info(ProfileItem)` 动态适配表结构并解析 `ProtoExtra.Ports` 跳跃端口（如 `35000-39000` / `60000-63000`），配合 `Merge-GuardPortSpecs` 标准化合并，并修复 Windows PowerShell 5.1 顶层 JSON 数组包装导致的 `[int]` 类型转换异常。
 4. **双引擎门禁扩展（`tests/test-stun-ports.ps1`）**：回归门禁扩至 **72 条**，覆盖端口合并、7.x/旧版 SQLite 候选提取、IPv6 公网校验与 `/128` 路由、`[CmdletBinding()]` + `&` 事务提交以及 `sing-tun` 过滤校验，Windows PowerShell 5.1 与 PowerShell 7.7 双引擎均通过 **72/72 断言**。
+
+---
+
+### 16.24 v5.9.8：网络事件排队防丢与主力节点 Pin 常驻白名单（2026-11-27）
+
+消除高频切换节点时约 50 秒同步卡顿，同时保持 **0 MB 后台常驻内存** 与 `DefaultOutbound = Block` 防火墙基线不变（PR #6）：
+
+1. **消除快切节点时的事件丢弃与 `Foreign-Physical` 同步竞态（`scripts/07-mode.ps1`）**：
+   - 将计划任务 `AI-Guard-Mode-Event` 的 `<MultipleInstancesPolicy>` 从 `IgnoreNew` 调整为 `Queue`，确保快速切节点连续产生 `Event 10001`（旧 TUN 断开）与 `Event 10000`（新 TUN 拉起）时后置事件排队执行而不再被系统直接丢弃。
+   - 抽出 `Sync-ForeignPhysicalBlockIfNeeded` 并在 `+800 ms` late-settle 的 `Sync-NodeRuleFast` 后紧接着刷新物理网卡外网阻断规则，闭合 `config.json` 延迟落盘场景下的竞态窗口。
+2. **叠加式主力节点常驻白名单（`scripts/10-sync-node-rule.ps1`、`scripts/07-mode.ps1`、`scripts/lib-guard-common.ps1`、`scripts/09-rollback.ps1`）**：
+   - `10-sync-node-rule.ps1` 新增 `-PinCurrentNode`（将当前节点公网 IP 与 TCP/UDP 端口叠加写入 `backup\pinned-nodes.json` 并通过共享函数 `Sync-AllowlistCoreRules` 同步 `AI-Guard-Allow-Pinned-<Core>-{TCP,UDP}`）与 `-ClearPinnedNodes`；支持在同一台 VPS 的多协议/多端口（如 VLESS + Hysteria2）间增量累加，且在切去其他临时机场节点后仍保持对主力 VPS 的直连放行。
+   - `07-mode.ps1` 在 `Get-FirewallRuleAnalysis` 中授权 `AI-Guard-Allow-Pinned-*`（强制要求同时具备 `App=` 与 `RA[46]=` 作用域）、在 `Sync-ForeignPhysicalBlockIfNeeded` 豁免已 Pin 的 IPv4，并在 `-Status` 展示 `pinned nodes` 统计；`lib-guard-common.ps1` 将 `candidate-nodes.json` 与 `pinned-nodes.json` 纳入安装目录 ACL 审计；`09-rollback.ps1` 在回滚时一并清理 `pinned-nodes.json`。
+3. **双引擎门禁扩展（`tests/test-stun-ports.ps1`）**：新增第 26 节回归测试，验证 `Queue` 事件策略、late-settle 物理阻断联动、Pinned 规则接线/ACL 审计/回滚清理及叠加多端口读写往返（Windows PowerShell 5.1 **75/75 PASS**、PowerShell 7.7 **74/74 PASS**）。

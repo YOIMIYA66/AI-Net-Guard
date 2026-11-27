@@ -1,4 +1,4 @@
-# AI-Net-Guard Leak & Connectivity Verification Test (v5.9.7)
+# AI-Net-Guard Leak & Connectivity Verification Test (v5.9.8)
 #
 # .PARAMETER V2rayNRoot
 #   Optional. v2rayN install folder, used only to locate binConfigs\config.json for the
